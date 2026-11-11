@@ -1,0 +1,27 @@
+{
+  "base_model": "Qwen/Qwen1.5-0.5B-Chat",
+  "training_examples": 123,
+  "epochs": 3,
+  "final_training_loss": 5.1191,
+  "training_data_files": 7,
+  "total_training_examples_available": 561,
+  "lora_rank": 8,
+  "lora_alpha": 16,
+  "lora_dropout": 0.05,
+  "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
+  "peft_version": "0.18.0",
+  "optimizer": "AdamW",
+  "learning_rate": 2e-5,
+  "adapter_size_mb": 6.3,
+  "capabilities_improved": [
+    "agent_behavior",
+    "email_and_calendar",
+    "job_search_cv",
+    "memory_personalization",
+    "software_engineering",
+    "task_planning",
+    "tool_calling"
+  ],
+  "adapter_path": "jalora/lora_adapters/jalora_lora",
+  "server_port": 8001
+}

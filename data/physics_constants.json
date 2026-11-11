@@ -1,0 +1,205 @@
+{
+  "source": "CODATA 2018 / SI 2019 (defined constants are exact)",
+  "constants": [
+    {
+      "name": "speed of light in vacuum",
+      "symbol": "c",
+      "value": 299792458,
+      "unit": "m/s",
+      "exact": true,
+      "aliases": ["speed of light", "light speed", "speed of light in vacuum", "velocity of light"]
+    },
+    {
+      "name": "Planck constant",
+      "symbol": "h",
+      "value": 6.62607015e-34,
+      "unit": "J*s",
+      "exact": true,
+      "aliases": ["planck constant", "planck's constant", "planck"]
+    },
+    {
+      "name": "reduced Planck constant",
+      "symbol": "hbar",
+      "value": 1.054571817e-34,
+      "unit": "J*s",
+      "exact": false,
+      "aliases": ["reduced planck constant", "dirac constant", "h bar", "hbar"]
+    },
+    {
+      "name": "elementary charge",
+      "symbol": "e",
+      "value": 1.602176634e-19,
+      "unit": "C",
+      "exact": true,
+      "aliases": ["elementary charge", "electron charge", "charge of the electron", "charge of an electron"]
+    },
+    {
+      "name": "Boltzmann constant",
+      "symbol": "k_B",
+      "value": 1.380649e-23,
+      "unit": "J/K",
+      "exact": true,
+      "aliases": ["boltzmann constant", "boltzmann's constant", "boltzmann"]
+    },
+    {
+      "name": "Avogadro constant",
+      "symbol": "N_A",
+      "value": 6.02214076e23,
+      "unit": "1/mol",
+      "exact": true,
+      "aliases": ["avogadro constant", "avogadro's number", "avogadro number", "avogadro"]
+    },
+    {
+      "name": "molar gas constant",
+      "symbol": "R",
+      "value": 8.314462618,
+      "unit": "J/(mol*K)",
+      "exact": false,
+      "aliases": ["gas constant", "molar gas constant", "ideal gas constant", "universal gas constant"]
+    },
+    {
+      "name": "Faraday constant",
+      "symbol": "F",
+      "value": 96485.33212,
+      "unit": "C/mol",
+      "exact": false,
+      "aliases": ["faraday constant", "faraday"]
+    },
+    {
+      "name": "Newtonian constant of gravitation",
+      "symbol": "G",
+      "value": 6.6743e-11,
+      "unit": "m**3/(kg*s**2)",
+      "exact": false,
+      "aliases": ["gravitational constant", "newton's constant", "universal gravitational constant", "big g"]
+    },
+    {
+      "name": "standard acceleration of gravity",
+      "symbol": "g_0",
+      "value": 9.80665,
+      "unit": "m/s**2",
+      "exact": true,
+      "aliases": ["standard gravity", "standard acceleration of gravity", "acceleration due to gravity", "acceleration of gravity", "gravity"]
+    },
+    {
+      "name": "vacuum electric permittivity",
+      "symbol": "eps_0",
+      "value": 8.8541878128e-12,
+      "unit": "F/m",
+      "exact": false,
+      "aliases": ["vacuum permittivity", "permittivity of free space", "electric constant", "permittivity"]
+    },
+    {
+      "name": "vacuum magnetic permeability",
+      "symbol": "mu_0",
+      "value": 1.25663706212e-6,
+      "unit": "N/A**2",
+      "exact": false,
+      "aliases": ["vacuum permeability", "permeability of free space", "magnetic constant", "permeability"]
+    },
+    {
+      "name": "Coulomb constant",
+      "symbol": "k_e",
+      "value": 8.9875517923e9,
+      "unit": "N*m**2/C**2",
+      "exact": false,
+      "aliases": ["coulomb constant", "coulomb's constant", "electrostatic constant", "coulomb's law constant"]
+    },
+    {
+      "name": "electron mass",
+      "symbol": "m_e",
+      "value": 9.1093837015e-31,
+      "unit": "kg",
+      "exact": false,
+      "aliases": ["electron mass", "mass of the electron", "mass of an electron", "rest mass of the electron"]
+    },
+    {
+      "name": "proton mass",
+      "symbol": "m_p",
+      "value": 1.67262192369e-27,
+      "unit": "kg",
+      "exact": false,
+      "aliases": ["proton mass", "mass of the proton", "mass of a proton"]
+    },
+    {
+      "name": "neutron mass",
+      "symbol": "m_n",
+      "value": 1.67492749804e-27,
+      "unit": "kg",
+      "exact": false,
+      "aliases": ["neutron mass", "mass of the neutron"]
+    },
+    {
+      "name": "atomic mass constant",
+      "symbol": "u",
+      "value": 1.6605390666e-27,
+      "unit": "kg",
+      "exact": false,
+      "aliases": ["atomic mass unit", "unified atomic mass unit", "dalton", "atomic mass constant"]
+    },
+    {
+      "name": "fine-structure constant",
+      "symbol": "alpha",
+      "value": 7.2973525693e-3,
+      "unit": "",
+      "exact": false,
+      "aliases": ["fine structure constant", "fine-structure constant", "fine structure"]
+    },
+    {
+      "name": "Rydberg constant",
+      "symbol": "R_inf",
+      "value": 10973731.56816,
+      "unit": "1/m",
+      "exact": false,
+      "aliases": ["rydberg constant", "rydberg"]
+    },
+    {
+      "name": "Stefan-Boltzmann constant",
+      "symbol": "sigma",
+      "value": 5.670374419e-8,
+      "unit": "W/(m**2*K**4)",
+      "exact": true,
+      "aliases": ["stefan-boltzmann constant", "stefan boltzmann constant"]
+    },
+    {
+      "name": "electron volt",
+      "symbol": "eV",
+      "value": 1.602176634e-19,
+      "unit": "J",
+      "exact": true,
+      "aliases": ["electron volt", "electronvolt"]
+    },
+    {
+      "name": "astronomical unit",
+      "symbol": "au",
+      "value": 1.495978707e11,
+      "unit": "m",
+      "exact": true,
+      "aliases": ["astronomical unit"]
+    },
+    {
+      "name": "standard atmosphere",
+      "symbol": "atm",
+      "value": 101325,
+      "unit": "Pa",
+      "exact": true,
+      "aliases": ["standard atmosphere", "standard atmospheric pressure"]
+    },
+    {
+      "name": "Bohr radius",
+      "symbol": "a_0",
+      "value": 5.29177210903e-11,
+      "unit": "m",
+      "exact": false,
+      "aliases": ["bohr radius"]
+    },
+    {
+      "name": "Bohr magneton",
+      "symbol": "mu_B",
+      "value": 9.2740100783e-24,
+      "unit": "J/T",
+      "exact": false,
+      "aliases": ["bohr magneton"]
+    }
+  ]
+}

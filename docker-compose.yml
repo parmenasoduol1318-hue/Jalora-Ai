@@ -1,0 +1,57 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      JALORA_ENV: production
+      JALORA_JWT_SECRET: ${JALORA_JWT_SECRET:?Set JALORA_JWT_SECRET in .env before starting}
+      JALORA_CREDENTIALS_ENCRYPTION_KEY: ${JALORA_CREDENTIALS_ENCRYPTION_KEY:?Set JALORA_CREDENTIALS_ENCRYPTION_KEY in .env before starting}
+      JALORA_DATABASE_URL: sqlite:////app/data/jalora.db
+      # For production Postgres instead of SQLite:
+      #   1. uncomment db service below
+      #   2. set: JALORA_DATABASE_URL=postgresql+psycopg://jalora:jalora@db:5432/jalora
+      #   3. add psycopg to backend/requirements.txt:  psycopg[binary]
+      # JALORA_DATABASE_URL: postgresql+psycopg://jalora:jalora@db:5432/jalora
+      JALORA_CORS_ORIGINS: http://localhost:8000
+      JALORA_REDIS_URL: ${JALORA_REDIS_URL:-redis://redis:6379/0}
+      JALORA_OPENAI_API_KEY: ${JALORA_OPENAI_API_KEY:-}
+      JALORA_ANTHROPIC_API_KEY: ${JALORA_ANTHROPIC_API_KEY:-}
+      JALORA_OLLAMA_BASE_URL: ${JALORA_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      JALORA_TRACING_ENABLED: ${JALORA_TRACING_ENABLED:-false}
+      JALORA_TRACING_PROVIDER: ${JALORA_TRACING_PROVIDER:-none}
+      JALORA_OTEL_ENDPOINT: ${JALORA_OTEL_ENDPOINT:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - jalora-data:/app/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  # db:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_USER: jalora
+  #     POSTGRES_PASSWORD: jalora
+  #     POSTGRES_DB: jalora
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+  #   restart: unless-stopped
+
+volumes:
+  jalora-data:
+  redis-data:
+  # pgdata:

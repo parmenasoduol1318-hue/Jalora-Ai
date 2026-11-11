@@ -1,0 +1,67 @@
+# Build artifacts & caches
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environment (never bake secrets into images)
+.env
+.env.example
+.env.local
+
+# Backend data
+backend/_TMP/
+backend/_tmp/
+*.db
+*.sqlite
+*.sqlite3
+
+# Test files
+backend/tests/
+frontend/tests/
+tests/
+
+# OS
+.DS_Store
+Thumbs.db
+$RECYCLE.BIN/
+desktop.ini
+
+# Git
+.git
+.gitignore
+
+# Temp scripts
+backend/_*verify*.py
+backend/_check_*.py
+backend/_fix*.py
+backend/_count.py
+backend/_cleanup.py
+backend/__*.py
+backend/__pycache__/
+
+# Frontend dev artifacts
+frontend-react/node_modules/
+frontend-react/.vite/
+frontend-react/dist/
+frontend-react/playwright-report/
+frontend-react/test-results/

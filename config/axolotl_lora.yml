@@ -1,0 +1,34 @@
+
+# Axolotl QLoRA Configuration
+
+# Model settings
+model_name_or_path: Qwen/Qwen1.5-7B
+
+# Dataset
+dataset: ./training_data/jalora_train.jsonl
+dataset_ar: ./training_data/jalora_val.jsonl
+dataset_on_disk: false
+
+# Fine-tuning
+sequence_len: 2048
+micro_batch_size: 2
+gradient_accumulation_steps: 4
+num_epochs: 3
+learning_rate: 2e-5
+lr_scheduler: cosine
+warmup_ratio: 0.1
+
+# LoRA
+lora_r: 64
+lora_alpha: 16
+lora_dropout: 0.1
+
+# QLoRA
+qlora: true
+bits: 4
+quant_type: nf4
+double_quant: true
+quant_method: bitsandbytes
+
+# Output
+output_dir: ./lora_adapters/jalora_qwen_lora

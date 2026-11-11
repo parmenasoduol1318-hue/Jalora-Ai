@@ -1,0 +1,70 @@
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+starlette==1.7.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
+email-validator>=2.2.0
+python-multipart==0.0.32
+SQLAlchemy==2.1.3
+alembic==1.20.0
+PyJWT==2.15.1
+argon2-cffi==25.1.0
+httpx==0.28.1
+playwright==1.56.0
+certifi>=2024.2.2
+truststore>=0.10.0
+beautifulsoup4==4.15.0
+lxml==6.1.3
+pypdf==6.19.0
+python-docx==1.2.0
+openpyxl==3.1.5
+python-pptx==1.0.2
+reportlab==5.0.1
+ddgs==9.16.0
+langgraph==1.2.14
+langchain-core==1.6.7
+apscheduler==3.11.3
+psutil>=5.9.8
+pywinauto==0.6.9
+Pillow>=10.3.0
+pytesseract==0.3.13
+numpy==2.5.3
+sympy==1.14.0
+scipy==1.18.1
+# Math/science (Phase 1-6): real unit algebra + plot artifacts. Imported lazily,
+# so the app still runs (compute degrades gracefully) without them.
+pint==0.25.2
+matplotlib==3.10.8
+# Optional domain backends (imported lazily if present):
+#   periodictable  — richer element data (chemistry)
+#   chempy         — reaction/equilibrium solver (chemistry)
+cryptography==50.0.2
+# Creative Studio: local AI image generation (Stable Diffusion via HuggingFace
+# diffusers). Imported lazily so the app still runs without these heavy packages;
+# the procedural fallback engine handles generation when torch/diffusers are absent.
+# Install torch CPU-only with:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.6
+diffusers>=0.41.0
+transformers>=4.44.0
+safetensors>=0.4.5
+accelerate>=0.31.0
+huggingface_hub>=0.25.0
+# Optional: background removal for local image editing (transparent_bg feature)
+# Imported lazily — the feature degrades gracefully if rembg is not installed.
+rembg>=2.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+redis==8.1.0
+opentelemetry-api==1.45.1
+opentelemetry-sdk==1.45.1
+# Optional coding-agent runtimes. Copilot is constrained to Jalora's custom
+# sandbox tools; Codex runs only in a per-project isolated staging workspace.
+github-copilot-sdk==1.0.26; python_version >= "3.11"
+openai-codex==0.163.0
+# Real-time voice pipeline (in-app live call). Local engines (faster-whisper
+# STT, Piper TTS) are keyless/offline; pipecat-ai orchestrates STT->LLM->TTS.
+# All three are imported lazily so the app still runs (mock-first) without them.
+pipecat-ai==1.12.0
+faster-whisper==1.2.1
+piper-tts==1.8.0

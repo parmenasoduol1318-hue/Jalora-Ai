@@ -1,0 +1,762 @@
+{
+  "timestamp": "2026-10-20T06:07:22.485315+00:00",
+  "git_sha": "2146aa73d7e5",
+  "system_info": {
+    "gpu": {
+      "cuda_available": false
+    },
+    "system": {
+      "ram_total_gb": 15.778663635253906,
+      "ram_available_gb": 1.7823028564453125,
+      "ram_percent": 88.7,
+      "cpu_count": 8,
+      "disk_free_gb": 67.89701843261719
+    }
+  },
+  "summary": {
+    "total_tests": 67,
+    "passed": 63,
+    "failed": 4,
+    "pass_rate": 0.9402985074626866,
+    "avg_latency_ms": 714.8939402984219,
+    "p50_latency_ms": 3.1902000000627595,
+    "p95_latency_ms": 1228.1260999998267
+  },
+  "results": [
+    {
+      "name": "api_health",
+      "category": "api",
+      "success": true,
+      "latency_ms": 9025.32439999959,
+      "error": null,
+      "details": {
+        "status_code": 200
+      }
+    },
+    {
+      "name": "chat_benchmark",
+      "category": "chat",
+      "success": true,
+      "latency_ms": 33306.21829999927,
+      "error": null,
+      "details": {
+        "status_code": 200
+      }
+    },
+    {
+      "name": "retrieval_benchmark",
+      "category": "rag",
+      "success": true,
+      "latency_ms": 31.342600000243692,
+      "error": null,
+      "details": {
+        "status_code": 200,
+        "documents_returned": 0
+      }
+    },
+    {
+      "name": "arith-2plus2",
+      "category": "math_arithmetic",
+      "success": true,
+      "latency_ms": 1228.1260999998267,
+      "error": null,
+      "details": {
+        "query": "2+2",
+        "result": "ok=True intent='arithmetic' variable='x' latex='4' steps=['Simplify \\\\(4\\\\) = \\\\(4\\\\)'] exact='4' nu"
+      }
+    },
+    {
+      "name": "arith-fraction-add",
+      "category": "math_arithmetic",
+      "success": true,
+      "latency_ms": 3.0617000002166606,
+      "error": null,
+      "details": {
+        "query": "1/2 + 1/3",
+        "result": "ok=True intent='arithmetic' variable='x' latex='\\\\frac{5}{6}' steps=['Simplify \\\\(\\\\frac{5}{6}\\\\) = "
+      }
+    },
+    {
+      "name": "arith-square-12",
+      "category": "math_arithmetic",
+      "success": true,
+      "latency_ms": 3.1795999993846635,
+      "error": null,
+      "details": {
+        "query": "12 * 12",
+        "result": "ok=True intent='arithmetic' variable='x' latex='144' steps=['Simplify \\\\(144\\\\) = \\\\(144\\\\)'] exact="
+      }
+    },
+    {
+      "name": "arith-subtract",
+      "category": "math_arithmetic",
+      "success": true,
+      "latency_ms": 3.1902000000627595,
+      "error": null,
+      "details": {
+        "query": "100 - 37",
+        "result": "ok=True intent='arithmetic' variable='x' latex='63' steps=['Simplify \\\\(63\\\\) = \\\\(63\\\\)'] exact='63"
+      }
+    },
+    {
+      "name": "arith-power",
+      "category": "math_arithmetic",
+      "success": true,
+      "latency_ms": 2.7592999995249556,
+      "error": null,
+      "details": {
+        "query": "7^2",
+        "result": "ok=True intent='arithmetic' variable='x' latex='49' steps=['Simplify \\\\(49\\\\) = \\\\(49\\\\)'] exact='49"
+      }
+    },
+    {
+      "name": "arith-percent",
+      "category": "math_arithmetic",
+      "success": true,
+      "latency_ms": 2.764200000456185,
+      "error": null,
+      "details": {
+        "query": "what is 20% of 150",
+        "result": "ok=True intent='word_problem' variable='x' latex='30' steps=['Given: 20.0% of 150.0.', 'Formula: res"
+      }
+    },
+    {
+      "name": "combin-ncr",
+      "category": "math_combinatorics",
+      "success": true,
+      "latency_ms": 1.6559999994569807,
+      "error": null,
+      "details": {
+        "query": "nCr(5,2)",
+        "result": "ok=True intent='statistics' variable='x' latex='10' steps=['\\\\(C(5, 2) = 10\\\\)', '= 10'] exact='10' "
+      }
+    },
+    {
+      "name": "number-fibonacci",
+      "category": "math_number_theory",
+      "success": true,
+      "latency_ms": 0.9282000000894186,
+      "error": null,
+      "details": {
+        "query": "fibonacci(10)",
+        "result": "ok=True intent='number_theory' variable='x' latex='55' steps=['Fibonacci number F(10):', '= 55'] exa"
+      }
+    },
+    {
+      "name": "number-factorial",
+      "category": "math_number_theory",
+      "success": true,
+      "latency_ms": 0.7716000000073109,
+      "error": null,
+      "details": {
+        "query": "factorial(5)",
+        "result": "ok=True intent='number_theory' variable='x' latex='120' steps=['5! = 120', 'Computed exactly.'] exac"
+      }
+    },
+    {
+      "name": "algebra-linear-simple",
+      "category": "math_algebra",
+      "success": true,
+      "latency_ms": 522.968100000071,
+      "error": null,
+      "details": {
+        "query": "x+1=4",
+        "result": "ok=True intent='algebra' variable='x' latex='x = 3' steps=['Solve \\\\(x + 1 = 4\\\\) for \\\\(x\\\\).', 'Ro"
+      }
+    },
+    {
+      "name": "algebra-linear-coeff",
+      "category": "math_algebra",
+      "success": true,
+      "latency_ms": 34.872299999733514,
+      "error": null,
+      "details": {
+        "query": "2x+3=7",
+        "result": "ok=True intent='algebra' variable='x' latex='x = 2' steps=['Solve \\\\(2 x + 3 = 7\\\\) for \\\\(x\\\\).', '"
+      }
+    },
+    {
+      "name": "algebra-linear-minus",
+      "category": "math_algebra",
+      "success": true,
+      "latency_ms": 34.015199999885226,
+      "error": null,
+      "details": {
+        "query": "3x-5=10",
+        "result": "ok=True intent='algebra' variable='x' latex='x = 5' steps=['Solve \\\\(3 x - 5 = 10\\\\) for \\\\(x\\\\).', "
+      }
+    },
+    {
+      "name": "algebra-quadratic",
+      "category": "math_algebra",
+      "success": true,
+      "latency_ms": 62.78470000052039,
+      "error": null,
+      "details": {
+        "query": "x^2 - 5x + 6 = 0",
+        "result": "ok=True intent='algebra' variable='x' latex='x = 2, x = 3' steps=['Solve \\\\(x^{2} - 5 x + 6 = 0\\\\) f"
+      }
+    },
+    {
+      "name": "algebra-system-2x2",
+      "category": "math_algebra",
+      "success": true,
+      "latency_ms": 31.835599999794795,
+      "error": null,
+      "details": {
+        "query": "2x + 3y = 6 and x - y = 1",
+        "result": "ok=True intent='algebra' variable='x' latex='x = 9/5, y = 4/5' steps=['Solve the system: 2x + 3y = 6"
+      }
+    },
+    {
+      "name": "algebra-expand",
+      "category": "math_algebra",
+      "success": true,
+      "latency_ms": 7.311000000299828,
+      "error": null,
+      "details": {
+        "query": "expand (x+1)^2",
+        "result": "ok=True intent='arithmetic' variable='x' latex='x^{2} + 2 x + 1' steps=['Expand \\\\(\\\\left(x + 1\\\\rig"
+      }
+    },
+    {
+      "name": "algebra-factor",
+      "category": "math_algebra",
+      "success": true,
+      "latency_ms": 9.345500000563334,
+      "error": null,
+      "details": {
+        "query": "factor x^2 - 4",
+        "result": "ok=True intent='arithmetic' variable='x' latex='\\\\left(x - 2\\\\right) \\\\left(x + 2\\\\right)' steps=['F"
+      }
+    },
+    {
+      "name": "algebra-simplify",
+      "category": "math_algebra",
+      "success": true,
+      "latency_ms": 25.98870000019815,
+      "error": null,
+      "details": {
+        "query": "simplify (x^2 - 1)/(x - 1)",
+        "result": "ok=True intent='arithmetic' variable='x' latex='x + 1' steps=['Simplify \\\\(\\\\frac{x^{2} - 1}{x - 1}\\"
+      }
+    },
+    {
+      "name": "trig-sin-pi2",
+      "category": "math_trigonometry",
+      "success": true,
+      "latency_ms": 5.079499999737891,
+      "error": null,
+      "details": {
+        "query": "sin(pi/2)",
+        "result": "ok=True intent='arithmetic' variable='x' latex='1' steps=['Simplify \\\\(1\\\\) = \\\\(1\\\\)'] exact='1' nu"
+      }
+    },
+    {
+      "name": "geometry-circle-area",
+      "category": "math_geometry",
+      "success": true,
+      "latency_ms": 4.404600000270875,
+      "error": null,
+      "details": {
+        "query": "area of a circle with radius 3",
+        "result": "ok=True intent='word_problem' variable='r' latex='\u03c0 \\\\cdot 3.0^{2}' steps=['Given: radius r = 3.0.',"
+      }
+    },
+    {
+      "name": "units-km-to-m",
+      "category": "math_units",
+      "success": true,
+      "latency_ms": 7.134000000405649,
+      "error": null,
+      "details": {
+        "query": "5 km to m",
+        "result": "ok=True intent='units' variable='x' latex='5000\\\\,m' steps=['Convert 5 km to m.', 'Use the defined c"
+      }
+    },
+    {
+      "name": "units-speed",
+      "category": "math_units",
+      "success": true,
+      "latency_ms": 3.882799999701092,
+      "error": null,
+      "details": {
+        "query": "100 km/h to m/s",
+        "result": "ok=True intent='units' variable='x' latex='27.7777777777777\\\\,m/s' steps=['Convert 100 km/h to m/s.'"
+      }
+    },
+    {
+      "name": "units-c-to-f",
+      "category": "math_units",
+      "success": false,
+      "latency_ms": 3.586599999835016,
+      "error": null,
+      "details": {
+        "query": "100 celsius to fahrenheit",
+        "result": "ok=True intent='units' variable='x' latex='212\\\\,\u00b0F' steps=['Convert 100 celsius to fahrenheit.', 'U"
+      }
+    },
+    {
+      "name": "units-f-to-c",
+      "category": "math_units",
+      "success": false,
+      "latency_ms": 2.7285999995001475,
+      "error": null,
+      "details": {
+        "query": "32 fahrenheit to celsius",
+        "result": "ok=True intent='units' variable='x' latex='0\\\\,\u00b0C' steps=['Convert 32 fahrenheit to celsius.', 'Use "
+      }
+    },
+    {
+      "name": "number-gcd",
+      "category": "math_number_theory",
+      "success": true,
+      "latency_ms": 1.520400000117661,
+      "error": null,
+      "details": {
+        "query": "gcd(12, 18)",
+        "result": "ok=True intent='number_theory' variable='x' latex='6' steps=['Greatest common divisor of 12 and 18:'"
+      }
+    },
+    {
+      "name": "number-lcm",
+      "category": "math_number_theory",
+      "success": true,
+      "latency_ms": 1.4554999997926643,
+      "error": null,
+      "details": {
+        "query": "lcm(4,6)",
+        "result": "ok=True intent='number_theory' variable='x' latex='12' steps=['Least common multiple of 4 and 6:', '"
+      }
+    },
+    {
+      "name": "number-prime-factor",
+      "category": "math_number_theory",
+      "success": true,
+      "latency_ms": 2.10250000054657,
+      "error": null,
+      "details": {
+        "query": "prime factorization of 360",
+        "result": "ok=True intent='number_theory' variable='x' latex='360' steps=['Factorise 360 into primes:', '\\\\(2^3"
+      }
+    },
+    {
+      "name": "number-is-prime",
+      "category": "math_number_theory",
+      "success": true,
+      "latency_ms": 1.3838000004398054,
+      "error": null,
+      "details": {
+        "query": "is 97 prime",
+        "result": "ok=True intent='number_theory' variable='x' latex='\\\\text{prime}' steps=['Test whether 97 is prime.'"
+      }
+    },
+    {
+      "name": "number-divisors",
+      "category": "math_number_theory",
+      "success": true,
+      "latency_ms": 1.4885000000504078,
+      "error": null,
+      "details": {
+        "query": "divisors of 28",
+        "result": "ok=True intent='number_theory' variable='x' latex='1, 2, 4, 7, 14, 28' steps=['Divisors of 28:', '1,"
+      }
+    },
+    {
+      "name": "calc-diff-poly",
+      "category": "math_calculus",
+      "success": true,
+      "latency_ms": 10.769999999865831,
+      "error": null,
+      "details": {
+        "query": "differentiate x^3",
+        "result": "ok=True intent='calculus' variable='x' latex='3 x^{2}' steps=['Differentiate \\\\(x^{3}\\\\) with respec"
+      }
+    },
+    {
+      "name": "calc-diff-trig",
+      "category": "math_calculus",
+      "success": true,
+      "latency_ms": 7.314199999200355,
+      "error": null,
+      "details": {
+        "query": "differentiate sin(x)",
+        "result": "ok=True intent='calculus' variable='x' latex='\\\\cos{\\\\left(x \\\\right)}' steps=['Differentiate \\\\(\\\\s"
+      }
+    },
+    {
+      "name": "calc-int-indef",
+      "category": "math_calculus",
+      "success": true,
+      "latency_ms": 94.22849999918981,
+      "error": null,
+      "details": {
+        "query": "integrate x^2 dx",
+        "result": "ok=True intent='calculus' variable='x' latex='\\\\frac{x^{3}}{3}' steps=['Integrate \\\\(x^{2}\\\\) with r"
+      }
+    },
+    {
+      "name": "calc-int-definite-sin",
+      "category": "math_calculus",
+      "success": true,
+      "latency_ms": 20.608899999388086,
+      "error": null,
+      "details": {
+        "query": "integrate sin(x) dx from 0 to pi",
+        "result": "ok=True intent='calculus' variable='x' latex='\\\\int_{0}^{\\\\pi} \\\\sin{\\\\left(x \\\\right)}\\\\,dx = 2' st"
+      }
+    },
+    {
+      "name": "calc-int-definite-cos",
+      "category": "math_calculus",
+      "success": true,
+      "latency_ms": 11.101199999757227,
+      "error": null,
+      "details": {
+        "query": "integrate cos(x) dx from 0 to pi/2",
+        "result": "ok=True intent='calculus' variable='x' latex='\\\\int_{0}^{\\\\frac{\\\\pi}{2}} \\\\cos{\\\\left(x \\\\right)}\\\\"
+      }
+    },
+    {
+      "name": "calc-limit-sinc",
+      "category": "math_calculus",
+      "success": true,
+      "latency_ms": 12.316599999394384,
+      "error": null,
+      "details": {
+        "query": "limit sin(x)/x as x->0",
+        "result": "ok=True intent='calculus' variable='x' latex='1' steps=['\\\\(\\\\lim_{x \\\\to 0.0} \\\\frac{\\\\sin{\\\\left(x"
+      }
+    },
+    {
+      "name": "linalg-determinant",
+      "category": "math_linalg",
+      "success": true,
+      "latency_ms": 9.002899999359215,
+      "error": null,
+      "details": {
+        "query": "determinant of [[1,2],[3,4]]",
+        "result": "ok=True intent='linalg' variable='x' latex='-2' steps=['Compute \\\\(\\\\det\\\\left[\\\\begin{matrix}1 & 2\\"
+      }
+    },
+    {
+      "name": "linalg-inverse",
+      "category": "math_linalg",
+      "success": true,
+      "latency_ms": 9.965500000362226,
+      "error": null,
+      "details": {
+        "query": "inverse of [[1,2],[3,4]]",
+        "result": "ok=True intent='linalg' variable='x' latex='\\\\left[\\\\begin{matrix}-2 & 1\\\\\\\\\\\\frac{3}{2} & - \\\\frac{"
+      }
+    },
+    {
+      "name": "linalg-transpose",
+      "category": "math_linalg",
+      "success": true,
+      "latency_ms": 9.11309999992227,
+      "error": null,
+      "details": {
+        "query": "transpose of [[1,2,3],[4,5,6]]",
+        "result": "ok=True intent='linalg' variable='x' latex='\\\\left[\\\\begin{matrix}1 & 4\\\\\\\\2 & 5\\\\\\\\3 & 6\\\\end{matri"
+      }
+    },
+    {
+      "name": "complex-modulus",
+      "category": "math_complex",
+      "success": true,
+      "latency_ms": 29.391799999757495,
+      "error": null,
+      "details": {
+        "query": "modulus of 3+4i",
+        "result": "ok=True intent='complex' variable='x' latex='5' steps=['Modulus of \\\\(3 + 4 i\\\\):', '\\\\(= 5\\\\)'] exa"
+      }
+    },
+    {
+      "name": "complex-conjugate",
+      "category": "math_complex",
+      "success": true,
+      "latency_ms": 31.29700000044977,
+      "error": null,
+      "details": {
+        "query": "conjugate of 2+5i",
+        "result": "ok=True intent='complex' variable='x' latex='2 - 5 i' steps=['Conjugate of \\\\(2 + 5 i\\\\):', '\\\\(2 - "
+      }
+    },
+    {
+      "name": "stats-mean",
+      "category": "math_statistics",
+      "success": true,
+      "latency_ms": 1.861399999143032,
+      "error": null,
+      "details": {
+        "query": "mean of 1 2 3 4 5",
+        "result": "ok=True intent='statistics' variable='x_i' latex='3' steps=['Data: [1.0, 2.0, 3.0, 4.0, 5.0]', 'n = "
+      }
+    },
+    {
+      "name": "stats-median",
+      "category": "math_statistics",
+      "success": true,
+      "latency_ms": 2.3535999998784973,
+      "error": null,
+      "details": {
+        "query": "median of 3 1 4 1 5 9 2 6",
+        "result": "ok=True intent='statistics' variable='x_i' latex='3.5' steps=['Data: [3.0, 1.0, 4.0, 1.0, 5.0, 9.0, "
+      }
+    },
+    {
+      "name": "regression-line",
+      "category": "math_regression",
+      "success": true,
+      "latency_ms": 3171.5899999999237,
+      "error": null,
+      "details": {
+        "query": "line of best fit for (1,2),(2,4),(3,6),(4,8)",
+        "result": "ok=True intent='regression' variable='x' latex='y = 2*x' steps=['Fit a degree-1 polynomial to x = [1"
+      }
+    },
+    {
+      "name": "regression-correlation",
+      "category": "math_regression",
+      "success": true,
+      "latency_ms": 2.227599999969243,
+      "error": null,
+      "details": {
+        "query": "correlation of (1,2),(2,4),(3,6)",
+        "result": "ok=True intent='regression' variable='x' latex='r = 1' steps=['Pearson correlation of x = [1.0, 2.0,"
+      }
+    },
+    {
+      "name": "dist-binomial",
+      "category": "math_probability",
+      "success": true,
+      "latency_ms": 3.4018999995168997,
+      "error": null,
+      "details": {
+        "query": "binomial distribution n=10 p=0.5, P(X = 5)",
+        "result": "ok=True intent='distribution' variable='x' latex='0.246094' steps=['Binomial distribution.', 'n = 10"
+      }
+    },
+    {
+      "name": "dist-normal",
+      "category": "math_probability",
+      "success": true,
+      "latency_ms": 2.393199999460194,
+      "error": null,
+      "details": {
+        "query": "normal distribution mean=0 sd=1, P(X < 0)",
+        "result": "ok=True intent='distribution' variable='x' latex='0.5' steps=['Normal distribution.', '\u03bc = 0, \u03c3 = 1."
+      }
+    },
+    {
+      "name": "physics-kinetic-energy",
+      "category": "math_physics",
+      "success": true,
+      "latency_ms": 1.9888999995600898,
+      "error": null,
+      "details": {
+        "query": "kinetic energy of a 2 kg mass moving at 3 m/s",
+        "result": "ok=True intent='physics' variable='x' latex='E_k = \\\\tfrac{1}{2} m v^{2}' steps=['Identify the quant"
+      }
+    },
+    {
+      "name": "physics-gpe",
+      "category": "math_physics",
+      "success": true,
+      "latency_ms": 1.4031999999133404,
+      "error": null,
+      "details": {
+        "query": "gravitational potential energy of 5 kg at 10 m on earth",
+        "result": "ok=True intent='physics' variable='x' latex='E_p = m g h' steps=['Identify the quantity: gravitation"
+      }
+    },
+    {
+      "name": "physics-work",
+      "category": "math_physics",
+      "success": true,
+      "latency_ms": 1.1950999996770406,
+      "error": null,
+      "details": {
+        "query": "work done by a force of 10 N over 3 m",
+        "result": "ok=True intent='physics' variable='x' latex='W = F d' steps=['Identify the quantity: work done.', 'A"
+      }
+    },
+    {
+      "name": "physics-power",
+      "category": "math_physics",
+      "success": true,
+      "latency_ms": 1.3272999995024293,
+      "error": null,
+      "details": {
+        "query": "power when 100 J of work is done in 5 s",
+        "result": "ok=True intent='physics' variable='x' latex='P = \\\\frac{W}{t}' steps=['Identify the quantity: mechan"
+      }
+    },
+    {
+      "name": "physics-momentum",
+      "category": "math_physics",
+      "success": false,
+      "latency_ms": 0.8881000003384543,
+      "error": null,
+      "details": {
+        "query": "momentum of a 2 kg object moving at 3 m/s",
+        "result": "ok=True intent='physics' variable='x' latex='p = m v' steps=['Identify the quantity: momentum.', 'Ap"
+      }
+    },
+    {
+      "name": "physics-wavelength",
+      "category": "math_physics",
+      "success": true,
+      "latency_ms": 1.4077000005272566,
+      "error": null,
+      "details": {
+        "query": "wavelength of a wave with frequency 5 Hz and speed 20 m/s",
+        "result": "ok=True intent='physics' variable='x' latex='\\\\lambda = \\\\frac{v}{f}' steps=['Identify the quantity:"
+      }
+    },
+    {
+      "name": "physics-density",
+      "category": "math_physics",
+      "success": false,
+      "latency_ms": 1.2976999996681116,
+      "error": null,
+      "details": {
+        "query": "density of a 10 kg object with volume 2 m^3",
+        "result": "ok=True intent='physics' variable='x' latex='\\\\rho = \\\\frac{m}{V}' steps=['Identify the quantity: de"
+      }
+    },
+    {
+      "name": "physics-ohms-law",
+      "category": "math_physics",
+      "success": true,
+      "latency_ms": 1.077199999599543,
+      "error": null,
+      "details": {
+        "query": "voltage 12 V and resistance 3 ohm",
+        "result": "ok=True intent='physics' variable='x' latex='V = I R' steps=[\"Identify the quantity to find: Ohm's l"
+      }
+    },
+    {
+      "name": "chemistry-molar-mass-water",
+      "category": "math_chemistry",
+      "success": true,
+      "latency_ms": 0.5193000006329385,
+      "error": null,
+      "details": {
+        "query": "molar mass of H2O",
+        "result": "ok=True intent='chemistry' variable='x' latex='M(H2O) = 18.015\\\\ \\\\mathrm{g\\\\,mol^{-1}}' steps=['Mol"
+      }
+    },
+    {
+      "name": "chemistry-molar-mass-glucose",
+      "category": "math_chemistry",
+      "success": true,
+      "latency_ms": 0.11139999969600467,
+      "error": null,
+      "details": {
+        "query": "molar mass of glucose",
+        "result": "ok=True intent='chemistry' variable='x' latex='M(C6H12O6) = 180.156\\\\ \\\\mathrm{g\\\\,mol^{-1}}' steps="
+      }
+    },
+    {
+      "name": "chemistry-balance-iron",
+      "category": "math_chemistry",
+      "success": true,
+      "latency_ms": 1.6181999999389518,
+      "error": null,
+      "details": {
+        "query": "balance Fe + O2 = Fe2O3",
+        "result": "ok=True intent='chemistry' variable='x' latex='' steps=['Write the unbalanced equation.', 'Conserve "
+      }
+    },
+    {
+      "name": "chemistry-balance-methane",
+      "category": "math_chemistry",
+      "success": true,
+      "latency_ms": 1.979399999981979,
+      "error": null,
+      "details": {
+        "query": "balance CH4 + O2 = CO2 + H2O",
+        "result": "ok=True intent='chemistry' variable='x' latex='' steps=['Write the unbalanced equation.', 'Conserve "
+      }
+    },
+    {
+      "name": "chemistry-atomic-number",
+      "category": "math_chemistry",
+      "success": true,
+      "latency_ms": 0.30250000054365955,
+      "error": null,
+      "details": {
+        "query": "atomic number of gold",
+        "result": "ok=True intent='chemistry' variable='x' latex='' steps=['Gold (Au) is element number 79.', 'Category"
+      }
+    },
+    {
+      "name": "chemistry-moles-water",
+      "category": "math_chemistry",
+      "success": true,
+      "latency_ms": 0.18280000040249433,
+      "error": null,
+      "details": {
+        "query": "how many moles in 100 g of water",
+        "result": "ok=True intent='chemistry' variable='x' latex='' steps=['Molar mass of H2O = 18.015 g/mol.', 'n = m "
+      }
+    },
+    {
+      "name": "chemistry-mass-nacl",
+      "category": "math_chemistry",
+      "success": true,
+      "latency_ms": 0.15580000035697594,
+      "error": null,
+      "details": {
+        "query": "mass of 2 mol of NaCl",
+        "result": "ok=True intent='chemistry' variable='x' latex='' steps=['Molar mass of NaCl = 58.4398 g/mol.', 'm = "
+      }
+    },
+    {
+      "name": "series-basel",
+      "category": "math_series",
+      "success": true,
+      "latency_ms": 35.036199999922246,
+      "error": null,
+      "details": {
+        "query": "sum of 1/n^2 from n=1 to infinity",
+        "result": "ok=True intent='series' variable='n' latex='\\\\frac{\\\\pi^{2}}{6}' steps=['Evaluate the sum \\\\(\\\\sum_{"
+      }
+    },
+    {
+      "name": "physics-ideal-gas",
+      "category": "math_physics",
+      "success": true,
+      "latency_ms": 3.591700000470155,
+      "error": null,
+      "details": {
+        "query": "an ideal gas at 300 K and 100 kPa occupies 0.05 m^3, find the number of moles",
+        "result": "ok=True intent='physics' variable='x' latex='P V = n R T' steps=['Identify the quantity to find: ide"
+      }
+    },
+    {
+      "name": "series-taylor-sin",
+      "category": "math_series",
+      "success": true,
+      "latency_ms": 40.46329999982845,
+      "error": null,
+      "details": {
+        "query": "taylor series of sin(x)",
+        "result": "ok=True intent='series' variable='x' latex='\\\\frac{x^{5}}{120} - \\\\frac{x^{3}}{6} + x' steps=['Taylo"
+      }
+    },
+    {
+      "name": "physics-speed-of-light",
+      "category": "math_physics",
+      "success": true,
+      "latency_ms": 1.2006999995719525,
+      "error": null,
+      "details": {
+        "query": "what is the speed of light",
+        "result": "ok=True intent='physics' variable='x' latex='c = 299792458\\\\;m/s' steps=['Physical constant: speed o"
+      }
+    }
+  ]
+}

@@ -1,0 +1,454 @@
+{
+  "version": 1,
+  "description": "Golden problem set for the Jalora compute engine. Each entry pairs a natural-language query with the expected MathResult fields. The verification harness (app/services/verification.py) runs every query through app.services.math_engine.solve and checks the result per domain and pedagogical level. Expectations are ground-truth values (verified independently), not snapshots.",
+  "problems": [
+    {
+      "id": "arith-2plus2",
+      "domain": "arithmetic",
+      "level": "primary",
+      "query": "2+2",
+      "expect": {"ok": true, "intent": "arithmetic", "exact": "4", "verified": true}
+    },
+    {
+      "id": "arith-fraction-add",
+      "domain": "arithmetic",
+      "level": "primary",
+      "query": "1/2 + 1/3",
+      "expect": {"ok": true, "intent": "arithmetic", "exact": "5/6", "verified": true}
+    },
+    {
+      "id": "arith-square-12",
+      "domain": "arithmetic",
+      "level": "primary",
+      "query": "12 * 12",
+      "expect": {"ok": true, "intent": "arithmetic", "exact": "144", "verified": true}
+    },
+    {
+      "id": "arith-subtract",
+      "domain": "arithmetic",
+      "level": "primary",
+      "query": "100 - 37",
+      "expect": {"ok": true, "intent": "arithmetic", "exact": "63", "verified": true}
+    },
+    {
+      "id": "arith-power",
+      "domain": "arithmetic",
+      "level": "primary",
+      "query": "7^2",
+      "expect": {"ok": true, "intent": "arithmetic", "exact": "49", "verified": true}
+    },
+    {
+      "id": "arith-percent",
+      "domain": "arithmetic",
+      "level": "primary",
+      "query": "what is 20% of 150",
+      "expect": {"ok": true, "intent": "word_problem", "exact": "30", "verified": true}
+    },
+    {
+      "id": "combin-ncr",
+      "domain": "combinatorics",
+      "level": "primary",
+      "query": "nCr(5,2)",
+      "expect": {"ok": true, "intent": "statistics", "exact": "10", "verified": true}
+    },
+    {
+      "id": "number-fibonacci",
+      "domain": "number_theory",
+      "level": "primary",
+      "query": "fibonacci(10)",
+      "expect": {"ok": true, "intent": "number_theory", "exact": "55", "verified": true}
+    },
+    {
+      "id": "number-factorial",
+      "domain": "number_theory",
+      "level": "primary",
+      "query": "factorial(5)",
+      "expect": {"ok": true, "intent": "number_theory", "exact": "120", "verified": true}
+    },
+    {
+      "id": "algebra-linear-simple",
+      "domain": "algebra",
+      "level": "highschool",
+      "query": "x+1=4",
+      "expect": {"ok": true, "intent": "algebra", "exact": "x = 3", "verified": true}
+    },
+    {
+      "id": "algebra-linear-coeff",
+      "domain": "algebra",
+      "level": "highschool",
+      "query": "2x+3=7",
+      "expect": {"ok": true, "intent": "algebra", "exact": "x = 2", "verified": true}
+    },
+    {
+      "id": "algebra-linear-minus",
+      "domain": "algebra",
+      "level": "highschool",
+      "query": "3x-5=10",
+      "expect": {"ok": true, "intent": "algebra", "exact": "x = 5", "verified": true}
+    },
+    {
+      "id": "algebra-quadratic",
+      "domain": "algebra",
+      "level": "highschool",
+      "query": "x^2 - 5x + 6 = 0",
+      "expect": {"ok": true, "intent": "algebra", "exact": "x = 2, x = 3", "verified": true}
+    },
+    {
+      "id": "algebra-system-2x2",
+      "domain": "algebra",
+      "level": "highschool",
+      "query": "2x + 3y = 6 and x - y = 1",
+      "expect": {"ok": true, "intent": "algebra", "exact": "x = 9/5, y = 4/5", "verified": true}
+    },
+    {
+      "id": "algebra-expand",
+      "domain": "algebra",
+      "level": "highschool",
+      "query": "expand (x+1)^2",
+      "expect": {"ok": true, "intent": "arithmetic", "exact": "x**2 + 2*x + 1"}
+    },
+    {
+      "id": "algebra-factor",
+      "domain": "algebra",
+      "level": "highschool",
+      "query": "factor x^2 - 4",
+      "expect": {"ok": true, "intent": "arithmetic", "exact": "(x - 2)*(x + 2)"}
+    },
+    {
+      "id": "algebra-simplify",
+      "domain": "algebra",
+      "level": "highschool",
+      "query": "simplify (x^2 - 1)/(x - 1)",
+      "expect": {"ok": true, "intent": "arithmetic", "exact": "x + 1"}
+    },
+    {
+      "id": "trig-sin-pi2",
+      "domain": "trigonometry",
+      "level": "highschool",
+      "query": "sin(pi/2)",
+      "expect": {"ok": true, "intent": "arithmetic", "exact": "1", "verified": true}
+    },
+    {
+      "id": "geometry-circle-area",
+      "domain": "geometry",
+      "level": "highschool",
+      "query": "area of a circle with radius 3",
+      "expect": {"ok": true, "intent": "word_problem", "numeric_approx": 28.274334, "numeric_tol": 0.001, "units": "square units", "verified": true}
+    },
+    {
+      "id": "units-km-to-m",
+      "domain": "units",
+      "level": "highschool",
+      "query": "5 km to m",
+      "expect": {"ok": true, "intent": "units", "exact": "5000", "units": "m", "verified": true}
+    },
+    {
+      "id": "units-speed",
+      "domain": "units",
+      "level": "highschool",
+      "query": "100 km/h to m/s",
+      "expect": {"ok": true, "intent": "units", "numeric_approx": 27.7778, "numeric_tol": 0.001, "units": "m/s", "verified": true}
+    },
+    {
+      "id": "units-c-to-f",
+      "domain": "units",
+      "level": "highschool",
+      "query": "100 celsius to fahrenheit",
+      "expect": {"ok": true, "intent": "units", "exact": "212", "units": "°F", "verified": true}
+    },
+    {
+      "id": "units-f-to-c",
+      "domain": "units",
+      "level": "highschool",
+      "query": "32 fahrenheit to celsius",
+      "expect": {"ok": true, "intent": "units", "exact": "0", "units": "°C", "verified": true}
+    },
+    {
+      "id": "number-gcd",
+      "domain": "number_theory",
+      "level": "highschool",
+      "query": "gcd(12, 18)",
+      "expect": {"ok": true, "intent": "number_theory", "exact": "6", "verified": true}
+    },
+    {
+      "id": "number-lcm",
+      "domain": "number_theory",
+      "level": "highschool",
+      "query": "lcm(4,6)",
+      "expect": {"ok": true, "intent": "number_theory", "exact": "12", "verified": true}
+    },
+    {
+      "id": "number-prime-factor",
+      "domain": "number_theory",
+      "level": "highschool",
+      "query": "prime factorization of 360",
+      "expect": {"ok": true, "intent": "number_theory", "exact_contains": ["2^3", "3^2", "5"]}
+    },
+    {
+      "id": "number-is-prime",
+      "domain": "number_theory",
+      "level": "highschool",
+      "query": "is 97 prime",
+      "expect": {"ok": true, "intent": "number_theory", "exact": "prime", "verified": true}
+    },
+    {
+      "id": "number-divisors",
+      "domain": "number_theory",
+      "level": "highschool",
+      "query": "divisors of 28",
+      "expect": {"ok": true, "intent": "number_theory", "exact_contains": ["1", "2", "4", "7", "14", "28"]}
+    },
+    {
+      "id": "calc-diff-poly",
+      "domain": "calculus",
+      "level": "university",
+      "query": "differentiate x^3",
+      "expect": {"ok": true, "intent": "calculus", "exact": "3*x**2", "verified": true}
+    },
+    {
+      "id": "calc-diff-trig",
+      "domain": "calculus",
+      "level": "university",
+      "query": "differentiate sin(x)",
+      "expect": {"ok": true, "intent": "calculus", "exact": "cos(x)", "verified": true}
+    },
+    {
+      "id": "calc-int-indef",
+      "domain": "calculus",
+      "level": "university",
+      "query": "integrate x^2 dx",
+      "expect": {"ok": true, "intent": "calculus", "exact": "x**3/3", "verified": true}
+    },
+    {
+      "id": "calc-int-definite-sin",
+      "domain": "calculus",
+      "level": "university",
+      "query": "integrate sin(x) dx from 0 to pi",
+      "expect": {"ok": true, "intent": "calculus", "exact": "2", "verified": true}
+    },
+    {
+      "id": "calc-int-definite-cos",
+      "domain": "calculus",
+      "level": "university",
+      "query": "integrate cos(x) dx from 0 to pi/2",
+      "expect": {"ok": true, "intent": "calculus", "exact": "1", "verified": true}
+    },
+    {
+      "id": "calc-limit-sinc",
+      "domain": "calculus",
+      "level": "university",
+      "query": "limit sin(x)/x as x->0",
+      "expect": {"ok": true, "intent": "calculus", "exact": "1", "verified": true}
+    },
+    {
+      "id": "linalg-determinant",
+      "domain": "linalg",
+      "level": "university",
+      "query": "determinant of [[1,2],[3,4]]",
+      "expect": {"ok": true, "intent": "linalg", "exact": "-2", "verified": true}
+    },
+    {
+      "id": "linalg-inverse",
+      "domain": "linalg",
+      "level": "university",
+      "query": "inverse of [[1,2],[3,4]]",
+      "expect": {"ok": true, "intent": "linalg", "exact": "[-2, 1; 3/2, -1/2]", "verified": true}
+    },
+    {
+      "id": "linalg-transpose",
+      "domain": "linalg",
+      "level": "university",
+      "query": "transpose of [[1,2,3],[4,5,6]]",
+      "expect": {"ok": true, "intent": "linalg", "exact": "[1, 4; 2, 5; 3, 6]", "verified": true}
+    },
+    {
+      "id": "complex-modulus",
+      "domain": "complex",
+      "level": "university",
+      "query": "modulus of 3+4i",
+      "expect": {"ok": true, "intent": "complex", "exact": "5", "verified": true}
+    },
+    {
+      "id": "complex-conjugate",
+      "domain": "complex",
+      "level": "university",
+      "query": "conjugate of 2+5i",
+      "expect": {"ok": true, "intent": "complex", "exact_contains": ["2", "5i"]}
+    },
+    {
+      "id": "stats-mean",
+      "domain": "statistics",
+      "level": "university",
+      "query": "mean of 1 2 3 4 5",
+      "expect": {"ok": true, "intent": "statistics", "exact": "3", "verified": true}
+    },
+    {
+      "id": "stats-median",
+      "domain": "statistics",
+      "level": "university",
+      "query": "median of 3 1 4 1 5 9 2 6",
+      "expect": {"ok": true, "intent": "statistics", "exact": "3.5", "verified": true}
+    },
+    {
+      "id": "regression-line",
+      "domain": "regression",
+      "level": "university",
+      "query": "line of best fit for (1,2),(2,4),(3,6),(4,8)",
+      "expect": {"ok": true, "intent": "regression", "exact_contains": ["y =", "2"]}
+    },
+    {
+      "id": "regression-correlation",
+      "domain": "regression",
+      "level": "university",
+      "query": "correlation of (1,2),(2,4),(3,6)",
+      "expect": {"ok": true, "intent": "regression", "exact_contains": ["r =", "1"]}
+    },
+    {
+      "id": "dist-binomial",
+      "domain": "probability",
+      "level": "stem",
+      "query": "binomial distribution n=10 p=0.5, P(X = 5)",
+      "expect": {"ok": true, "intent": "distribution", "numeric_approx": 0.246094, "numeric_tol": 0.001, "verified": true}
+    },
+    {
+      "id": "dist-normal",
+      "domain": "probability",
+      "level": "stem",
+      "query": "normal distribution mean=0 sd=1, P(X < 0)",
+      "expect": {"ok": true, "intent": "distribution", "numeric_approx": 0.5, "numeric_tol": 0.001, "verified": true}
+    },
+    {
+      "id": "physics-kinetic-energy",
+      "domain": "physics",
+      "level": "stem",
+      "query": "kinetic energy of a 2 kg mass moving at 3 m/s",
+      "expect": {"ok": true, "intent": "physics", "exact": "9", "units": "J", "verified": true}
+    },
+    {
+      "id": "physics-gpe",
+      "domain": "physics",
+      "level": "stem",
+      "query": "gravitational potential energy of 5 kg at 10 m on earth",
+      "expect": {"ok": true, "intent": "physics", "numeric_approx": 490.332, "numeric_tol": 0.01, "units": "J", "verified": true}
+    },
+    {
+      "id": "physics-work",
+      "domain": "physics",
+      "level": "stem",
+      "query": "work done by a force of 10 N over 3 m",
+      "expect": {"ok": true, "intent": "physics", "exact": "30", "units": "J", "verified": true}
+    },
+    {
+      "id": "physics-power",
+      "domain": "physics",
+      "level": "stem",
+      "query": "power when 100 J of work is done in 5 s",
+      "expect": {"ok": true, "intent": "physics", "exact": "20", "units": "W", "verified": true}
+    },
+    {
+      "id": "physics-momentum",
+      "domain": "physics",
+      "level": "stem",
+      "query": "momentum of a 2 kg object moving at 3 m/s",
+      "expect": {"ok": true, "intent": "physics", "exact": "6", "units": "kg·m/s", "verified": true}
+    },
+    {
+      "id": "physics-wavelength",
+      "domain": "physics",
+      "level": "stem",
+      "query": "wavelength of a wave with frequency 5 Hz and speed 20 m/s",
+      "expect": {"ok": true, "intent": "physics", "exact": "4", "units": "m", "verified": true}
+    },
+    {
+      "id": "physics-density",
+      "domain": "physics",
+      "level": "stem",
+      "query": "density of a 10 kg object with volume 2 m^3",
+      "expect": {"ok": true, "intent": "physics", "exact": "5", "units": "kg/m³", "verified": true}
+    },
+    {
+      "id": "physics-ohms-law",
+      "domain": "physics",
+      "level": "stem",
+      "query": "voltage 12 V and resistance 3 ohm",
+      "expect": {"ok": true, "intent": "physics", "exact": "4", "units": "A", "verified": true}
+    },
+    {
+      "id": "chemistry-molar-mass-water",
+      "domain": "chemistry",
+      "level": "stem",
+      "query": "molar mass of H2O",
+      "expect": {"ok": true, "intent": "chemistry", "numeric_approx": 18.015, "numeric_tol": 0.01, "units": "g/mol", "verified": true}
+    },
+    {
+      "id": "chemistry-molar-mass-glucose",
+      "domain": "chemistry",
+      "level": "stem",
+      "query": "molar mass of glucose",
+      "expect": {"ok": true, "intent": "chemistry", "numeric_approx": 180.156, "numeric_tol": 0.01, "units": "g/mol", "verified": true}
+    },
+    {
+      "id": "chemistry-balance-iron",
+      "domain": "chemistry",
+      "level": "stem",
+      "query": "balance Fe + O2 = Fe2O3",
+      "expect": {"ok": true, "intent": "chemistry", "exact_contains": ["4 Fe", "3 O2", "2 Fe2O3"], "verified": true}
+    },
+    {
+      "id": "chemistry-balance-methane",
+      "domain": "chemistry",
+      "level": "stem",
+      "query": "balance CH4 + O2 = CO2 + H2O",
+      "expect": {"ok": true, "intent": "chemistry", "exact_contains": ["CH4", "2 O2", "CO2", "2 H2O"], "verified": true}
+    },
+    {
+      "id": "chemistry-atomic-number",
+      "domain": "chemistry",
+      "level": "stem",
+      "query": "atomic number of gold",
+      "expect": {"ok": true, "intent": "chemistry", "exact": "79", "verified": true}
+    },
+    {
+      "id": "chemistry-moles-water",
+      "domain": "chemistry",
+      "level": "stem",
+      "query": "how many moles in 100 g of water",
+      "expect": {"ok": true, "intent": "chemistry", "numeric_approx": 5.55093, "numeric_tol": 0.001, "units": "mol", "verified": true}
+    },
+    {
+      "id": "chemistry-mass-nacl",
+      "domain": "chemistry",
+      "level": "stem",
+      "query": "mass of 2 mol of NaCl",
+      "expect": {"ok": true, "intent": "chemistry", "numeric_approx": 116.88, "numeric_tol": 0.01, "units": "g", "verified": true}
+    },
+    {
+      "id": "series-basel",
+      "domain": "series",
+      "level": "postgrad",
+      "query": "sum of 1/n^2 from n=1 to infinity",
+      "expect": {"ok": true, "intent": "series", "exact_contains": ["pi**2", "6"], "verified": true}
+    },
+    {
+      "id": "physics-ideal-gas",
+      "domain": "physics",
+      "level": "postgrad",
+      "query": "an ideal gas at 300 K and 100 kPa occupies 0.05 m^3, find the number of moles",
+      "expect": {"ok": true, "intent": "physics", "numeric_approx": 2.00454, "numeric_tol": 0.001, "units": "mol", "verified": true}
+    },
+    {
+      "id": "series-taylor-sin",
+      "domain": "series",
+      "level": "professor",
+      "query": "taylor series of sin(x)",
+      "expect": {"ok": true, "intent": "series", "exact_contains": ["x"]}
+    },
+    {
+      "id": "physics-speed-of-light",
+      "domain": "physics",
+      "level": "professor",
+      "query": "what is the speed of light",
+      "expect": {"ok": true, "intent": "physics", "exact": "299792458", "units": "m/s", "verified": true}
+    }
+  ]
+}

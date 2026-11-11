@@ -1,0 +1,110 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.venv-scripts/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Logs (keep exception for important logs)
+backend-error.log
+backend2-error.log
+frontend-error.log
+backend/app.log
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads and generated files
+data/uploads/
+data/outputs/
+data/chroma/
+data/workspaces/
+
+# Environment files with secrets
+.env
+.env.local
+*.pem
+
+# Ollama
+ollama/
+
+# Node
+node_modules/
+package-lock.json
+yarn.lock
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Backup files
+*.bak
+*.backup
+
+# Local runtime artifacts
+*.log
+*.db-wal
+*.db-shm
+*.db.bak-*
+/data/*.db*
+/data/*.sqlite*
+/data/*.backup
+/data/*.bak*
+/backend/data/uploads/
+/backend/data/outputs/
+/backend/data/chroma/
+/backend/data/workspaces/
+/backend/tmp_verify_video.py
+/backend/fix_schemas.py
+/backend/*output*.txt
+/backend/collected_tests.txt
+/backend/test_results.txt
+/scripts/git_init.bat
+/plans/jalora-device-integration-payments-travel.md
+/PLAN-gmail-deleted-client.md
+/backups/
+/screenshots/
+
+# Local fine-tuning outputs
+/lora_adapters/**/checkpoints/
+/lora_adapters/**/*.safetensors
+/lora_adapters/**/*.bin
+/training results/
+/training_data/
+
+# Local test output and one-off verification scripts
+/frontend-react/playwright-debug-output/
+/frontend-react/playwright-report/
+/frontend-react/test-results/
+/frontend-react/debug-screenshot.png
