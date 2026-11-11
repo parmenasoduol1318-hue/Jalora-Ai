@@ -144,14 +144,22 @@ file (that folder has no production `package.json`). The
 install/build/output settings for Vercel. Keep the Vercel Root Directory set to
 `frontend-react`.
 
-The current frontend has **no required `VITE_*` environment variables**. Its API
-client calls relative paths such as `/api/auth/login` and its live voice socket
-uses the current frontend hostname. Do not add a made-up `VITE_API_URL`; the
-current code does not read one.
+HTTP API requests use relative paths such as `/api/auth/login` and are sent to
+Render by the Vercel rewrite in `vercel.json`. No HTTP API-base variable is
+needed. The live voice WebSocket connects directly to Render. Production
+defaults to the current Render backend; this optional Vercel build environment
+variable overrides that origin if the backend hostname changes:
 
-Therefore, there are no Jalora environment variables to add in **Vercel →
-Settings → Environment Variables** for the current frontend. Backend secrets
-and provider keys belong only in Render.
+| Vercel variable | Value |
+|---|---|
+| `VITE_API_WS_ORIGIN` | Optional override, e.g. `https://jalora-ai.onrender.com` (origin only; no `/api` suffix) |
+
+This value is public, not a secret. If you use it, set it in Vercel's
+Production (and Preview, if desired) environments and redeploy. Leave it unset
+for local Vite development; the WebSocket then uses the current page origin and
+the existing Vite `/api` proxy (which has WebSocket proxying enabled). Do not
+set `VITE_API_PROXY_TARGET` on Vercel; that variable only configures the local
+Vite development server.
 
 The `npm warn Unknown env config "cache-dir"` message is unrelated to the
 missing-lockfile failure. There is no project `.npmrc` setting for `cache-dir`
@@ -159,48 +167,49 @@ in this repository. If that warning persists in Vercel, check its project
 environment variables for an obsolete `npm_config_cache_dir` setting and
 remove it; do not replace the required `npm ci` command.
 
-Because the browser is on Vercel and the API is on Render, configure Vercel to
-proxy `/api/*` to the Render service. Put a `vercel.json` in the Vercel project
-root (`frontend-react/vercel.json`) with your actual Render hostname:
+The checked-in [`frontend-react/vercel.json`](../frontend-react/vercel.json)
+keeps the existing npm build settings and proxies every `/api/...` HTTP request
+to the Render backend. The rewrite preserves the request path and query string,
+so `/api/tasks?status=running` is forwarded as
+`https://jalora-ai.onrender.com/api/tasks?status=running`. Authorization
+headers, request bodies (including multipart uploads), and streaming responses
+are sent through this HTTP rewrite; authentication in this app uses bearer
+tokens, not cookies.
 
-```json
-{
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "rewrites": [
-    {
-      "source": "/api/:path*",
-      "destination": "https://jalora-api.onrender.com/api/:path*"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
-    }
-  ]
-}
-```
+The live voice WebSocket is **not** sent through the HTTP rewrite. The frontend
+uses `VITE_API_WS_ORIGIN` to connect with `wss://jalora-ai.onrender.com/api/voice/live`.
+Its JWT remains in the WebSocket query string because browser WebSocket APIs do
+not allow setting an Authorization header; the backend validates that token.
+The frontend repository has no WebSocket clients for the calls media endpoint
+or document-progress endpoint: calls media sockets are opened by the telephony
+provider, and document uploads currently use HTTP. Those backend endpoints
+remain on the Render host.
 
-The second rewrite supports client-side routes. Replace `jalora-api` with the
-actual Render service name. Commit this file and redeploy Vercel. The Vercel
-frontend domain should be added to Render's `JALORA_CORS_ORIGINS`.
+In **Render → Environment**, set `JALORA_CORS_ORIGINS` to the exact Vercel origin
+`https://jalora-ai.vercel.app` (and any custom Vercel domain you use), without
+wildcards. The app enables credentialed CORS, so a wildcard origin is not
+appropriate. The Vercel `/api` rewrite makes browser HTTP requests same-origin;
+this CORS allowlist is still the correct explicit backend policy for any direct
+browser-to-Render HTTP requests.
 
-**Live voice needs separate verification:** the current voice WebSocket URL is
-constructed from the Vercel hostname, while the backend runs on Render. Do not
-assume an HTTP rewrite also proxies WebSocket upgrades. If live voice is needed,
-use a WebSocket-capable proxy/custom domain or update the frontend to use a
-configurable backend WebSocket origin, then test a real call after deployment.
+At the time this guide was checked, a direct CORS preflight from
+`https://jalora-ai.vercel.app` to Render returned `400` without an
+`Access-Control-Allow-Origin` header. The Render environment variable must be
+updated in the dashboard and the service redeployed; this repository cannot
+change Render's live environment on your behalf.
 
 After both services deploy, check the backend directly and through the Vercel
 proxy:
 
 ```powershell
-curl.exe --fail https://jalora-api.onrender.com/api/health
-curl.exe --fail https://jalora.vercel.app/api/health
+curl.exe --fail https://jalora-ai.onrender.com/api/health
+curl.exe --fail https://jalora-ai.vercel.app/api/health
 ```
 
-Replace both hostnames with your actual service domains. Then test browser
-registration/login, one real model request, file upload/download, and any
-enabled OAuth callback. These checks are required because a successful static
-frontend build alone does not confirm the backend proxy or environment values.
+Then test browser registration/login, one real model request, file
+upload/download, streaming chat, and voice WebSocket against the deployed
+services. A successful frontend build does not prove that the Vercel rewrite or
+WebSocket setting is active.
 
 ## Optional Render environment variables
 
@@ -228,9 +237,13 @@ for services you enable, and put all backend settings in Render.
 
 1. Deploy the Render Web Service with the build/start commands above.
 2. Add the Render persistent disk and required environment variables.
-3. Configure Vercel's `frontend-react` root, build/output settings, and API rewrite.
-4. Configure production-only JWT/Fernet secrets, HTTPS URLs, CORS, and one model provider.
-5. Test the API health check and user flows through Vercel; confirm backup/restore.
+3. Configure Vercel's `frontend-react` root, build/output settings, and the
+   API WebSocket override only if you use a backend hostname other than the
+   production default.
+4. Configure Render's production secrets, HTTPS URLs, exact Vercel CORS origin,
+   persistent storage, and one model provider.
+5. Test API requests, streaming/upload flows, and authenticated WebSocket
+   behavior against the deployed services; confirm backup/restore.
 6. Review [`OPERATIONS-RUNBOOK.md`](./OPERATIONS-RUNBOOK.md) and
    [`PRODUCTION_READINESS_ASSESSMENT.md`](./PRODUCTION_READINESS_ASSESSMENT.md).
 

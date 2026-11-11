@@ -127,12 +127,26 @@ export function voiceLiveUrl(
   conversationId?: string | null,
   callId?: string | null,
 ): string {
-  const proto = window.location.protocol === "https:" ? "wss" : "ws";
-  const q = encodeURIComponent(token);
-  const conversation = conversationId
-    ? `&conversation_id=${encodeURIComponent(conversationId)}` : "";
-  const call = callId ? `&call_id=${encodeURIComponent(callId)}` : "";
-  return `${proto}://${window.location.host}/api/voice/live?token=${q}${conversation}${call}`;
+  const defaultBackendOrigin = import.meta.env.PROD
+    ? "https://jalora-ai.onrender.com"
+    : window.location.origin;
+  const backendOrigin = import.meta.env.VITE_API_WS_ORIGIN || defaultBackendOrigin;
+  const url = new URL(backendOrigin);
+  if (url.pathname !== "/" || url.search || url.hash) {
+    throw new Error("VITE_API_WS_ORIGIN must be an origin without a path or query.");
+  }
+  if (url.protocol === "https:") {
+    url.protocol = "wss:";
+  } else if (url.protocol === "http:" && window.location.protocol !== "https:") {
+    url.protocol = "ws:";
+  } else {
+    throw new Error("The voice backend must use HTTPS when Jalora is opened over HTTPS.");
+  }
+  url.pathname = "/api/voice/live";
+  url.searchParams.set("token", token);
+  if (conversationId) url.searchParams.set("conversation_id", conversationId);
+  if (callId) url.searchParams.set("call_id", callId);
+  return url.toString();
 }
 
 /* Phase J (§53-54): upload one or more files into the coding workspace.
