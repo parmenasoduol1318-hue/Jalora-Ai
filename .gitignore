@@ -62,6 +62,7 @@ ollama/
 node_modules/
 package-lock.json
 yarn.lock
+!frontend-react/package-lock.json
 
 # OS
 Thumbs.db
