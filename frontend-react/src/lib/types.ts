@@ -100,10 +100,17 @@ export interface OutreachQueueEntry {
   organization: string;
   recipient: string;
   status: string;
+  research_status: string;
+  approval_status: string;
+  sending_status: string;
+  verified_at?: string;
   source_url: string;
   source_title: string;
+  source_evidence?: string;
+  candidate_addresses?: string[];
   address_found_on_source: boolean;
   organization_match_on_source: boolean;
+  error?: string;
   approval_id?: string | null;
   draft?: {
     to?: string | null;
@@ -114,9 +121,11 @@ export interface OutreachQueueEntry {
     regards?: string | null;
     attachments?: Array<Record<string, unknown>> | null;
   } | null;
+  draft_preview?: OutreachQueueEntry["draft"];
   provider?: string;
   provider_message_id?: string;
   provider_thread_id?: string;
+  receipt_status?: string;
 }
 
 export interface Task {

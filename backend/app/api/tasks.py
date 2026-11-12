@@ -235,15 +235,91 @@ def _outreach_queue(
         if isinstance(message, AIMessage)
         for call in message.tool_calls or []
     }
+    tool_results_by_call_id: dict[str, Any] = {}
     page_results: dict[str, dict[str, Any]] = {}
+    contact_searches: dict[str, dict[str, Any]] = {}
+    contact_search_order: list[str] = []
+    for step in plan:
+        if not isinstance(step, dict) or step.get("tool") != "search_public_contacts":
+            continue
+        arguments = step.get("arguments")
+        organizations = (
+            arguments.get("organizations", [])
+            if isinstance(arguments, dict)
+            else []
+        )
+        for name in organizations:
+            organization = " ".join(str(name).split()).strip()
+            key = organization.casefold()
+            if organization and key not in contact_searches:
+                contact_search_order.append(organization)
+                contact_searches[key] = {
+                    "organization": organization,
+                    "results": [],
+                    "error": "",
+                    "searched": False,
+                }
+
     for message in messages:
         if not isinstance(message, ToolMessage):
             continue
         call = calls_by_id.get(message.tool_call_id)
-        if not isinstance(call, dict) or call.get("name") != "open_url":
+        if not isinstance(call, dict):
             continue
         result = _parse_tool_result(str(message.content or ""))
-        if not result.success or not isinstance(result.data, dict):
+        tool_results_by_call_id[message.tool_call_id] = result
+        if call.get("name") == "search_public_contacts":
+            arguments = call.get("args")
+            organizations = (
+                arguments.get("organizations", [])
+                if isinstance(arguments, dict)
+                else []
+            )
+            for name in organizations:
+                organization = " ".join(str(name).split()).strip()
+                if organization and organization.casefold() not in {
+                    item.casefold() for item in contact_search_order
+                }:
+                    contact_search_order.append(organization)
+                if organization:
+                    contact_searches.setdefault(organization.casefold(), {
+                        "organization": organization,
+                        "results": [],
+                        "error": "",
+                        "searched": False,
+                    })
+                    contact_searches[organization.casefold()]["searched"] = True
+            if isinstance(result.data, dict):
+                results_by_organization = result.data.get(
+                    "results_by_organization"
+                )
+                if isinstance(results_by_organization, dict):
+                    for name, items in results_by_organization.items():
+                        key = " ".join(str(name).split()).strip().casefold()
+                        if key in contact_searches and isinstance(items, list):
+                            contact_searches[key]["results"] = [
+                                item for item in items if isinstance(item, dict)
+                            ]
+                failures = result.data.get("failures")
+                if isinstance(failures, dict):
+                    for name, detail in failures.items():
+                        key = " ".join(str(name).split()).strip().casefold()
+                        if key in contact_searches:
+                            contact_searches[key]["error"] = str(detail)
+            if not result.success:
+                detail = (
+                    result.error.details
+                    if result.error is not None
+                    else result.message
+                )
+                for name in organizations:
+                    key = " ".join(str(name).split()).strip().casefold()
+                    if key in contact_searches and not contact_searches[key]["error"]:
+                        contact_searches[key]["error"] = detail
+            continue
+        if call.get("name") != "open_url" or not result.success or not isinstance(
+            result.data, dict
+        ):
             continue
         url = str(result.data.get("url") or "").strip()
         if url:
@@ -383,6 +459,50 @@ def _outreach_queue(
         else:
             status = step_status
 
+        matching_call = next(
+            (
+                calls_by_id[call_id]
+                for call_id in reversed(matching_call_ids)
+                if call_id in calls_by_id
+            ),
+            {},
+        )
+        matching_result = next(
+            (
+                tool_results_by_call_id[call_id]
+                for call_id in reversed(matching_call_ids)
+                if call_id in tool_results_by_call_id
+            ),
+            None,
+        )
+        if (
+            approval is None
+            and matching_result is not None
+            and not matching_result.success
+        ):
+            status = "failed"
+        draft_arguments = (
+            approval.arguments
+            if approval is not None and isinstance(approval.arguments, dict)
+            else matching_call.get("args")
+            if isinstance(matching_call.get("args"), dict)
+            else arguments
+            if isinstance(arguments, dict)
+            else {}
+        )
+        draft_preview = {
+            "to": str(draft_arguments.get("to") or recipient),
+            "cc": str(draft_arguments.get("cc") or ""),
+            "bcc": str(draft_arguments.get("bcc") or ""),
+            "subject": str(draft_arguments.get("subject") or ""),
+            "body": str(draft_arguments.get("body") or ""),
+            "regards": str(draft_arguments.get("regards") or ""),
+            "attachments": (
+                draft_arguments.get("attachments")
+                if isinstance(draft_arguments.get("attachments"), list)
+                else []
+            ),
+        }
         source_emails = (
             source_data.get("public_emails", [])
             if isinstance(source_data, dict)
@@ -395,12 +515,61 @@ def _outreach_queue(
                 organization, source_data
             )
         )
+        address_found_on_source = bool(
+            recipient
+            and isinstance(source_emails, list)
+            and any(
+                isinstance(address, str)
+                and address.strip().casefold() == recipient.casefold()
+                for address in source_emails
+            )
+        )
+        search_result = contact_searches.get(organization.casefold(), {})
+        search_candidates = search_result.get("results", [])
+        candidate_addresses = list(dict.fromkeys(
+            str(address).strip()
+            for candidate in search_candidates
+            if isinstance(candidate, dict)
+            for address in candidate.get("public_emails", [])
+            if isinstance(address, str) and address.strip()
+        ))
+        source_verified = address_found_on_source and organization_match_on_source
+        research_status = (
+            "research_pending" if not search_result.get("searched")
+            else "source_confirmed" if source_verified
+            else "source_mismatch" if source_data and not organization_match_on_source
+            else "no_email_found" if source_data and not source_emails
+            else "verification_pending" if search_candidates
+            else "search_failed" if search_result.get("error")
+            else "not_researched"
+        )
+        error = ""
+        if approval_status == "failed":
+            error = str(approval_result.get("error_code") or "EMAIL_SEND_FAILED")
+        elif approval_status == "outcome_unknown":
+            error = "The provider's send outcome could not be confirmed. Do not retry."
+        elif matching_result is not None and not matching_result.success:
+            error = (
+                matching_result.error.details
+                if matching_result.error is not None
+                else matching_result.message
+            )
+        elif search_result.get("error") and not search_candidates:
+            error = str(search_result["error"])
         queue.append({
             "position": len(queue) + 1,
             "plan_step_id": str(send_step.get("id") or ""),
             "organization": organization,
             "recipient": recipient,
             "status": status,
+            "research_status": research_status,
+            "approval_status": approval_status or "not_created",
+            "sending_status": status,
+            "verified_at": (
+                str(source_data.get("verified_at") or "")
+                if source_verified and isinstance(source_data, dict)
+                else ""
+            ),
             "source_url": (
                 str(source_data.get("url") or "")
                 if isinstance(source_data, dict)
@@ -411,41 +580,165 @@ def _outreach_queue(
                 if isinstance(source_data, dict)
                 else ""
             ),
-            "address_found_on_source": bool(
-                recipient
-                and isinstance(source_emails, list)
-                and any(
-                    isinstance(address, str)
-                    and address.strip().casefold() == recipient.casefold()
-                    for address in source_emails
-                )
+            "source_evidence": str(
+                (source_data or {}).get("contact_evidence")
+                or (source_data or {}).get("text")
+                or ""
             ),
+            "candidate_addresses": candidate_addresses,
+            "address_found_on_source": address_found_on_source,
             "organization_match_on_source": organization_match_on_source,
+            "error": error,
             "approval_id": approval.id if approval is not None else None,
-            "draft": (
-                {
-                    "to": str((approval.arguments or {}).get("to") or recipient),
-                    "cc": str((approval.arguments or {}).get("cc") or ""),
-                    "bcc": str((approval.arguments or {}).get("bcc") or ""),
-                    "subject": str((approval.arguments or {}).get("subject") or ""),
-                    "body": str((approval.arguments or {}).get("body") or ""),
-                    "regards": str((approval.arguments or {}).get("regards") or ""),
-                    "attachments": (
-                        (approval.arguments or {}).get("attachments")
-                        if isinstance(
-                            (approval.arguments or {}).get("attachments"), list
-                        )
-                        else []
-                    ),
-                }
-                if approval is not None and approval.status == "pending"
-                else None
-            ),
+            "draft": draft_preview if approval is not None and approval.status == "pending" else None,
+            "draft_preview": draft_preview if draft_preview["subject"] or draft_preview["body"] else None,
             "provider": str(provider_receipt.get("provider") or ""),
             "provider_message_id": str(provider_receipt.get("message_id") or ""),
             "provider_thread_id": str(provider_receipt.get("thread_id") or ""),
+            "receipt_status": str(provider_receipt.get("status") or ""),
         })
-    return queue
+
+    # Keep every requested organization visible even when the research found
+    # no usable address and the agent correctly created no send approval.
+    indexed_queue: dict[str, list[dict[str, Any]]] = {}
+    for item in queue:
+        indexed_queue.setdefault(item["organization"].casefold(), []).append(item)
+
+    ordered_queue: list[dict[str, Any]] = []
+    for organization in contact_search_order:
+        key = organization.casefold()
+        search_result = contact_searches.get(key, {})
+        search_candidates = search_result.get("results", [])
+        candidate_addresses = list(dict.fromkeys(
+            str(address).strip()
+            for candidate in search_candidates
+            if isinstance(candidate, dict)
+            for address in candidate.get("public_emails", [])
+            if isinstance(address, str) and address.strip()
+        ))
+        candidate_urls = {
+            str(candidate.get("url") or "").strip(): candidate
+            for candidate in search_candidates
+            if isinstance(candidate, dict)
+            and str(candidate.get("url") or "").strip().startswith(
+                ("https://", "http://")
+            )
+        }
+        source_data = next(
+            (
+                page_results[url]
+                for url in candidate_urls
+                if url in page_results
+                and _public_contact_page_matches_organization(
+                    organization, page_results[url]
+                )
+            ),
+            None,
+        )
+        source_emails = (
+            source_data.get("public_emails", [])
+            if isinstance(source_data, dict)
+            else []
+        )
+        search_candidate = next(iter(candidate_urls.values()), {})
+        if not search_result.get("searched"):
+            research_status = "research_pending"
+        elif source_data and source_emails:
+            research_status = "source_confirmed"
+        elif source_data:
+            research_status = "no_email_found"
+        elif candidate_urls:
+            research_status = "verification_pending"
+        elif search_result.get("error"):
+            research_status = "search_failed"
+        else:
+            research_status = "no_results"
+
+        organization_items = indexed_queue.pop(key, [])
+        if organization_items:
+            for item in organization_items:
+                item["position"] = len(ordered_queue) + 1
+                item["research_status"] = research_status if not item.get(
+                    "address_found_on_source"
+                ) else item["research_status"]
+                if not item.get("source_url"):
+                    item["source_url"] = str(
+                        (source_data or search_candidate).get("url") or ""
+                    )
+                    item["source_title"] = str(
+                        (source_data or search_candidate).get("title") or ""
+                    )
+                if not item.get("source_evidence"):
+                    item["source_evidence"] = str(
+                        (source_data or {}).get("contact_evidence")
+                        or search_candidate.get("snippet")
+                        or ""
+                    )
+                item["candidate_addresses"] = list(dict.fromkeys(
+                    [*item.get("candidate_addresses", []), *candidate_addresses]
+                ))
+                if source_data and item.get("research_status") == "source_confirmed":
+                    item["verified_at"] = str(source_data.get("verified_at") or "")
+                if not item.get("error") and search_result.get("error"):
+                    item["error"] = str(search_result["error"])
+                ordered_queue.append(item)
+            continue
+
+        verified_recipient = next(
+            (
+                str(address).strip()
+                for address in source_emails
+                if isinstance(address, str) and address.strip()
+            ),
+            "",
+        )
+        ordered_queue.append({
+            "position": len(ordered_queue) + 1,
+            "plan_step_id": "",
+            "organization": organization,
+            "recipient": verified_recipient,
+            "status": (
+                "ready_for_draft"
+                if verified_recipient
+                else research_status
+            ),
+            "research_status": research_status,
+            "approval_status": "not_created",
+            "sending_status": "not_started",
+            "verified_at": (
+                str(source_data.get("verified_at") or "")
+                if source_data and verified_recipient
+                else ""
+            ),
+            "source_url": str((source_data or search_candidate).get("url") or ""),
+            "source_title": str(
+                (source_data or search_candidate).get("title") or ""
+            ),
+            "source_evidence": str(
+                (source_data or {}).get("contact_evidence")
+                or search_candidate.get("snippet")
+                or ""
+            ),
+            "candidate_addresses": candidate_addresses,
+            "address_found_on_source": bool(
+                verified_recipient and source_data
+            ),
+            "organization_match_on_source": bool(source_data),
+            "error": str(search_result.get("error") or ""),
+            "approval_id": None,
+            "draft": None,
+            "draft_preview": None,
+            "provider": "",
+            "provider_message_id": "",
+            "provider_thread_id": "",
+            "receipt_status": "",
+        })
+
+    for remaining in indexed_queue.values():
+        for item in remaining:
+            item["position"] = len(ordered_queue) + 1
+            ordered_queue.append(item)
+    return ordered_queue
 
 
 @router.get("/tasks")

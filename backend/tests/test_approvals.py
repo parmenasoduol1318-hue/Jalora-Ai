@@ -745,6 +745,7 @@ def test_public_organization_outreach_is_approved_one_email_at_a_time(
                 "title": f"{organizations[recipients.index(recipient)]} contact",
                 "text": f"Contact: {recipient}",
                 "public_emails": [recipient],
+                "verified_at": "2025-01-02T03:04:05+00:00",
             },
         ).model_dump_json()
 
@@ -853,6 +854,8 @@ def test_public_organization_outreach_is_approved_one_email_at_a_time(
     )
     assert outreach_queue[0]["address_found_on_source"] is True
     assert outreach_queue[0]["organization_match_on_source"] is True
+    assert outreach_queue[0]["research_status"] == "source_confirmed"
+    assert outreach_queue[0]["verified_at"] == "2025-01-02T03:04:05+00:00"
     assert outreach_queue[0]["approval_id"] == first_approval["id"]
     assert outreach_queue[0]["draft"] == {
         "to": recipients[0],
@@ -933,7 +936,106 @@ def test_public_organization_outreach_is_approved_one_email_at_a_time(
     ), completed_queue
     assert all(item["provider_message_id"] for item in completed_queue[1:])
     assert all(item["address_found_on_source"] for item in completed_queue)
+    assert all(item["draft_preview"] for item in completed_queue)
+    assert all(item["receipt_status"] for item in completed_queue[1:])
     assert [item["source_url"] for item in completed_queue] == opened_urls
+
+
+def test_outreach_queue_keeps_unverified_research_results_visible(
+    client, fake_router, monkeypatch
+):
+    headers = _headers(client, "outreach-research-only@test.com")
+    from app.services import search_service
+
+    pending_org = "Pending Contact Example"
+    no_result_org = "No Results Example"
+    candidate_email = "hello@pending-example.org"
+    source_url = "https://pending-example.org/contact"
+
+    async def fake_search(query: str, max_results: int):
+        if pending_org in query:
+            return [search_service.SearchResult(
+                title=f"{pending_org} contact page",
+                url=source_url,
+                snippet=f"Contact the organization at {candidate_email}.",
+            )]
+        return []
+
+    monkeypatch.setattr(search_service, "search", fake_search)
+    organizations = [pending_org, no_result_org]
+    fake_router.script.append(AIMessage(content="", tool_calls=[{
+        "name": "update_plan",
+        "args": {"steps": [{
+            "id": "research-public-contacts",
+            "description": "Research the official public contact details.",
+            "tool": "search_public_contacts",
+            "arguments": {"organizations": organizations},
+            "dependencies": [],
+        }]},
+        "id": "research-only-plan",
+        "type": "tool_call",
+    }]))
+    fake_router.script.append(AIMessage(content="", tool_calls=[{
+        "name": "search_public_contacts",
+        "args": {"organizations": organizations},
+        "id": "research-only-search",
+        "type": "tool_call",
+    }]))
+    fake_router.script.append(
+        AIMessage(content="One contact needs verification; no other results were found.")
+    )
+
+    response = client.post("/api/chat", headers=headers, json={
+        "message": (
+            f"Research the public contact emails for {pending_org} and "
+            f"{no_result_org}; do not send any email."
+        ),
+    })
+    assert response.status_code == 200, response.text
+    task_id = response.json()["task_id"]
+    task_detail = client.get(f"/api/tasks/{task_id}", headers=headers)
+    assert task_detail.status_code == 200, task_detail.text
+    queue = task_detail.json()["outreach_queue"]
+
+    assert len(queue) == 2
+    assert [item["organization"] for item in queue] == organizations
+    assert queue[0]["research_status"] == "verification_pending"
+    assert queue[0]["status"] == "verification_pending"
+    assert queue[0]["recipient"] == ""
+    assert queue[0]["candidate_addresses"] == [candidate_email]
+    assert queue[0]["source_url"] == source_url
+    assert queue[0]["approval_id"] is None
+    assert queue[0]["draft_preview"] is None
+    assert queue[1]["research_status"] == "search_failed"
+    assert queue[1]["status"] == "search_failed"
+    assert queue[1]["recipient"] == ""
+    assert queue[1]["error"] == "The search provider returned no results."
+    assert task_detail.json()["approvals"] == []
+
+
+def test_outreach_queue_shows_planned_organizations_before_research():
+    from types import SimpleNamespace
+
+    from app.api.tasks import _outreach_queue
+
+    organizations = ["First Planned Organization", "Second Planned Organization"]
+    task = SimpleNamespace(plan=[{
+        "id": "public-contact-search",
+        "tool": "search_public_contacts",
+        "arguments": {"organizations": organizations},
+    }])
+
+    with SessionLocal() as db:
+        queue = _outreach_queue(task, None, [], db)
+
+    assert queue is not None
+    assert [item["organization"] for item in queue] == organizations
+    assert [item["status"] for item in queue] == [
+        "research_pending",
+        "research_pending",
+    ]
+    assert all(item["approval_status"] == "not_created" for item in queue)
+    assert all(item["sending_status"] == "not_started" for item in queue)
 
 
 def test_outreach_draft_can_be_skipped_after_backend_restart(

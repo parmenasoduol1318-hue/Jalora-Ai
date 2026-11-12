@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import datetime, timezone
 from typing import TypedDict
 from urllib.parse import urlsplit
 
@@ -401,6 +402,7 @@ async def open_url(url: str) -> ToolResult:
         f"Opened '{title}' ({len(text)} characters).",
         {"url": url, "title": title, "text": truncated, "total_chars": len(text),
          "public_emails": public_emails,
+         "verified_at": datetime.now(timezone.utc).isoformat(),
          "untrusted": True},
     )
 

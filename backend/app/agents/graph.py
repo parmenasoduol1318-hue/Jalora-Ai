@@ -4163,6 +4163,7 @@ def _compact_public_contact_page_result(raw: str) -> str:
         "public_emails": result.data.get("public_emails") or [],
         "contact_evidence": " ... ".join(evidence)[:1800],
         "total_chars": result.data.get("total_chars"),
+        "verified_at": result.data.get("verified_at"),
         "untrusted": result.data.get("untrusted", True),
     }
     return ToolResult.ok(

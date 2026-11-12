@@ -533,7 +533,7 @@ export function TasksView({
                 </div>
               )}
               {task.plan?.some((step) => step.tool === "search_public_contacts")
-                && task.plan.some((step) => step.tool === "send_email") && (
+                && (
                 <>
                   <button
                     className="btn small"
@@ -545,6 +545,31 @@ export function TasksView({
                   </button>
                   {outreachQueueTask === task.id && (
                     <div className="task-plan outreach-queue">
+                      {(() => {
+                        const queue = outreachQueues[task.id] || [];
+                        const researched = queue.filter((item) =>
+                          !["research_pending", "not_researched"].includes(
+                            item.research_status,
+                          ),
+                        ).length;
+                        const draftsReady = queue.filter((item) =>
+                          Boolean(item.draft_preview?.subject || item.draft_preview?.body),
+                        ).length;
+                        const approved = queue.filter((item) =>
+                          item.approval_status === "approved",
+                        ).length;
+                        const sent = queue.filter((item) =>
+                          item.sending_status === "sent",
+                        ).length;
+                        return (
+                          <div className="meta">
+                            {researched}/{queue.length} {t("outreachResearched")} ·{" "}
+                            {draftsReady} {t("outreachDraftsReady")} ·{" "}
+                            {approved} {t("outreachApproved")} ·{" "}
+                            {sent} {t("outreachSent")}
+                          </div>
+                        );
+                      })()}
                       {(outreachQueues[task.id] || []).map((item) => {
                         const statusLabel = item.status === "awaiting_approval"
                           ? t("stWaiting")
@@ -558,13 +583,40 @@ export function TasksView({
                                 ? t("outreachOutcomeUnknown")
                                 : item.status === "done"
                                   ? t("stCompleted")
-                                : t(LABEL[item.status] || item.status);
+                                    : item.status === "research_pending"
+                                      ? t("outreachResearchPending")
+                                    : item.status === "source_confirmed"
+                                      ? t("outreachSourceConfirmed")
+                                  : item.status === "verification_pending"
+                                    ? t("outreachVerificationPending")
+                                    : item.status === "no_email_found"
+                                      ? t("outreachNoEmailFound")
+                                      : item.status === "search_failed"
+                                        ? t("outreachSearchFailed")
+                                        : item.status === "no_results"
+                                          ? t("outreachNoResults")
+                                          : item.status === "source_mismatch"
+                                            ? t("outreachSourceMismatch")
+                                            : item.status === "ready_for_draft"
+                                              ? t("outreachReadyForDraft")
+                                              : t(LABEL[item.status] || item.status);
                         return (
-                          <div key={item.plan_step_id} className="plan-step">
+                          <div
+                            key={item.plan_step_id || `${item.organization}-${item.position}`}
+                            className="plan-step"
+                          >
                             <span className="plan-icon">{item.position}.</span>
                             <div className="plan-desc">
                               <strong>{item.organization || item.recipient}</strong>
-                              <div>{item.recipient} · {statusLabel}</div>
+                              <div>
+                                {item.recipient || t("outreachAddressMissing")} · {statusLabel}
+                              </div>
+                              {!item.recipient && item.candidate_addresses?.length ? (
+                                <div className="muted small">
+                                  {t("outreachUnverifiedCandidates")}:{" "}
+                                  {item.candidate_addresses.join(", ")}
+                                </div>
+                              ) : null}
                               {item.status === "outcome_unknown" && item.approval_id && (
                                 <button
                                   className="btn small"
@@ -582,6 +634,7 @@ export function TasksView({
                               {item.provider_message_id && (
                                 <div>
                                   {t("outreachProviderReceipt")}: {item.provider || "email"} · {item.provider_message_id}
+                                  {item.receipt_status ? ` · ${item.receipt_status}` : ""}
                                 </div>
                               )}
                               {item.source_url ? (
@@ -605,6 +658,48 @@ export function TasksView({
                                 {" · "}
                                 {t("outreachSourceCaveat")}
                               </small>
+                              {item.verified_at && (
+                                <div className="muted small">
+                                  {t("outreachVerifiedOn")}:{" "}
+                                  {new Date(item.verified_at).toLocaleString()}
+                                </div>
+                              )}
+                              {item.source_evidence && (
+                                <div className="muted small">{item.source_evidence}</div>
+                              )}
+                              {item.error && (
+                                <div className="error-bubble" style={{ marginTop: 6 }}>
+                                  {item.error}
+                                </div>
+                              )}
+                              {item.draft_preview && !item.draft && (
+                                <details className="approval-email-card">
+                                  <summary>{t("outreachDraftPreview")}</summary>
+                                  <strong>{item.draft_preview.subject}</strong>
+                                  <pre className="approval-email-textarea">
+                                    {item.draft_preview.body}
+                                  </pre>
+                                  {item.draft_preview.attachments?.length ? (
+                                    <div className="approval-email-attachments">
+                                      <strong>{t("attachments")}</strong>
+                                      {item.draft_preview.attachments.map(
+                                        (attachment, attachmentIndex) => (
+                                          <div
+                                            className="muted small"
+                                            key={`${String(attachment.filename || "attachment")}-${attachmentIndex}`}
+                                          >
+                                            {String(
+                                              attachment.filename
+                                              || attachment.name
+                                              || "attachment",
+                                            )}
+                                          </div>
+                                        ),
+                                      )}
+                                    </div>
+                                  ) : null}
+                                </details>
+                              )}
                               {item.approval_id && item.draft && (
                                 <div className="approval-email-card">
                                   <div className="approval-email-field">
