@@ -104,9 +104,11 @@ the requester's Jalora account. The link carries a high-entropy, short-lived
 pairing capability in its URL fragment. The target page exchanges that
 capability for the request details, then must explicitly approve or reject.
 The device token is issued only after approval, stored in that browser tab's
-session storage, and can be revoked from Integrations. Pairing links require a
-target-reachable `JALORA_PUBLIC_BASE_URL` (use HTTPS for a deployed service); a
-localhost link only works on that same computer.
+session storage, and can be revoked from Integrations. Pairing links open the
+frontend configured by `JALORA_FRONTEND_BASE_URL`; keep this separate from
+`JALORA_PUBLIC_BASE_URL`, which identifies the backend. On the deployed app use
+`https://jalora-ai.vercel.app` for the frontend URL. Locally, an empty frontend
+URL falls back to the local public base URL.
 
 To pair the browser currently in use, choose **Pair this browser/device** and
 open the approval link in its new tab. To pair a different device, choose

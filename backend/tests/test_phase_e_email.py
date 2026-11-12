@@ -298,7 +298,8 @@ def test_gmail_redirect_uri_explicit_override_wins(email_settings):
 def test_gmail_callback_redirects_browser_on_google_error(client, email_settings):
     email_settings(JALORA_GMAIL_CLIENT_ID="client_test_42",
                    JALORA_GMAIL_CLIENT_SECRET="secret_test_42",
-                   JALORA_PUBLIC_BASE_URL="https://app.example.com")
+                   JALORA_PUBLIC_BASE_URL="https://jalora-ai.onrender.com",
+                   JALORA_FRONTEND_BASE_URL="https://jalora-ai.vercel.app")
     resp = client.get(
         "/api/integrations/gmail/callback",
         params={"error": "access_denied"},
@@ -307,7 +308,7 @@ def test_gmail_callback_redirects_browser_on_google_error(client, email_settings
     )
     assert resp.status_code == 302
     assert resp.headers["location"] == \
-        "https://app.example.com/?gmail=error&reason=access_denied"
+        "https://jalora-ai.vercel.app/?gmail=error&reason=access_denied"
 
     # missing code/state also redirect browsers, while API clients get JSON
     for _ in range(2):
@@ -320,10 +321,31 @@ def test_gmail_callback_redirects_browser_on_google_error(client, email_settings
         assert api_resp.json()["error"]["code"] == "OAUTH_DENIED"
 
 
+def test_gmail_callback_keeps_local_spa_redirect_when_frontend_url_is_unset(
+        client, email_settings):
+    email_settings(
+        JALORA_PUBLIC_BASE_URL="http://localhost:5173",
+        JALORA_FRONTEND_BASE_URL="",
+    )
+    response = client.get(
+        "/api/integrations/gmail/callback",
+        params={"error": "access_denied"},
+        headers={"Accept": "text/html"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == (
+        "http://localhost:5173/?gmail=error&reason=access_denied"
+    )
+
+
 def test_gmail_callback_redirects_browser_on_success(
         client, auth_headers, email_settings, monkeypatch):
     email_settings(JALORA_GMAIL_CLIENT_ID="client_test_42",
-                   JALORA_GMAIL_CLIENT_SECRET="secret_test_42")
+                   JALORA_GMAIL_CLIENT_SECRET="secret_test_42",
+                   JALORA_PUBLIC_BASE_URL="https://jalora-ai.onrender.com",
+                   JALORA_FRONTEND_BASE_URL="https://jalora-ai.vercel.app")
     env = _register_user(client, auth_headers)
 
     start = client.post("/api/integrations/gmail/start", headers=env["headers"])
@@ -342,7 +364,9 @@ def test_gmail_callback_redirects_browser_on_success(
     )
     assert resp.status_code == 302
     loc = resp.headers["location"]
-    assert loc.startswith(f"{get_settings().public_base_url.rstrip('/')}/?gmail=connected&email=")
+    assert loc.startswith(
+        "https://jalora-ai.vercel.app/?gmail=connected&email="
+    )
     assert "jaloraai1318%40gmail.com" in loc
 
 

@@ -138,6 +138,53 @@ def test_oauth_callback_stores_encrypted_tokens(client, auth_headers,
         assert "plain-access" not in res.text
 
 
+def test_oauth_browser_callback_returns_to_integrations_and_shows_connected(
+        client, auth_headers, oauth_settings, monkeypatch):
+    headers = auth_headers("calendar-browser-oauth@test.com")
+    oauth_settings(
+        JALORA_GMAIL_CLIENT_ID="cid_test",
+        JALORA_GMAIL_CLIENT_SECRET="csec_test",
+        JALORA_PUBLIC_BASE_URL="https://jalora-ai.onrender.com",
+        JALORA_FRONTEND_BASE_URL="",
+    )
+    start = client.post(
+        "/api/integrations/calendar/connect", headers=headers
+    )
+    state = parse_qs(urlparse(start.json()["authorization_url"]).query)["state"][0]
+
+    async def _fake_exchange(provider, code, **kwargs):
+        assert provider == "calendar" and code == "the-code"
+        return {
+            "access_token": "plain-access",
+            "refresh_token": "plain-refresh",
+            "expires_in": 3600,
+        }
+
+    async def _fake_account(provider, token):
+        return "me@example.com"
+
+    monkeypatch.setattr(oauth_service, "exchange_code", _fake_exchange)
+    monkeypatch.setattr(oauth_service, "fetch_account", _fake_account)
+
+    response = client.get(
+        "/api/integrations/oauth/callback",
+        params={"provider": "calendar", "code": "the-code", "state": state},
+        headers={"Accept": "text/html"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == (
+        "https://jalora-ai.vercel.app/"
+        "?integration=connected&provider=calendar"
+    )
+    cards = client.get(
+        "/api/integrations/providers", headers=headers
+    ).json()["providers"]
+    calendar = next(card for card in cards if card["name"] == "calendar")
+    assert calendar["connected"] is True
+
+
 def test_oauth_callback_rejects_bad_state(client, auth_headers, oauth_settings):
     oauth_settings(JALORA_GMAIL_CLIENT_ID="cid_test",
                    JALORA_GMAIL_CLIENT_SECRET="csec_test")

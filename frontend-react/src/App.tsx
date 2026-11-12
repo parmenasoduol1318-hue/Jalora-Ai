@@ -162,7 +162,7 @@ export default function App() {
     } else if (integration === "connected") {
       const label = provider ? provider.charAt(0).toUpperCase() + provider.slice(1) : "";
       toast(`${label} ${t("integrationConnected")}`.trim());
-      setView(provider === "calendar" ? "calendar" : "integrations");
+      setView("integrations");
     } else {
       toast(t("integrationConnectError"), true);
       setView("integrations");

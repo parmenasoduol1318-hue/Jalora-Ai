@@ -41,8 +41,10 @@ Set an explicit `JALORA_GMAIL_REDIRECT_URI` only to override it:
 
 - Dev with Vite proxy (default): nothing to change.
 - Backend-served SPA on `:8000`: `JALORA_PUBLIC_BASE_URL=http://localhost:8000`.
-- Production: `JALORA_PUBLIC_BASE_URL=https://app.example.com` and register that
-  callback in the console.
+- Production: set `JALORA_PUBLIC_BASE_URL` to the Render backend URL and register
+  that callback in the console. Set `JALORA_FRONTEND_BASE_URL` to the deployed
+  SPA URL (`https://jalora-ai.vercel.app`) so successful and failed OAuth flows
+  return to Integrations instead of the backend root/health page.
 
 ## Verify
 
@@ -51,7 +53,8 @@ Set an explicit `JALORA_GMAIL_REDIRECT_URI` only to override it:
 - On startup the backend logs the effective redirect URI and warns if it points
   at localhost in production.
 - Connect from the Integrations page, sign in, and confirm the browser is
-  redirected back to the SPA with a "Gmail connected" toast.
+  redirected back to the SPA with a "Gmail connected" toast and the account
+  shown as connected in Integrations.
 
 ## API clients
 

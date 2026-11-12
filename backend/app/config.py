@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -349,6 +350,10 @@ class Settings(BaseSettings):
     # Single source for public URLs: the OAuth callback derives from it, so dev
     # (:5173 Vite) / served (:8000) / deployed only differ by this one value.
     public_base_url: str = "http://localhost:5173"
+    # Browser destination after an OAuth flow or device pairing is completed.
+    # Keep distinct from public_base_url, which must remain the backend origin
+    # for provider callbacks.
+    frontend_base_url: str | None = None
 
     # Phase E (§34-38, §76): Gmail OAuth2. The official sending address for
     # the app is the default; client id/secret are real credentials and must
@@ -531,6 +536,17 @@ class Settings(BaseSettings):
         URL on each provider's OAuth app.
         """
         return f"{self.public_base_url.rstrip('/')}/api/integrations/oauth/callback"
+
+    @property
+    def spa_base_url(self) -> str:
+        """Return the browser app origin, keeping backend callback URLs separate."""
+        if self.frontend_base_url:
+            return self.frontend_base_url.rstrip("/")
+
+        public_base = self.public_base_url.rstrip("/")
+        if urlsplit(public_base).hostname in {"localhost", "127.0.0.1", "::1"}:
+            return public_base
+        return "https://jalora-ai.vercel.app"
 
     @property
     def cors_origin_list(self) -> list[str]:

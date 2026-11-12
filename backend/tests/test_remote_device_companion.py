@@ -1,6 +1,7 @@
 from hashlib import sha256
 from urllib.parse import parse_qs, urlsplit
 
+from app.config import get_settings
 from app.database.session import SessionLocal
 from app.models.device import DeviceConnection
 
@@ -16,6 +17,21 @@ def _pair_request(client, headers, name="My phone"):
             "consent_confirmed": True,
         },
     )
+
+
+def test_device_pairing_link_uses_frontend_origin(client, auth_headers, monkeypatch):
+    monkeypatch.setenv(
+        "JALORA_FRONTEND_BASE_URL", "https://jalora-ai.vercel.app"
+    )
+    get_settings.cache_clear()
+    try:
+        response = _pair_request(client, auth_headers("pair-url@test.com"))
+        assert response.status_code == 200, response.text
+        pairing_url = response.json()["pairing_url"]
+        assert urlsplit(pairing_url).netloc == "jalora-ai.vercel.app"
+        assert urlsplit(pairing_url).path == "/device-companion"
+    finally:
+        get_settings.cache_clear()
 
 
 def test_target_must_approve_pair_request_before_device_is_created(client, auth_headers):

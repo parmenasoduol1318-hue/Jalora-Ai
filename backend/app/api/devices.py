@@ -478,7 +478,7 @@ def create_device_pair_request(
     db.add(pair)
     db.commit()
     db.refresh(pair)
-    base_url = get_settings().public_base_url.rstrip("/")
+    base_url = get_settings().spa_base_url
     pairing_fragment = urlencode({
         "pair_request_id": pair.id,
         "pair_code": code,

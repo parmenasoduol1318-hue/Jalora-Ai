@@ -344,7 +344,7 @@ def _wants_html(request: Request) -> bool:
 
 def _spa_redirect(**params: str) -> RedirectResponse:
     """Send the browser back to the SPA with a status the UI can toast."""
-    base = get_settings().public_base_url.rstrip("/")
+    base = get_settings().spa_base_url
     query = urlencode({k: v for k, v in params.items() if v})
     return RedirectResponse(f"{base}/?{query}", status_code=302)
 
