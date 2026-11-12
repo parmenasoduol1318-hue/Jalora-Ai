@@ -87,6 +87,54 @@ def test_device_scope_catalog_matches_supported_browser_companion_permissions(
     assert "cannot inspect or operate other apps" in result["note"]
 
 
+def test_device_capability_inventory_is_live_scoped_and_honest(client, auth_headers):
+    assert client.get("/api/devices/capabilities").status_code == 401
+    headers = auth_headers("device-capabilities@test.com")
+    other_headers = auth_headers("other-device-capabilities@test.com")
+    owned = _create_device(
+        client,
+        headers,
+        scopes=[
+            "messages.read",
+            "messages.draft",
+            "messages.send",
+        ],
+    )
+    other = _create_device(client, other_headers)
+    assert owned.status_code == 200, owned.text
+    assert other.status_code == 200, other.text
+    own_device = owned.json()
+
+    heartbeat = client.get(
+        "/api/devices/actions",
+        headers={"Authorization": f"Bearer {own_device['device_token']}"},
+    )
+    assert heartbeat.status_code == 200, heartbeat.text
+
+    response = client.get("/api/devices/capabilities", headers=headers)
+    assert response.status_code == 200, response.text
+    inventory = response.json()
+    assert inventory["schema_version"] == 1
+    assert [device["id"] for device in inventory["devices"]] == [own_device["id"]]
+    device = inventory["devices"][0]
+    assert device["status"] == "online"
+    capabilities = {
+        item["operation"]: item
+        for item in device["companion_capabilities"]
+    }
+    for operation in ("messages.receive", "messages.draft", "messages.send"):
+        assert capabilities[operation]["status"] == "registered_unavailable"
+    assert capabilities["messages.send"]["approval_required"] is True
+    assert capabilities["browser.open_url"]["status"] == "permission_required"
+    assert all(
+        item["status"] == "unsupported"
+        for item in device["unsupported_operations"]
+    )
+    assert "cannot inspect screens" in " ".join(inventory["limitations"]).lower()
+    assert "device_token" not in str(inventory)
+    assert own_device["device_token"] not in str(inventory)
+
+
 def test_device_message_reply_is_edited_approved_and_delivered(client, auth_headers):
     user_headers = auth_headers("device-flow@test.com")
     created = _create_device(client, user_headers)

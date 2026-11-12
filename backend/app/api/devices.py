@@ -300,14 +300,20 @@ def _require_local_windows(request: Request) -> None:
             "Local app control currently supports Windows only.",
             "LOCAL_APP_CONTROL_UNSUPPORTED",
         )
-    if get_settings().env.lower() == "test":
-        return
-    client_host = request.client.host if request.client else ""
-    if not _is_loopback_host(client_host) or not _is_loopback_origin(request):
+    if not _local_control_available(request):
         raise ForbiddenError(
             "Local app control requests must come from this computer.",
             "LOCAL_APP_CONTROL_LOCALHOST_ONLY",
         )
+
+
+def _local_control_available(request: Request) -> bool:
+    if sys.platform != "win32":
+        return False
+    if get_settings().env.lower() == "test":
+        return True
+    client_host = request.client.host if request.client else ""
+    return _is_loopback_host(client_host) and _is_loopback_origin(request)
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -380,15 +386,26 @@ def list_device_scopes():
     }
 
 
+@router.get("/capabilities")
+def get_device_capabilities(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.device_capabilities import discover_device_capabilities
+
+    return discover_device_capabilities(
+        db,
+        user.id,
+        local_windows_available=_local_control_available(request),
+    )
+
+
 @router.get("/local/status", dependencies=[Depends(get_current_user)])
 def local_control_status(
     request: Request,
 ):
-    client_host = request.client.host if request.client else ""
-    local_client = _is_loopback_host(client_host) and _is_loopback_origin(request)
-    supported = sys.platform == "win32" and (
-        local_client or get_settings().env.lower() == "test"
-    )
+    supported = _local_control_available(request)
     return {
         "available": supported,
         "platform": sys.platform,

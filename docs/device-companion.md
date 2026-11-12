@@ -163,7 +163,23 @@ All companion requests use `Authorization: Bearer <device_token>`.
 5. The user can revoke a device with `DELETE /api/devices/{device_id}`.
    Revocation immediately invalidates its token and prevents further polling.
 
-Keep message content only as long as needed. The signed-in user can remove
+   ## Capability discovery
+
+   The authenticated user can query `GET /api/devices/capabilities` for a
+   user-scoped inventory of paired-device status, granted operation scopes,
+   registered Windows local apps, connected cloud integrations, and central
+   browser/research tools. The same read-only inventory is available to the
+   central agent through `discover_available_device_capabilities`.
+
+   The response distinguishes `available`, `offline`, `permission_required`,
+   `registered_unavailable`, and `unsupported`. In particular, message inbox and
+   reply endpoints being registered does not mean the current browser companion
+   can access OS notifications or deliver replies; that requires a native
+   companion. Pairing never implies installed-app discovery, screen inspection,
+   or native UI control. Windows controls are listed only when the authenticated
+   request is loopback to a Windows-hosted backend.
+
+   Keep message content only as long as needed. The signed-in user can remove
 individual messages from the device messages panel. A native client must
 request only the OS permissions it needs and must honor notification privacy
 settings and locked-screen redaction.

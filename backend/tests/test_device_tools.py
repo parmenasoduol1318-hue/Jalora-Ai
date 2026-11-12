@@ -4,7 +4,15 @@ import pytest
 
 from app.context import ToolContext, set_tool_context
 from app.tools import device_tools
-from app.tools.base import PermissionLevel
+from app.tools.base import PermissionLevel, registry
+
+
+def test_device_discovery_is_registered_as_read_only_central_tool():
+    spec = registry.get("discover_available_device_capabilities")
+    assert spec is not None
+    assert spec.permission == PermissionLevel.AUTO
+    assert spec.side_effect == "read_only"
+    assert "discovery" in spec.tags
 
 
 @pytest.mark.asyncio
@@ -91,6 +99,7 @@ def test_local_app_agent_tools_require_explicit_approval():
         "open_youtube": PermissionLevel.AUTO,
         "assist_device_message": PermissionLevel.AUTO,
         "save_device_reply_draft": PermissionLevel.AUTO,
+        "discover_available_device_capabilities": PermissionLevel.AUTO,
         "delete_device_message": PermissionLevel.STRICT,
     }
     for name, permission in expected_permissions.items():

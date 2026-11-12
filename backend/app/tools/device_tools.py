@@ -29,6 +29,27 @@ from app.tools.base import PermissionLevel, registry
 logger = logging.getLogger("jalora.device_tools")
 
 
+async def discover_available_device_capabilities() -> ToolResult:
+    """List this user's paired devices, connected APIs, and supported controls.
+
+    The result distinguishes currently available operations from unsupported
+    screen-control features so the central agent can choose an honest route.
+    """
+    context = get_tool_context()
+    from app.services.device_capabilities import discover_device_capabilities
+
+    with SessionLocal() as db:
+        inventory = discover_device_capabilities(
+            db,
+            context.user_id,
+            local_windows_available=sys.platform == "win32",
+        )
+    return ToolResult.ok(
+        "Discovered the user's paired devices, local controls, and connected integrations.",
+        inventory,
+    )
+
+
 def _normalized_app_name(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold()
 
@@ -510,6 +531,14 @@ async def delete_device_message(message_id: str) -> ToolResult:
         {"message_id": message_id, "deleted": True},
     )
 
+
+registry.register(
+    discover_available_device_capabilities,
+    permission=PermissionLevel.AUTO,
+    category="device_control",
+    tags=["device", "discovery", "read"],
+    side_effect="read_only",
+)
 
 registry.register(
     open_local_app,
