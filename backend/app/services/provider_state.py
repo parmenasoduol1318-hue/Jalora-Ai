@@ -21,7 +21,7 @@ from app.services.model_router import AUTO_PRIORITY
 # Settings UI so users can connect per-user keys or disable them.
 _PROVIDERS_BEYOND_ROUTER = [
     "lmstudio", "jan", "cohere", "cerebras", "perplexity", "poolside",
-    "copilot", "codex",
+    "nvidia", "copilot", "codex",
 ]
 PROVIDER_NAMES: tuple[str, ...] = tuple(list(AUTO_PRIORITY) + _PROVIDERS_BEYOND_ROUTER)
 

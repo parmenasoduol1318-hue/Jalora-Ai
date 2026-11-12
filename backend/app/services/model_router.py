@@ -166,6 +166,8 @@ def build_provider_specs(s: Settings) -> dict[str, ProviderSpec]:
                                 s.mistral_api_key, s.mistral_model, s.mistral_model),
         "openrouter": ProviderSpec("openrouter", "openai", "https://openrouter.ai/api/v1",
                                    s.openrouter_api_key, s.openrouter_model, s.openrouter_model),
+        "nvidia": ProviderSpec("nvidia", "openai", "https://integrate.api.nvidia.com/v1",
+                               s.nvidia_api_key, s.nvidia_model, s.nvidia_model),
         "ollama": ProviderSpec("ollama", "openai", f"{s.ollama_base_url.rstrip('/')}/v1",
                                None, s.ollama_model, s.ollama_model, requires_key=False),
     }

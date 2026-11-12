@@ -72,6 +72,7 @@ export function DashboardView({ t, ramRoute }: Props) {
     openrouter: "openrouter", ollama: "ollama",
     lmstudio: "lmstudio", jan: "jan",
     cohere: "cohere", cerebras: "cerebras", perplexity: "perplexity",
+    nvidia: "nvidia",
   };
 
   return (

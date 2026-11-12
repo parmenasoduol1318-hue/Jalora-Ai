@@ -68,10 +68,13 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-chat"
 
     mistral_api_key: str | None = None
-    mistral_model: str = "mistral-large-latest"
+    mistral_model: str = "mistral-small-latest"
 
     openrouter_api_key: str | None = None
-    openrouter_model: str = "openai/gpt-4o-mini"
+    openrouter_model: str = "openrouter/free"
+
+    nvidia_api_key: str | None = None
+    nvidia_model: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
 
     # Agent chat generation limits. Long research, computation, and artifact
     # workflows need more time and output room; both remain bounded/configurable.
@@ -105,7 +108,7 @@ class Settings(BaseSettings):
 
     # Cerebras Cloud — cloud provider with OpenAI-compatible endpoint.
     cerebras_api_key: str | None = None
-    cerebras_model: str = "llama3.1-70b"
+    cerebras_model: str = "qwen-3.8-27b"
 
     # Perplexity — cloud provider with OpenAI-compatible endpoint.
     perplexity_api_key: str | None = None
@@ -480,7 +483,8 @@ class Settings(BaseSettings):
     # credentials added in the Creative Studio image-generation work.
     @field_validator("openai_api_key", "anthropic_api_key", "google_api_key",
                      "groq_api_key", "deepseek_api_key", "mistral_api_key",
-                     "openrouter_api_key", "cohere_api_key", "cerebras_api_key",
+                     "openrouter_api_key", "nvidia_api_key", "cohere_api_key",
+                     "cerebras_api_key",
                      "perplexity_api_key", "poolside_api_key", "tavily_api_key",
                      "credentials_encryption_key", "gmail_client_id",
                      "gmail_client_secret", "gmail_redirect_uri",
@@ -547,6 +551,7 @@ class Settings(BaseSettings):
             "deepseek": (self.deepseek_api_key is not None, self.deepseek_model),
             "mistral": (self.mistral_api_key is not None, self.mistral_model),
             "openrouter": (self.openrouter_api_key is not None, self.openrouter_model),
+            "nvidia": (self.nvidia_api_key is not None, self.nvidia_model),
             "poolside": (self.poolside_api_key is not None, self.poolside_model),
             "lmstudio": (True, self.lmstudio_model),  # local, keyless
             "jan": (self.jan_base_url is not None, self.jan_model),  # user-configured URL

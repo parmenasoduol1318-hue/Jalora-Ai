@@ -163,6 +163,13 @@ const logos: Record<string, IconFn> = {
         d="M12 7v5l3 3M12 12L9 9l3 3h3a3 3 0 0 1 0 6 3 3 0 0 1-6 0M9 9l3 3v5" />
     </svg>
   ),
+  nvidia: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" {...p}>
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M3 8c5-5 13-5 18 0M3 12c4-4 10-4 14 0M6 16c2-2 5-2 7 0" />
+      <circle cx="12" cy="12" r="2" />
+    </svg>
+  ),
   perplexity: (p) => (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" {...p}>
       <path strokeLinecap="round" strokeLinejoin="round"

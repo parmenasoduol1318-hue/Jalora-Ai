@@ -31,6 +31,7 @@ const PROVIDER_DASHBOARD_URLS: Record<string, string> = {
   cerebras: "https://platform.cerebras.ai/api-keys",
   perplexity: "https://www.perplexity.ai",
   poolside: "https://platform.poolside.ai/",
+  nvidia: "https://build.nvidia.com/",
   copilot: "https://github.com/settings/tokens",
   codex: "https://platform.openai.com/api-keys",
   lmstudio: "http://localhost:1234",
@@ -43,6 +44,7 @@ const KEY_REQUIRED_PROVIDERS = new Set([
   "openai", "anthropic", "google", "deepseek", "groq", "mistral",
   "openrouter", "cohere", "cerebras", "perplexity",
   "poolside",
+  "nvidia",
   "copilot", "codex",
 ]);
 
@@ -525,6 +527,7 @@ export function SettingsView({
             <option value="jan">Jan.ai</option>
             <option value="cohere">Cohere</option>
             <option value="cerebras">Cerebras</option>
+            <option value="nvidia">NVIDIA</option>
             <option value="perplexity">Perplexity</option>
             <option value="ollama">Ollama</option>
           </select>

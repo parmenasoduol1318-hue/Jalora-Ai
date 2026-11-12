@@ -39,6 +39,7 @@ LOGO_FOR_PROVIDER = {
     "ollama": "ollama", "db": "database", "redis": "redis",
     "slack": "slack", "github": "github", "notion": "notion",
     "spotify": "spotify", "trello": "trello", "dropbox": "dropbox",
+    "nvidia": "nvidia",
 }
 
 SECRET_KEY_RE = (

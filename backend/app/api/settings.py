@@ -49,11 +49,12 @@ router = APIRouter(prefix="/api", tags=["settings"])
 # environment (server-wide). Users can supply their own per-user key.
 KEY_REQUIRED_PROVIDERS = {"mistral", "cohere", "cerebras", "perplexity", "openai",
                           "anthropic", "google", "deepseek", "groq", "openrouter",
-                          "poolside", "copilot", "codex"}
+                          "poolside", "nvidia", "copilot", "codex"}
 
 # Dashboard URLs for keyless/open providers so the UI can link to usage pages.
 PROVIDER_DASHBOARD_URLS = {
     "poolside": "https://platform.poolside.ai/",
+    "nvidia": "https://build.nvidia.com/",
     "copilot": "https://github.com/settings/tokens",
     "codex": "https://platform.openai.com/api-keys",
     "lmstudio": "http://localhost:1234",

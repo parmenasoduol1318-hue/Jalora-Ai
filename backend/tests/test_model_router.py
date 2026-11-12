@@ -17,7 +17,7 @@ _PROVIDER_KEY_ENV = (
     "JALORA_OPENAI_API_KEY", "JALORA_ANTHROPIC_API_KEY", "JALORA_GOOGLE_API_KEY",
     "JALORA_GROQ_API_KEY", "JALORA_DEEPSEEK_API_KEY", "JALORA_MISTRAL_API_KEY",
     "JALORA_OPENROUTER_API_KEY", "JALORA_TAVILY_API_KEY", "JALORA_DEFAULT_PROVIDER",
-    "JALORA_POOLSIDE_API_KEY",
+    "JALORA_POOLSIDE_API_KEY", "JALORA_NVIDIA_API_KEY",
 )
 
 # ``app.services.provider_extensions`` (imported via ``app.main`` in conftest)
@@ -75,6 +75,15 @@ def test_poolside_provider_uses_official_openai_compatible_endpoint():
     assert route.provider.base_url == "https://inference.poolside.ai/v1"
     assert route.provider.api_key == "poolside-test-key"
     assert route.model == "laguna-s-2.1"
+
+
+def test_nvidia_provider_uses_official_openai_compatible_endpoint():
+    router = ModelRouter(_settings(nvidia_api_key="nvidia-test-key"))
+    route = router.route(provider_override="nvidia")
+    assert route.provider.name == "nvidia"
+    assert route.provider.base_url == "https://integrate.api.nvidia.com/v1"
+    assert route.provider.api_key == "nvidia-test-key"
+    assert route.model == "nvidia/nemotron-3.5-lightning-30b-a3b"
 
 
 def test_pinned_default_provider_wins():

@@ -150,6 +150,7 @@ _EXTENDED_PRIORITY: list[str] = [
     "cerebras",  # cloud — https://api.cerebras.ai/v1
     "perplexity",  # cloud — https://api.perplexity.ai/v1
     "poolside",  # cloud — https://inference.poolside.ai/v1
+    "nvidia",  # cloud — https://integrate.api.nvidia.com/v1
 ]
 
 # ---------------------------------------------------------------------------
@@ -302,6 +303,7 @@ _model_router_mod.AUTO_PRIORITY = _extended + [
     "cerebras",
     "perplexity",
     "poolside",
+    "nvidia",
 ]
 # Remove any accidental duplicates while preserving order.
 _seen: set[str] = set()
@@ -330,6 +332,7 @@ _integration_registry_mod.LOGO_FOR_PROVIDER.update(
         "cerebras": "cerebras",
         "perplexity": "perplexity",
         "poolside": "poolside",
+        "nvidia": "nvidia",
     }
 )
 

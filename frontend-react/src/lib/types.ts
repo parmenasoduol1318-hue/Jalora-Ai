@@ -224,7 +224,7 @@ export interface AppSettings {
   response_length?: "balanced" | "concise" | "detailed";
   tone?: "professional" | "friendly" | "casual" | "formal";
   timezone?: string;
-  preferred_provider?: "auto" | "openai" | "anthropic" | "groq" | "google" | "deepseek" | "mistral" | "openrouter" | "lmstudio" | "jan" | "cohere" | "cerebras" | "perplexity" | "poolside" | "ollama";
+  preferred_provider?: "auto" | "openai" | "anthropic" | "groq" | "google" | "deepseek" | "mistral" | "openrouter" | "lmstudio" | "jan" | "cohere" | "cerebras" | "perplexity" | "poolside" | "nvidia" | "ollama";
   // AI providers the user has disconnected for their account.
   disabled_providers?: string[];
   // Names of providers for which the user has stored a per-user API key.
@@ -645,7 +645,7 @@ export interface PreferencePatch {
   response_length?: "balanced" | "concise" | "detailed";
   tone?: "professional" | "friendly" | "casual" | "formal";
   timezone?: string;
-  preferred_provider?: "auto" | "openai" | "anthropic" | "groq" | "google" | "deepseek" | "mistral" | "openrouter" | "lmstudio" | "jan" | "cohere" | "cerebras" | "perplexity" | "poolside" | "ollama";
+  preferred_provider?: "auto" | "openai" | "anthropic" | "groq" | "google" | "deepseek" | "mistral" | "openrouter" | "lmstudio" | "jan" | "cohere" | "cerebras" | "perplexity" | "poolside" | "nvidia" | "ollama";
   disabled_providers?: string[];
 }
 

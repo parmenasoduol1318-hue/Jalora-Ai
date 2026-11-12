@@ -23,6 +23,35 @@ def test_provider_names_include_router_providers_and_workspace_agents():
     assert "poolside" in PROVIDER_NAMES
 
 
+def test_nvidia_per_user_key_is_accepted_and_never_returned(client):
+    headers = _auth_headers(client, "nvidia-key@test.com")
+    saved = client.post(
+        "/api/settings/provider-key",
+        headers=headers,
+        json={"provider": "nvidia", "api_key": "nvidia-private-key"},
+    )
+    assert saved.status_code == 200, saved.text
+    assert "nvidia-private-key" not in saved.text
+    assert saved.json()["provider"] == "nvidia"
+
+    settings = client.get("/api/settings", headers=headers)
+    assert settings.status_code == 200
+    assert "nvidia" in settings.json()["provider_keys"]
+    keys = client.get("/api/settings/provider-keys", headers=headers)
+    assert keys.status_code == 200
+    assert any(
+        key["provider"] == "nvidia"
+        and key["url"] == "https://build.nvidia.com/"
+        for key in keys.json()
+    )
+
+    deleted = client.delete("/api/settings/provider-key/nvidia", headers=headers)
+    assert deleted.status_code == 200, deleted.text
+    assert "nvidia" not in client.get(
+        "/api/settings", headers=headers
+    ).json()["provider_keys"]
+
+
 def test_poolside_per_user_key_is_accepted_and_never_returned(client):
     headers = _auth_headers(client, "poolside-key@test.com")
     saved = client.post(
