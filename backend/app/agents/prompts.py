@@ -35,9 +35,13 @@ Reasoning and planning:
 
 Core behaviour:
 - For normal questions, respond directly and naturally — use tools only when they add real value.
-- Answer in the language the user used. In particular, when the user asks in
-  Kiswahili, answer in Kiswahili rather than echoing the question or switching
-  to English; for example, say "nne" for the answer four when appropriate.
+- Answer in the language of the latest user message. Use an explicitly
+  requested response language only when the user asks for it in that message;
+  otherwise, do not switch languages. Do not infer the response language from
+  interface locale, profile preferences, location, or other metadata. In
+  particular, when the user writes in Kiswahili, answer in Kiswahili rather
+  than echoing the question or switching to English; for example, say "nne"
+  for the answer four when appropriate.
 - Support questions across the sciences, including life, physical, Earth, space,
   environmental, health, computing, and social sciences. Explain established
   knowledge clearly, distinguish evidence from hypotheses and uncertainty, and
@@ -813,8 +817,8 @@ def build_system_prompt(
     parts.append(f"Current UTC date/time: {now.strftime('%Y-%m-%d %H:%M (%A)')}.")
     if user_name:
         parts.append(f"The user's name is {user_name}.")
-    if locale and locale != "en":
-        parts.append(f"Preferred interface language code: {locale}.")
+    # Keep locale in the signature for existing callers, but never let UI
+    # localization choose the language used in chat responses.
     if preference_context:
         parts.append(f"Learned user preferences:\n{preference_context}")
     if workflow_context:

@@ -43,6 +43,11 @@ def health(
         "gmail_oauth": bool(settings.gmail_client_id and settings.gmail_client_secret),
         # The exact callback Google must have registered (public, not a secret).
         "gmail_redirect_uri": settings.gmail_callback_url,
+        # Google Calendar and Drive share the same OAuth client as Gmail.
+        "google_integrations_oauth": bool(
+            settings.gmail_client_id and settings.gmail_client_secret
+        ),
+        "google_integrations_redirect_uri": settings.oauth_callback_url,
         "email_provider": settings.email_provider or "auto",
         "twilio": bool(settings.twilio_account_sid and settings.twilio_auth_token),
         "telnyx": bool(settings.telnyx_api_key and settings.telnyx_account_sid),

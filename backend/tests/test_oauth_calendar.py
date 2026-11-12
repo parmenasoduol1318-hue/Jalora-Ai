@@ -76,6 +76,65 @@ def test_registry_marks_oauth_providers(client, auth_headers):
     assert cards["slack"]["configured"] is False
 
 
+def test_google_oauth_providers_share_gmail_client_configuration(
+        client, auth_headers, oauth_settings):
+    oauth_settings(
+        JALORA_GMAIL_CLIENT_ID="cid_test",
+        JALORA_GMAIL_CLIENT_SECRET="csec_test",
+    )
+    reg = client.get("/api/integrations/providers", headers=auth_headers())
+    assert reg.status_code == 200, reg.text
+    cards = {card["name"]: card for card in reg.json()["providers"]}
+
+    assert cards["gmail"]["configured"] is True
+    assert cards["calendar"]["configured"] is True
+    assert cards["drive"]["configured"] is True
+
+
+def test_health_reports_google_oauth_readiness_and_callback(
+        client, oauth_settings):
+    oauth_settings(
+        JALORA_GMAIL_CLIENT_ID="cid_test",
+        JALORA_GMAIL_CLIENT_SECRET="csec_test",
+        JALORA_PUBLIC_BASE_URL="https://jalora-ai.onrender.com",
+    )
+    response = client.get("/api/health")
+    assert response.status_code == 200, response.text
+    capabilities = response.json()["capabilities"]
+
+    assert capabilities["google_integrations_oauth"] is True
+    assert capabilities["google_integrations_redirect_uri"] == (
+        "https://jalora-ai.onrender.com/api/integrations/oauth/callback"
+    )
+
+
+@pytest.mark.parametrize(
+    ("provider", "scope"),
+    [
+        ("calendar", "calendar.readonly"),
+        ("drive", "drive.readonly"),
+    ],
+)
+def test_google_oauth_uses_render_callback_and_shared_credentials(
+        client, auth_headers, oauth_settings, provider, scope):
+    oauth_settings(
+        JALORA_GMAIL_CLIENT_ID="cid_test",
+        JALORA_GMAIL_CLIENT_SECRET="csec_test",
+        JALORA_PUBLIC_BASE_URL="https://jalora-ai.onrender.com",
+    )
+    res = client.post(
+        f"/api/integrations/{provider}/connect", headers=auth_headers(),
+    )
+    assert res.status_code == 200, res.text
+    params = parse_qs(urlparse(res.json()["authorization_url"]).query)
+
+    assert params["client_id"] == ["cid_test"]
+    assert params["redirect_uri"] == [
+        "https://jalora-ai.onrender.com/api/integrations/oauth/callback"
+    ]
+    assert scope in params["scope"][0]
+
+
 def test_connect_requires_credentials(client, auth_headers):
     res = client.post("/api/integrations/calendar/connect", headers=auth_headers())
     assert res.status_code == 400, res.text
@@ -102,20 +161,25 @@ def test_oauth_start_returns_authorization_url(client, auth_headers, oauth_setti
         assert "oauth_state_hash" not in res.text
 
 
-def test_oauth_callback_stores_encrypted_tokens(client, auth_headers,
-                                                oauth_settings, monkeypatch):
+@pytest.mark.parametrize("provider", ["calendar", "drive"])
+def test_oauth_callback_stores_encrypted_tokens(
+        client, auth_headers, oauth_settings, monkeypatch, provider):
     oauth_settings(JALORA_GMAIL_CLIENT_ID="cid_test",
                    JALORA_GMAIL_CLIENT_SECRET="csec_test")
-    start = client.post("/api/integrations/calendar/connect", headers=auth_headers())
+    start = client.post(
+        f"/api/integrations/{provider}/connect", headers=auth_headers(),
+    )
     url = start.json()["authorization_url"]
     state = parse_qs(urlparse(url).query)["state"][0]
 
-    async def _fake_exchange(provider, code, **kwargs):
-        assert provider == "calendar" and code == "the-code"
+    async def _fake_exchange(oauth_provider, code, **kwargs):
+        assert oauth_provider == provider
+        assert code == "the-code"
         return {"access_token": "plain-access", "refresh_token": "plain-refresh",
                 "expires_in": 3600}
 
-    async def _fake_account(provider, token):
+    async def _fake_account(oauth_provider, token):
+        assert oauth_provider == provider
         return "me@example.com"
 
     monkeypatch.setattr(oauth_service, "exchange_code", _fake_exchange)
@@ -123,19 +187,55 @@ def test_oauth_callback_stores_encrypted_tokens(client, auth_headers,
 
     res = client.get(
         "/api/integrations/oauth/callback",
-        params={"provider": "calendar", "code": "the-code", "state": state},
+        params={"code": "the-code", "state": state},
     )
     assert res.status_code == 200, res.text
     assert res.json()["status"] == "connected"
+    assert res.json()["provider"] == provider
 
     with SessionLocal() as db:
         row = db.scalar(select(Integration).where(
-            Integration.provider == "calendar"))
+            Integration.provider == provider))
         assert row.status == "connected"
         # Tokens are never stored or returned in plaintext.
         assert row.config["access_token"] != "plain-access"
         assert row.config["refresh_token"] != "plain-refresh"
         assert "plain-access" not in res.text
+
+
+def test_google_denial_callback_infers_provider_and_clears_pending_state(
+        client, auth_headers, oauth_settings):
+    headers = auth_headers("drive-denial@test.com")
+    oauth_settings(
+        JALORA_GMAIL_CLIENT_ID="cid_test",
+        JALORA_GMAIL_CLIENT_SECRET="csec_test",
+        JALORA_PUBLIC_BASE_URL="https://jalora-ai.onrender.com",
+        JALORA_FRONTEND_BASE_URL="https://jalora-ai.vercel.app",
+    )
+    start = client.post("/api/integrations/drive/connect", headers=headers)
+    state = parse_qs(urlparse(start.json()["authorization_url"]).query)["state"][0]
+
+    response = client.get(
+        "/api/integrations/oauth/callback",
+        params={"error": "access_denied", "state": state},
+        headers={"Accept": "text/html"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    location = urlparse(response.headers["location"])
+    query = parse_qs(location.query)
+    assert location.scheme == "https"
+    assert location.netloc == "jalora-ai.vercel.app"
+    assert query["integration"] == ["error"]
+    assert query["provider"] == ["drive"]
+    assert query["reason"] == ["access_denied"]
+
+    with SessionLocal() as db:
+        row = db.scalar(select(Integration).where(
+            Integration.provider == "drive"))
+        assert row.status == "error"
+        assert "oauth_state_hash" not in row.config
 
 
 def test_oauth_browser_callback_returns_to_integrations_and_shows_connected(

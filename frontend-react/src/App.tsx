@@ -156,7 +156,11 @@ export default function App() {
         const email = params.get("email");
         toast(email ? `${t("gmailConnected")}: ${email}` : t("gmailConnected"));
       } else {
-        toast(t("gmailConnectError"), true);
+        const reason = params.get("reason");
+        const detail = reason === "access_denied"
+          ? ` ${t("googleOAuthAccessDenied")}`
+          : "";
+        toast(`${t("gmailConnectError")}${detail}`, true);
       }
       setView("integrations");
     } else if (integration === "connected") {
@@ -164,7 +168,11 @@ export default function App() {
       toast(`${label} ${t("integrationConnected")}`.trim());
       setView("integrations");
     } else {
-      toast(t("integrationConnectError"), true);
+      const reason = params.get("reason");
+      const detail = reason === "access_denied"
+        ? ` ${t("googleOAuthAccessDenied")}`
+        : "";
+      toast(`${t("integrationConnectError")}${detail}`, true);
       setView("integrations");
     }
     window.history.replaceState({}, "", window.location.pathname);

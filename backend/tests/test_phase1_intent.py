@@ -112,6 +112,14 @@ def test_base_prompt_requires_private_reasoning_and_natural_interaction():
     assert "Account identity" in prompt
 
 
+def test_chat_language_follows_latest_message_not_interface_locale():
+    prompt = build_system_prompt(locale="sw")
+
+    assert "latest user message" in prompt
+    assert "interface locale, profile preferences, location" in prompt
+    assert "Preferred interface language code" not in prompt
+
+
 @pytest.mark.parametrize("user_text", [
     "Explain photosynthesis in simple terms",
     "How does plate tectonics work?",

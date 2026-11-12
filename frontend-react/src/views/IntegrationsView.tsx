@@ -89,7 +89,11 @@ export function IntegrationsView({
       const email = params.get("email");
       onToast(email ? `${t("gmailConnected")}: ${email}` : t("gmailConnected"));
     } else {
-      onToast(t("gmailConnectError"), true);
+      const reason = params.get("reason");
+      const detail = reason === "access_denied"
+        ? ` ${t("googleOAuthAccessDenied")}`
+        : "";
+      onToast(`${t("gmailConnectError")}${detail}`, true);
     }
     window.history.replaceState({}, "", window.location.pathname);
   }, [onToast, t]);
@@ -109,8 +113,13 @@ export function IntegrationsView({
       url.searchParams.delete("reason");
       window.history.replaceState({}, "", url.toString());
     } else if (integration === "error") {
-      const reason = params.get("reason") || t("integrationError");
-      onToast(reason, true);
+      const reason = params.get("reason");
+      const message = reason === "access_denied"
+        ? t("googleOAuthAccessDenied")
+        : reason
+          ? `${t("integrationConnectError")} (${reason})`
+          : t("integrationConnectError");
+      onToast(message, true);
       const url = new URL(window.location.href);
       url.searchParams.delete("integration");
       url.searchParams.delete("custom");

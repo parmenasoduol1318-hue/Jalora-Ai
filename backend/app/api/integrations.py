@@ -198,25 +198,24 @@ async def oauth_callback(request: Request, provider: str = Query(""),
     """
     browser = _wants_html(request)
     provider = (provider or "").strip().lower()
-
-    def _fail(reason: str):
+    if not state:
         if browser:
             return _spa_redirect(integration="error", provider=provider,
-                                 reason=reason)
-        raise JaloraError(400, "OAUTH_ERROR",
-                          f"{provider or 'provider'} OAuth failed: {reason}")
+                                 reason="missing_state")
+        raise JaloraError(400, "MISSING_STATE", "OAuth state is required.")
 
-    if error:
-        return _fail(error)
-    if not code:
-        return _fail("missing_code")
-    if not state:
-        return _fail("missing_state")
-    if not oauth_service.is_oauth_provider(provider):
-        return _fail("unknown_provider")
     db = SessionLocal()
+    row = None
     try:
         row = _match_oauth_state(db, provider, state)
+        provider = row.provider
+        if error:
+            raise JaloraError(400, "OAUTH_DENIED",
+                              f"{provider} OAuth failed: {error}")
+        if not code:
+            raise JaloraError(400, "MISSING_CODE",
+                              f"{provider} OAuth callback is missing a code.")
+
         payload = await oauth_service.exchange_code(provider, code)
         access = payload.get("access_token")
         account = await oauth_service.fetch_account(provider, access) if access else ""
@@ -226,9 +225,13 @@ async def oauth_callback(request: Request, provider: str = Query(""),
         return {"success": True, "provider": provider, "status": "connected",
                 "account": account}
     except (JaloraError, oauth_service.OAuthError) as exc:
+        if row is not None and row.status != "connected":
+            _mark_oauth_error(db, row)
         if browser:
             return _spa_redirect(integration="error", provider=provider,
-                                 reason=str(getattr(exc, "code", "oauth_error")))
+                                 reason=error or str(
+                                     getattr(exc, "code", "oauth_error")
+                                 ))
         raise
     finally:
         db.close()
@@ -237,10 +240,19 @@ async def oauth_callback(request: Request, provider: str = Query(""),
 def _match_oauth_state(db: Session, provider: str, state: str) -> Integration:
     if not state:
         raise BadRequestError("Missing OAuth state.", "MISSING_STATE")
+    if provider and (
+        not oauth_service.is_oauth_provider(provider) or provider == "gmail"
+    ):
+        raise BadRequestError("Unknown OAuth provider.", "UNKNOWN_PROVIDER")
     target = email_service.oauth_state_hash(state)
+    candidates = (
+        (provider,)
+        if provider
+        else tuple(name for name in oauth_service.OAUTH_SERVICES if name != "gmail")
+    )
     rows = db.scalars(
         select(Integration).where(
-            Integration.provider == provider,
+            Integration.provider.in_(candidates),
             Integration.status != "connected",
         )
     ).all()
@@ -257,6 +269,15 @@ def _match_oauth_state(db: Session, provider: str, state: str) -> Integration:
         "OAuth state does not match; the flow may have been tampered with.",
         "INVALID_STATE",
     )
+
+
+def _mark_oauth_error(db: Session, row: Integration) -> None:
+    config = dict(row.config or {})
+    config.pop("oauth_state_hash", None)
+    row.config = config
+    row.status = "error"
+    db.add(row)
+    db.commit()
 
 
 @router.post("/gmail/start", response_model=GmailStartOut)
