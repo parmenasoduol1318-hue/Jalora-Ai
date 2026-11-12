@@ -122,6 +122,51 @@ request requires confirmation by the sending user and a separate approval on
 the target. Private/internal destinations are rejected. Opening a link is not
 proof that it loaded or that an action in the destination completed.
 
+### Versioned outbound command protocol
+
+Protocol v1 provides a device-initiated HTTPS long-poll transport; it does not
+open an inbound port on the user's device. A paired device exchanges its
+one-time pairing bearer credential at `POST /api/devices/protocol/v1/session`
+for a signed access token that expires after five minutes. The pairing
+credential remains revocable and must be kept private; protocol requests use
+the short-lived access token. Device revocation is checked against the database
+on each protocol request and invalidates outstanding access tokens.
+
+The device long-polls `GET /api/devices/protocol/v1/commands`; the bounded
+`wait_seconds` query parameter defaults to 20 seconds and accepts 0–25 seconds.
+The response contains
+a versioned envelope with the device, task, run, and task-step IDs, allowlisted
+operation and arguments, required scope, expiration, command-scoped nonce,
+idempotency key, expected evidence, and delivery lease. Protocol v1 currently
+allows only `browser.open_url`, and its URL is revalidated before delivery.
+Raw shell commands, arbitrary code, screen capture, and generic UI actions are
+not accepted.
+
+Before performing the operation, the target must submit its explicit decision
+to `POST /api/devices/protocol/v1/commands/{command_id}/decision` with the
+envelope nonce. Only the first successful approval returns `execute: true` and
+the URL; replayed approvals never return an executable URL. Rejection cancels
+the command. A device submits a bounded receipt to
+`POST /api/devices/protocol/v1/commands/{command_id}/receipt`; repeated
+identical receipts are idempotent and conflicting replays are rejected.
+
+Queued commands can be delivered again with the same command ID and nonce
+after a delivery lease expires. This is safe because no external action has
+been approved yet. Once execution begins, a lost execution lease is recorded
+as `uncertain` and is never automatically redelivered. A late authenticated
+receipt may reconcile that result. The signed-in owner can cancel queued or
+delivered commands through the remote-command history endpoint; a cancellation
+after execution starts is reported as uncertain because the server cannot
+prove that a remote action stopped. Receipts store only bounded, allowlisted
+evidence fields.
+
+Remote command rows retain their existing central task/run/step identifiers,
+the request digest, status, lease, and receipt. The protocol is a transport
+foundation, not a native companion: the shipped browser companion now uses
+protocol v1 for approved link requests, but no Windows/Android background
+client consumes it yet. Message intake and reply APIs remain separate. API
+callers must use HTTPS in deployed environments.
+
 This is not full-device accessibility. A browser page cannot inspect another
 app's screen, click its controls, type into it, initiate calls, or keep
 operating when the page is closed. Those features require a platform-specific

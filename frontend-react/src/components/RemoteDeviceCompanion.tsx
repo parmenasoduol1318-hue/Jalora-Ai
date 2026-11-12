@@ -16,6 +16,25 @@ type RemoteCommand = {
   url: string;
   status: string;
   created_at: string;
+  nonce: string;
+  delivery_count: number;
+};
+
+type ProtocolCommandBatch = {
+  protocol_version: number;
+  commands: Array<{
+    command_id: string;
+    operation: "browser.open_url";
+    arguments: { url: string };
+    nonce: string;
+    issued_at: string;
+    delivery_count: number;
+  }>;
+};
+
+type ProtocolSession = {
+  access_token: string;
+  expires_in: number;
 };
 
 type DeviceCredentials = {
@@ -28,6 +47,7 @@ async function deviceApi<T>(
   token: string,
   method = "GET",
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
   const response = await fetch(path, {
     method,
@@ -36,6 +56,8 @@ async function deviceApi<T>(
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
+    cache: "no-store",
   });
   const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (!response.ok) {
@@ -63,6 +85,7 @@ export function RemoteDeviceCompanion({
   const [deviceToken, setDeviceToken] = useState(
     () => pairLink.code ? "" : sessionStorage.getItem("jalora_remote_device_token") || "",
   );
+  const [protocolAccessToken, setProtocolAccessToken] = useState("");
   const [deviceName, setDeviceName] = useState(
     () => sessionStorage.getItem("jalora_remote_device_name") || "",
   );
@@ -94,26 +117,83 @@ export function RemoteDeviceCompanion({
     return () => { cancelled = true; };
   }, [deviceToken, pairRequestId, pairCode]);
 
-  const refreshCommands = useCallback(async () => {
-    if (!deviceToken) return;
-    try {
-      const current = await deviceApi<RemoteCommand[]>(
-        "/api/devices/remote-commands/target",
-        deviceToken,
-      );
-      setCommands(current);
-      setError("");
-    } catch (cause) {
-      setError((cause as Error).message);
-    }
-  }, [deviceToken]);
-
   useEffect(() => {
     if (!deviceToken) return;
-    void refreshCommands();
-    const timer = window.setInterval(() => void refreshCommands(), 3000);
-    return () => window.clearInterval(timer);
-  }, [deviceToken, refreshCommands]);
+    let active = true;
+    let timer = 0;
+    const refreshAccessToken = async () => {
+      try {
+        const session = await deviceApi<ProtocolSession>(
+          "/api/devices/protocol/v1/session",
+          deviceToken,
+          "POST",
+        );
+        if (!active) return;
+        setProtocolAccessToken(session.access_token);
+        setError("");
+        timer = window.setTimeout(
+          () => void refreshAccessToken(),
+          Math.max(30_000, (session.expires_in - 30) * 1000),
+        );
+      } catch (cause) {
+        if (!active) return;
+        setProtocolAccessToken("");
+        setError((cause as Error).message);
+        timer = window.setTimeout(() => void refreshAccessToken(), 5000);
+      }
+    };
+    void refreshAccessToken();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [deviceToken]);
+
+  const pollCommands = useCallback(async (
+    waitSeconds: number,
+    signal?: AbortSignal,
+  ) => {
+    if (!protocolAccessToken) return;
+    const current = await deviceApi<ProtocolCommandBatch>(
+      `/api/devices/protocol/v1/commands?wait_seconds=${waitSeconds}`,
+      protocolAccessToken,
+      "GET",
+      undefined,
+      signal,
+    );
+    setCommands(current.commands.map((command) => ({
+      id: command.command_id,
+      action: command.operation,
+      url: command.arguments.url,
+      status: "delivered",
+      created_at: command.issued_at,
+      nonce: command.nonce,
+      delivery_count: command.delivery_count,
+    })));
+    setError("");
+  }, [protocolAccessToken]);
+
+  useEffect(() => {
+    if (!protocolAccessToken) return;
+    let active = true;
+    const controller = new AbortController();
+    const pollUntilStopped = async () => {
+      while (active) {
+        try {
+          await pollCommands(20, controller.signal);
+        } catch (cause) {
+          if (!active || controller.signal.aborted) return;
+          setError((cause as Error).message);
+          await new Promise((resolve) => window.setTimeout(resolve, 3000));
+        }
+      }
+    };
+    void pollUntilStopped();
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [pollCommands, protocolAccessToken]);
 
   const approvePairing = async () => {
     if (!pairRequestId || !pairCode || !pairRequest || pairRequest.status !== "pending") return;
@@ -156,9 +236,15 @@ export function RemoteDeviceCompanion({
     command: RemoteCommand,
     approve: boolean,
   ) => {
+    if (!protocolAccessToken) {
+      setError("The secure device session is not ready. Try again shortly.");
+      return;
+    }
     setBusyCommand(command.id);
     setError("");
     let destination: Window | null = null;
+    let approvalClaimed = false;
+    let handoffStarted = false;
     try {
       if (approve) {
         destination = window.open("about:blank", "_blank");
@@ -167,43 +253,76 @@ export function RemoteDeviceCompanion({
         }
         destination.opener = null;
       }
-      const decision = await deviceApi<{ status: string; url?: string }>(
-        `/api/devices/remote-commands/${command.id}/decision`,
-        deviceToken,
+      const decision = await deviceApi<{
+        status: string;
+        execute: boolean;
+        url?: string;
+      }>(
+        `/api/devices/protocol/v1/commands/${command.id}/decision`,
+        protocolAccessToken,
         "POST",
-        { approve },
+        { nonce: command.nonce, approve },
       );
       if (!approve) {
         setCommands((current) => current.filter((item) => item.id !== command.id));
         return;
       }
+      if (!decision.execute) {
+        setCommands((current) => current.filter((item) => item.id !== command.id));
+        setError("This request was already handled; it will not be executed again.");
+        return;
+      }
+      approvalClaimed = true;
       if (!decision.url) throw new Error("The approved destination was not returned.");
       destination!.location.replace(decision.url);
+      handoffStarted = true;
       await deviceApi(
-        `/api/devices/remote-commands/${command.id}/opened`,
-        deviceToken,
+        `/api/devices/protocol/v1/commands/${command.id}/receipt`,
+        protocolAccessToken,
         "POST",
-        { opened: true },
+        {
+          nonce: command.nonce,
+          status: "succeeded",
+          evidence: {
+            browser_open_receipt: true,
+            opened_url_host: new URL(decision.url).hostname,
+          },
+        },
       );
       setCommands((current) => current.filter((item) => item.id !== command.id));
     } catch (cause) {
-      destination?.close();
-      setError((cause as Error).message);
-      if (approve) {
+      if (!handoffStarted) destination?.close();
+      let errorMessage = (cause as Error).message;
+      if (approve && approvalClaimed) {
         try {
           await deviceApi(
-            `/api/devices/remote-commands/${command.id}/opened`,
-            deviceToken,
+            `/api/devices/protocol/v1/commands/${command.id}/receipt`,
+            protocolAccessToken,
             "POST",
-            { opened: false },
+            {
+              nonce: command.nonce,
+              status: handoffStarted ? "uncertain" : "failed",
+              evidence: handoffStarted
+                ? { reason: "The browser handoff receipt could not be confirmed." }
+                : {
+                  browser_open_receipt: false,
+                  reason: "The approved link could not be handed to the browser.",
+                },
+              error_code: handoffStarted
+                ? "BROWSER_HANDOFF_UNCERTAIN"
+                : "BROWSER_OPEN_FAILED",
+            },
           );
-        } catch {
-          // Keep the original action error visible; the command can be retried if still pending.
+        } catch (receiptCause) {
+          errorMessage += ` The outcome report also failed: ${(receiptCause as Error).message}`;
         }
       }
+      setError(errorMessage);
     } finally {
       setBusyCommand("");
-      void refreshCommands();
+      void pollCommands(0).catch((cause: unknown) => {
+        setError((cause as Error).message);
+      });
     }
   };
 
@@ -211,6 +330,7 @@ export function RemoteDeviceCompanion({
     sessionStorage.removeItem("jalora_remote_device_token");
     sessionStorage.removeItem("jalora_remote_device_name");
     setDeviceToken("");
+    setProtocolAccessToken("");
     setDeviceName("");
     setCommands([]);
   };

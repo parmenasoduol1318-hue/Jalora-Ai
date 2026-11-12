@@ -44,12 +44,13 @@
    Windows computer.
 2. There is no native Android application or Accessibility Service. The web
    companion does not inherit Android notification, screen, or UI permissions.
-3. There is no generic remote UI command protocol, companion-reported app
+3. Protocol v1 now transports only approved public browser links. It is not a
+   generic remote UI command protocol and has no companion-reported app
    inventory, accessibility-tree transport, screenshot transport, or
-   cross-device task checkpoint binding.
-4. Existing UI actions are narrow and approval-gated; unsupported controls,
-   app-specific restrictions, and API-vs-UI selection are not yet represented
-   by a common live capability contract.
+   cross-device UI checkpointing.
+4. Existing UI actions remain narrow and approval-gated. App-specific
+   restrictions and API-vs-UI selection are not yet represented by a common
+   live capability contract.
 5. Third-party APIs, app authentication, MFA, application sandboxes, and OS
    permission prompts remain authoritative. No implementation should bypass
    them or claim a result without an observable receipt or screen-state change.
@@ -73,22 +74,27 @@ native limitations, and is callable through the shared tool registry.
 
 ### Phase 2 — Versioned outbound companion protocol
 
-- Specify a bounded command envelope: protocol version, device ID, task/run and
-  step IDs, operation, validated arguments, required scope, expiry, nonce,
-  idempotency key, and expected verification evidence.
-- Add durable command/receipt storage and explicit queued, delivered,
-  running, succeeded, failed, uncertain, cancelled, and expired states.
-- Use an authenticated outbound WebSocket or long-poll channel with
-  short-lived access credentials, device identity binding, replay protection,
-  heartbeat, reconnect, per-command scope checks, and immediate revocation.
-- Keep targets private; devices initiate outbound TLS connections rather than
-  exposing desktop/phone listeners to the Internet.
-- Route requests through existing central tasks and approvals; prohibit raw
-  shell execution and arbitrary code in the protocol.
+- Additive schema and APIs extend the existing remote-browser command records;
+  they do not create a second task or approval manager.
+- Versioned envelopes bind device, task, run, task step, operation, validated
+  arguments, required scope, expiry, nonce, idempotency key, payload digest,
+  and expected evidence.
+- HTTPS long polling is device-initiated. A paired credential exchanges for a
+  five-minute signed protocol access token; every request rechecks active
+  device identity and current scopes.
+- Atomic delivery leases permit safe redelivery only before target approval.
+  Stale in-flight execution becomes `uncertain`, never an automatic retry.
+  Nonce-bound decisions/receipts, cancellation, revocation, and bounded receipt
+  evidence are persisted.
+- Current operation allowlist is only `browser.open_url`. Do not add raw shell,
+  arbitrary code, or UI commands until a native companion and the later
+  platform-specific gates exist.
 
-**Acceptance:** protocol/schema tests cover authorization, expiry, duplicate
-delivery, reconnect, revocation, invalid payloads, and truthful uncertain
-outcomes before any native UI operation is enabled.
+**Status:** Implemented and tested for the currently supported browser-link
+operation. Focused tests cover short-lived token expiry, authorization and
+scope checks, task/run/step binding, idempotent enqueue and receipt, delivery
+reconnect, command expiry/cancellation, revocation, invalid evidence, and
+uncertain execution recovery. No native client consumes this protocol yet.
 
 ### Phase 3 — Windows companion
 
@@ -152,8 +158,10 @@ recorded evidence.
 
 ## Current implementation status
 
-Phase 1 is the only phase implemented by this increment. Native Windows and
-Android cloud companions, generalized remote UI execution, screenshot-based
-reasoning, and cross-device workflow recovery remain future phases; the
-existing local Windows controls and browser-link companion retain their
-previous, narrower behavior.
+Phases 1 and 2 are implemented. The protocol is a transport foundation for the
+existing approved public-link operation, and the shipped browser companion
+uses protocol v1 for those requests. Message bridge APIs remain separate.
+Native Windows and Android companions, generalized remote UI execution,
+screenshot-based reasoning, and cross-device workflow recovery remain future
+phases. The existing local Windows controls and browser-link companion retain
+their previous, narrower behavior.

@@ -1,7 +1,9 @@
 """Alembic migration lifecycle: upgrade, legacy adoption (stamp), round-trip."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 from alembic import command
 from alembic.config import Config
@@ -9,7 +11,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 
 from app.database.base import Base
-from app.database.session import engine, init_db
+from app.database.session import SessionLocal, engine, init_db
 
 CFG = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
 MODEL_TABLES = {"users", "conversations", "messages", "memories", "documents",
@@ -77,3 +79,78 @@ def test_downgrade_base_then_upgrade_roundtrip():
 
     init_db()  # empty again -> upgrade
     assert MODEL_TABLES <= _tables()
+
+
+def test_protocol_migration_backfills_existing_remote_commands():
+    _reset()
+    command.upgrade(CFG, "v1i_schedule_occurrence_lifecycle")
+    now = datetime.now(timezone.utc)
+    user_id = "protocol-migration-user"
+    device_id = "protocol-migration-device"
+    command_id = "protocol-migration-command"
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO users "
+                "(id, email, name, password_hash, is_active, prefs, created_at) "
+                "VALUES (:id, :email, :name, :password_hash, :is_active, :prefs, :created_at)"
+            ),
+            {
+                "id": user_id,
+                "email": "protocol-migration@test.com",
+                "name": "Protocol migration",
+                "password_hash": "unused",
+                "is_active": True,
+                "prefs": "{}",
+                "created_at": now.isoformat(),
+            },
+        )
+        conn.execute(
+            text(
+                "INSERT INTO device_connections "
+                "(id, user_id, name, platform, status, token_hash, scopes, created_at) "
+                "VALUES (:id, :user_id, :name, :platform, :status, :token_hash, :scopes, :created_at)"
+            ),
+            {
+                "id": device_id,
+                "user_id": user_id,
+                "name": "Migration device",
+                "platform": "android",
+                "status": "active",
+                "token_hash": "0" * 64,
+                "scopes": json.dumps(["remote.browser.open_url"]),
+                "created_at": now.isoformat(),
+            },
+        )
+        conn.execute(
+            text(
+                "INSERT INTO device_remote_commands "
+                "(id, user_id, device_id, action, target_url, status, created_at, expires_at) "
+                "VALUES (:id, :user_id, :device_id, :action, :target_url, :status, :created_at, :expires_at)"
+            ),
+            {
+                "id": command_id,
+                "user_id": user_id,
+                "device_id": device_id,
+                "action": "browser.open_url",
+                "target_url": "https://example.com/migrated",
+                "status": "pending",
+                "created_at": now.isoformat(),
+                "expires_at": (now + timedelta(minutes=5)).isoformat(),
+            },
+        )
+
+    command.upgrade(CFG, "head")
+    from app.models.device import DeviceRemoteCommand
+    from app.services.device_command_protocol import command_envelope
+
+    with SessionLocal() as db:
+        migrated = db.get(DeviceRemoteCommand, command_id)
+        assert migrated is not None
+        envelope = command_envelope(migrated)
+        assert envelope["protocol_version"] == 1
+        assert envelope["arguments"] == {
+            "url": "https://example.com/migrated"
+        }
+        assert envelope["task_id"] is None
+        assert migrated.protocol_status == "queued"

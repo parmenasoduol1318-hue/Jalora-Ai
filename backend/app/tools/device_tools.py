@@ -6,7 +6,6 @@ import re
 import sys
 import webbrowser
 from collections.abc import Callable
-from datetime import timedelta
 from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -18,11 +17,15 @@ from app.errors import JaloraError, ToolResult
 from app.models.device import (
     DeviceConnection,
     DeviceMessage,
-    DeviceRemoteCommand,
     LocalDeviceApp,
 )
-from app.models.user import User, utcnow
+from app.models.user import User
 from app.services import local_device_control
+from app.services.device_command_protocol import (
+    DeviceIdempotencyConflict,
+    DeviceProtocolError,
+    queue_device_command,
+)
 from app.services.url_safety import validate_external_url
 from app.tools.base import PermissionLevel, registry
 
@@ -281,16 +284,22 @@ async def request_remote_url(
                 "DEVICE_SCOPE_REQUIRED",
                 f"'{device.name}' has not approved remote browser links.",
             )
-        command = DeviceRemoteCommand(
-            user_id=context.user_id,
-            device_id=device.id,
-            action="browser.open_url",
-            target_url=target_url,
-            status="pending",
-            expires_at=utcnow() + timedelta(minutes=5),
-        )
-        db.add(command)
-        db.commit()
+        try:
+            command, already_queued = queue_device_command(
+                db,
+                user_id=context.user_id,
+                device=device,
+                action="browser.open_url",
+                arguments={"url": target_url},
+                context=context,
+            )
+            db.commit()
+        except DeviceIdempotencyConflict as exc:
+            db.rollback()
+            return ToolResult.fail("IDEMPOTENCY_CONFLICT", str(exc))
+        except DeviceProtocolError as exc:
+            db.rollback()
+            return ToolResult.fail("DEVICE_COMMAND_INVALID", str(exc))
         db.refresh(command)
         return ToolResult.ok(
             f"Remote link request queued for '{device.name}'. "
@@ -302,6 +311,12 @@ async def request_remote_url(
                 "action": command.action,
                 "url": command.target_url,
                 "status": command.status,
+                "protocol_status": command.protocol_status,
+                "protocol_version": command.protocol_version,
+                "task_id": command.task_id,
+                "run_id": command.run_id,
+                "task_step_id": command.task_step_id,
+                "already_queued": already_queued,
                 "target_approval_required": True,
             },
         )

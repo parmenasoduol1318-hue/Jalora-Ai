@@ -6,6 +6,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     JSON,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -89,6 +90,12 @@ class DeviceMessage(Base):
 
 class DeviceRemoteCommand(Base):
     __tablename__ = "device_remote_commands"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "idempotency_key",
+            name="uq_device_remote_commands_user_idempotency",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     user_id: Mapped[str] = mapped_column(
@@ -100,7 +107,43 @@ class DeviceRemoteCommand(Base):
     )
     action: Mapped[str] = mapped_column(String(32))
     target_url: Mapped[str] = mapped_column(Text)
+    protocol_version: Mapped[int] = mapped_column(Integer, default=1)
+    arguments: Mapped[dict] = mapped_column(JSON, default=dict)
+    required_scope: Mapped[str] = mapped_column(
+        String(64), default="remote.browser.open_url"
+    )
+    command_nonce: Mapped[str] = mapped_column(String(64), unique=True)
+    idempotency_key: Mapped[str] = mapped_column(String(64))
+    payload_digest: Mapped[str] = mapped_column(String(64))
+    expected_evidence: Mapped[list[str]] = mapped_column(JSON, default=list)
+    task_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("tasks.id"), nullable=True, index=True
+    )
+    run_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("agent_runs.id"), nullable=True, index=True
+    )
+    task_step_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("task_steps.id"), nullable=True, index=True
+    )
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    protocol_status: Mapped[str] = mapped_column(
+        String(16), default="queued", index=True
+    )
+    delivery_count: Mapped[int] = mapped_column(Integer, default=0)
+    delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    running_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    receipt: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     decided_at: Mapped[datetime | None] = mapped_column(

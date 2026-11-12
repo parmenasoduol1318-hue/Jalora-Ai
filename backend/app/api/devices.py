@@ -5,11 +5,13 @@ import hmac
 import ipaddress
 import secrets
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 from urllib.parse import urlencode, urlsplit
 
-from fastapi import APIRouter, Depends, Header, Request, Response
+import jwt
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -35,6 +37,15 @@ from app.models.device import (
 from app.models.user import User, utcnow
 from app.models.task import TaskStep
 from app.services import local_device_control
+from app.services.device_command_protocol import (
+    DEVICE_ACCESS_TTL,
+    DeviceProtocolError,
+    approve_device_command,
+    claim_device_commands,
+    issue_device_access_token,
+    record_device_receipt,
+    verify_command_nonce,
+)
 from app.services.direct_action import execute_direct_action
 from app.services.model_router import ModelRouter
 from app.services.url_safety import validate_external_url
@@ -94,6 +105,18 @@ class DeviceRemoteCommandDecision(BaseModel):
 
 class DeviceRemoteCommandOpened(BaseModel):
     opened: bool
+
+
+class DeviceProtocolDecision(BaseModel):
+    nonce: str = Field(min_length=32, max_length=64)
+    approve: bool
+
+
+class DeviceProtocolReceipt(BaseModel):
+    nonce: str = Field(min_length=32, max_length=64)
+    status: Literal["succeeded", "failed", "uncertain"]
+    evidence: dict[str, object] = Field(default_factory=dict)
+    error_code: str | None = Field(default=None, max_length=64)
 
 
 class DeviceMessageIn(BaseModel):
@@ -204,13 +227,24 @@ def _remote_command_out(command: DeviceRemoteCommand) -> dict:
     return {
         "id": command.id,
         "device_id": command.device_id,
+        "task_id": command.task_id,
+        "run_id": command.run_id,
+        "task_step_id": command.task_step_id,
         "action": command.action,
         "url": command.target_url,
         "status": command.status,
+        "protocol_version": command.protocol_version,
+        "protocol_status": command.protocol_status,
+        "delivery_count": command.delivery_count,
+        "receipt": command.receipt,
+        "error_code": command.error_code,
         "created_at": command.created_at,
         "expires_at": command.expires_at,
+        "delivered_at": command.delivered_at,
+        "lease_expires_at": command.lease_expires_at,
         "decided_at": command.decided_at,
         "opened_at": command.opened_at,
+        "completed_at": command.completed_at,
     }
 
 
@@ -362,6 +396,51 @@ def _authenticate_device(
     device = db.scalar(
         select(DeviceConnection).where(
             DeviceConnection.token_hash == _token_digest(token),
+            DeviceConnection.status == "active",
+        )
+    )
+    if device is None:
+        raise AuthError("Device token is invalid or revoked.", "DEVICE_TOKEN_INVALID")
+    device.last_seen_at = utcnow()
+    db.commit()
+    return device
+
+
+def _authenticate_protocol_device(
+    authorization: str | None,
+    db: Session,
+) -> DeviceConnection:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise AuthError("Missing device access token.", "NO_DEVICE_TOKEN")
+    token = authorization.removeprefix("Bearer ").strip()
+    settings = get_settings()
+    try:
+        payload = jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+            audience="jalora-device-protocol",
+            issuer="jalora-device-protocol",
+            options={"require": ["exp", "iat", "jti", "sub"]},
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise AuthError(
+            "The companion access token expired; exchange its paired-device credential again.",
+            "DEVICE_ACCESS_TOKEN_EXPIRED",
+        ) from exc
+    except jwt.InvalidTokenError as exc:
+        raise AuthError(
+            "The companion access token is invalid.",
+            "DEVICE_ACCESS_TOKEN_INVALID",
+        ) from exc
+    if payload.get("typ") != "device_access":
+        raise AuthError(
+            "The companion access token is invalid.",
+            "DEVICE_ACCESS_TOKEN_INVALID",
+        )
+    device = db.scalar(
+        select(DeviceConnection).where(
+            DeviceConnection.id == str(payload["sub"]),
             DeviceConnection.status == "active",
         )
     )
@@ -694,6 +773,188 @@ def list_remote_command_history(
     return [_remote_command_out(command) for command in commands]
 
 
+@router.post("/remote-command-history/{command_id}/cancel")
+def cancel_remote_command(
+    command_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    command = db.scalar(
+        select(DeviceRemoteCommand).where(
+            DeviceRemoteCommand.id == command_id,
+            DeviceRemoteCommand.user_id == user.id,
+        )
+    )
+    if command is None:
+        raise NotFoundError("Remote command not found.")
+    now = utcnow()
+    if command.status == "pending" and command.protocol_status in {
+        "queued",
+        "delivered",
+    }:
+        cancelled = db.execute(
+            update(DeviceRemoteCommand)
+            .where(
+                DeviceRemoteCommand.id == command.id,
+                DeviceRemoteCommand.user_id == user.id,
+                DeviceRemoteCommand.status == "pending",
+                DeviceRemoteCommand.protocol_status.in_(("queued", "delivered")),
+            )
+            .values(
+                status="cancelled",
+                protocol_status="cancelled",
+                error_code="USER_CANCELLED",
+                completed_at=now,
+            )
+        )
+        if cancelled.rowcount != 1:
+            raise ConflictError("The remote command changed while cancellation was requested.")
+        db.commit()
+        return {"status": "cancelled", "cancellation_confirmed": True}
+    if command.status == "approved" and command.protocol_status == "running":
+        marked_uncertain = db.execute(
+            update(DeviceRemoteCommand)
+            .where(
+                DeviceRemoteCommand.id == command.id,
+                DeviceRemoteCommand.user_id == user.id,
+                DeviceRemoteCommand.status == "approved",
+                DeviceRemoteCommand.protocol_status == "running",
+            )
+            .values(
+                protocol_status="uncertain",
+                error_code="USER_CANCELLED_DURING_EXECUTION",
+                completed_at=now,
+            )
+        )
+        if marked_uncertain.rowcount != 1:
+            raise ConflictError("The remote command changed while cancellation was requested.")
+        db.commit()
+        return {"status": "uncertain", "cancellation_confirmed": False}
+    raise ConflictError(
+        "This remote command is already terminal and cannot be cancelled.",
+        "DEVICE_COMMAND_NOT_CANCELLABLE",
+    )
+
+
+@router.post("/protocol/v1/session")
+def create_protocol_session(
+    response: Response,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, private"
+    device = _authenticate_device(authorization, db)
+    access_token, expires_at = issue_device_access_token(device.id)
+    return {
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_at": expires_at,
+        "expires_in": int(DEVICE_ACCESS_TTL.total_seconds()),
+        "protocol_version": 1,
+    }
+
+
+@router.get("/protocol/v1/commands")
+def poll_protocol_commands(
+    response: Response,
+    wait_seconds: int = Query(default=20, ge=0, le=25),
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, private"
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        device = _authenticate_protocol_device(authorization, db)
+        _require_scope(device, "remote.browser.open_url")
+        commands = claim_device_commands(db, device)
+        if commands or time.monotonic() >= deadline:
+            return {
+                "protocol_version": 1,
+                "commands": commands,
+            }
+        time.sleep(min(1, max(0, deadline - time.monotonic())))
+
+
+@router.post("/protocol/v1/commands/{command_id}/decision")
+def decide_protocol_command(
+    command_id: str,
+    body: DeviceProtocolDecision,
+    response: Response,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, private"
+    device = _authenticate_protocol_device(authorization, db)
+    command = db.scalar(
+        select(DeviceRemoteCommand).where(
+            DeviceRemoteCommand.id == command_id,
+            DeviceRemoteCommand.device_id == device.id,
+        )
+    )
+    if command is None:
+        raise NotFoundError("Remote command not found for this device.")
+    _require_scope(device, command.required_scope)
+    if not verify_command_nonce(command, body.nonce):
+        raise ForbiddenError("The command nonce is invalid.", "DEVICE_COMMAND_NONCE_INVALID")
+    try:
+        status, url, execute = approve_device_command(
+            db,
+            command=command,
+            device=device,
+            nonce=body.nonce,
+            approve=body.approve,
+        )
+    except DeviceProtocolError as exc:
+        raise ConflictError(str(exc), "DEVICE_COMMAND_PROTOCOL_CONFLICT") from exc
+    return {
+        "status": status,
+        "execute": execute,
+        "url": url,
+    }
+
+
+@router.post("/protocol/v1/commands/{command_id}/receipt")
+def record_protocol_command_receipt(
+    command_id: str,
+    body: DeviceProtocolReceipt,
+    response: Response,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, private"
+    device = _authenticate_protocol_device(authorization, db)
+    command = db.scalar(
+        select(DeviceRemoteCommand).where(
+            DeviceRemoteCommand.id == command_id,
+            DeviceRemoteCommand.device_id == device.id,
+        )
+    )
+    if command is None:
+        raise NotFoundError("Remote command not found for this device.")
+    _require_scope(device, command.required_scope)
+    if not verify_command_nonce(command, body.nonce):
+        raise ForbiddenError("The command nonce is invalid.", "DEVICE_COMMAND_NONCE_INVALID")
+    try:
+        status, recorded = record_device_receipt(
+            db,
+            command=command,
+            device=device,
+            nonce=body.nonce,
+            status=body.status,
+            evidence=body.evidence,
+            error_code=body.error_code,
+        )
+    except DeviceProtocolError as exc:
+        raise ConflictError(str(exc), "DEVICE_COMMAND_PROTOCOL_CONFLICT") from exc
+    return {
+        "status": status,
+        "recorded": recorded,
+        "task_id": command.task_id,
+        "run_id": command.run_id,
+        "task_step_id": command.task_step_id,
+    }
+
+
 @router.get("/remote-commands/target")
 def list_target_remote_commands(
     authorization: str | None = Header(default=None),
@@ -710,6 +971,9 @@ def list_target_remote_commands(
     ).all()
     for command in expired_commands:
         command.status = "expired"
+        command.protocol_status = "expired"
+        command.error_code = "DEVICE_COMMAND_EXPIRED"
+        command.completed_at = utcnow()
     if expired_commands:
         db.commit()
     commands = db.scalars(
@@ -752,7 +1016,13 @@ def decide_remote_command(
                 DeviceRemoteCommand.status == "pending",
                 DeviceRemoteCommand.expires_at <= now,
             )
-            .values(status="expired", decided_at=now)
+            .values(
+                status="expired",
+                protocol_status="expired",
+                error_code="DEVICE_COMMAND_EXPIRED",
+                decided_at=now,
+                completed_at=now,
+            )
             .execution_options(synchronize_session=False)
         )
         db.commit()
@@ -770,7 +1040,13 @@ def decide_remote_command(
         )
         .values(
             status="approved" if body.approve else "rejected",
+            protocol_status="running" if body.approve else "cancelled",
             decided_at=now,
+            running_at=now if body.approve else None,
+            completed_at=None if body.approve else now,
+            lease_expires_at=(
+                now + timedelta(minutes=2) if body.approve else None
+            ),
         )
         .execution_options(synchronize_session=False)
     )
@@ -806,7 +1082,15 @@ def mark_remote_command_opened(
         )
         .values(
             status=status,
+            protocol_status="succeeded" if body.opened else "failed",
             opened_at=utcnow() if body.opened else None,
+            completed_at=utcnow(),
+            receipt={
+                "status": "succeeded" if body.opened else "failed",
+                "evidence": {"browser_open_receipt": body.opened},
+                "error_code": None if body.opened else "DEVICE_OPEN_FAILED",
+            },
+            error_code=None if body.opened else "DEVICE_OPEN_FAILED",
         )
         .execution_options(synchronize_session=False)
     )
@@ -828,6 +1112,34 @@ def revoke_device(
     if device.status != "revoked":
         device.status = "revoked"
         device.revoked_at = utcnow()
+        now = utcnow()
+        db.execute(
+            update(DeviceRemoteCommand)
+            .where(
+                DeviceRemoteCommand.device_id == device.id,
+                DeviceRemoteCommand.status == "pending",
+                DeviceRemoteCommand.protocol_status.in_(("queued", "delivered")),
+            )
+            .values(
+                status="cancelled",
+                protocol_status="cancelled",
+                error_code="DEVICE_REVOKED",
+                completed_at=now,
+            )
+        )
+        db.execute(
+            update(DeviceRemoteCommand)
+            .where(
+                DeviceRemoteCommand.device_id == device.id,
+                DeviceRemoteCommand.status == "approved",
+                DeviceRemoteCommand.protocol_status == "running",
+            )
+            .values(
+                protocol_status="uncertain",
+                error_code="DEVICE_REVOKED_DURING_EXECUTION",
+                completed_at=now,
+            )
+        )
         db.commit()
     return {"success": True, "status": device.status}
 

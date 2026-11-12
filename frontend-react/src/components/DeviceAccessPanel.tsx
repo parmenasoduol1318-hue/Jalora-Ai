@@ -27,6 +27,13 @@ type RemoteCommand = {
   action: string;
   url: string;
   status: string;
+  protocol_status?: string;
+  delivery_count?: number;
+  error_code?: string | null;
+  receipt?: {
+    status?: string;
+    evidence?: Record<string, unknown>;
+  } | null;
   created_at: string;
 };
 
@@ -209,6 +216,28 @@ export function DeviceAccessPanel({
       onToast((error as Error).message, true);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const cancelRemoteCommand = async (command: RemoteCommand) => {
+    if (!window.confirm(
+      command.protocol_status === "running"
+        ? "The device may already be performing this action. Request cancellation and mark the outcome uncertain?"
+        : "Cancel this remote request before the device executes it?",
+    )) return;
+    try {
+      const result = await api<{
+        status: string;
+        cancellation_confirmed: boolean;
+      }>(`/api/devices/remote-command-history/${command.id}/cancel`, {
+        method: "POST",
+      });
+      onToast(result.cancellation_confirmed
+        ? "Remote request cancelled before execution."
+        : "Cancellation cannot be confirmed after execution started; the result is marked uncertain.");
+      await load();
+    } catch (error) {
+      onToast((error as Error).message, true);
     }
   };
 
@@ -490,8 +519,26 @@ export function DeviceAccessPanel({
                   {devices.find((device) => device.id === command.device_id)?.name || "Device"}
                   {" · "}{command.url}
                 </div>
-                <div className="model">{command.status}</div>
+                <div className="model">
+                  {command.protocol_status || command.status}
+                  {command.delivery_count ? ` · deliveries ${command.delivery_count}` : ""}
+                  {command.error_code ? ` · ${command.error_code}` : ""}
+                  {command.receipt?.evidence?.browser_open_receipt === true
+                    ? " · browser handoff reported"
+                    : ""}
+                </div>
               </div>
+              {["queued", "delivered", "running"].includes(command.protocol_status || "") && (
+                <button
+                  className="btn small danger"
+                  disabled={busy}
+                  onClick={() => void cancelRemoteCommand(command)}
+                >
+                  {command.protocol_status === "running"
+                    ? "Request cancellation"
+                    : "Cancel request"}
+                </button>
+              )}
             </div>
           ))}
         </div>
