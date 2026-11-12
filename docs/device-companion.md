@@ -1,10 +1,10 @@
 # Device and local app control
 
-The per-device API provides message intake for a future native Jalora
-companion. On Windows, the backend also supports an explicitly approved local
-desktop-app list. The web application is not a system-wide integration and
-cannot read arbitrary apps, click/type into arbitrary app windows, or control
-phone calls.
+The per-device API supports browser pairing and source-run Windows and Android
+desktop/mobile companions.
+On Windows, the backend also supports an explicitly approved same-host desktop
+app list. The web application is not a system-wide integration and cannot read
+arbitrary apps or control phone calls.
 
 ## Windows desktop app allowlist
 
@@ -59,11 +59,11 @@ explicit confirmation before execution. This is not an always-listening
 background assistant.
 
 Email, WhatsApp, and calls continue to use connected provider integrations and
-their review/approval flows. This local app-control implementation does not read or send messages through
-other apps. The Windows controls are hosted by the Jalora backend and web UI;
-there is not yet a resident native tray companion, always-on voice listener,
-universal app access, or local call handling. Those require a separate
-platform-specific client and OS permission work.
+their review/approval flows. The same-host app-control implementation does not
+read or send messages through other apps. Source-run Windows and Android
+companions support bounded, approval-gated native operations. They do not
+provide signed installers, always-on voice listening, universal app access, or
+local call handling.
 
 ## Starting an agent task
 
@@ -137,10 +137,25 @@ The device long-polls `GET /api/devices/protocol/v1/commands`; the bounded
 The response contains
 a versioned envelope with the device, task, run, and task-step IDs, allowlisted
 operation and arguments, required scope, expiration, command-scoped nonce,
-idempotency key, expected evidence, and delivery lease. Protocol v1 currently
-allows only `browser.open_url`, and its URL is revalidated before delivery.
-Raw shell commands, arbitrary code, screen capture, and generic UI actions are
-not accepted.
+idempotency key, expected evidence, and delivery lease. Protocol v1 allows
+`browser.open_url`, bounded Windows operations (`windows.app.launch`,
+`windows.app.close`, `windows.screen.inspect`, `windows.screen.ocr`,
+`windows.screen.click`, `windows.screen.type`, and `windows.screen.key`), and
+bounded Android operations (`android.app.launch`, `android.screen.inspect`,
+`android.screen.click`, and `android.screen.type`). Browser clients poll with
+the default `client_type=browser`; native clients use `client_type=windows` or
+`client_type=android` and are accepted only for matching paired devices. Raw
+shell commands, arbitrary code, screenshot uploads, and generic coordinate
+clicks are not accepted.
+
+The Windows and Android clients report authenticated manifests to
+`PUT /api/devices/protocol/v1/manifest`. It contains only apps the Windows user
+or Android user selected locally, app display names/IDs, and capabilities
+permitted by the pairing scopes. Windows executable paths and hashes, and
+Android package names, remain on the device. Command creation and delivery
+both verify that the operation is in the current manifest. Input actions
+require screen-read permission as well as screen control, and are limited to
+one uniquely identified accessible control at a time.
 
 Before performing the operation, the target must submit its explicit decision
 to `POST /api/devices/protocol/v1/commands/{command_id}/decision` with the
@@ -151,29 +166,43 @@ the command. A device submits a bounded receipt to
 identical receipts are idempotent and conflicting replays are rejected.
 
 Queued commands can be delivered again with the same command ID and nonce
-after a delivery lease expires. This is safe because no external action has
-been approved yet. Once execution begins, a lost execution lease is recorded
-as `uncertain` and is never automatically redelivered. A late authenticated
-receipt may reconcile that result. The signed-in owner can cancel queued or
-delivered commands through the remote-command history endpoint; a cancellation
-after execution starts is reported as uncertain because the server cannot
-prove that a remote action stopped. Receipts store only bounded, allowlisted
-evidence fields.
+after a delivery lease expires. An active lease is returned only to the poll
+that acquired it, preventing concurrent polls from executing the same command.
+Redelivery after expiry is safe because no external action has been approved
+yet. Once execution begins, a lost execution lease is recorded as `uncertain`
+and is never automatically redelivered. A late authenticated receipt may
+reconcile that result. The signed-in owner can cancel queued or delivered
+commands through the remote-command history endpoint; a cancellation after
+execution starts is reported as uncertain because the server cannot prove that
+a remote action stopped. Receipts store only bounded, allowlisted evidence
+fields.
 
 Remote command rows retain their existing central task/run/step identifiers,
-the request digest, status, lease, and receipt. The protocol is a transport
-foundation, not a native companion: the shipped browser companion now uses
-protocol v1 for approved link requests, but no Windows/Android background
-client consumes it yet. Message intake and reply APIs remain separate. API
-callers must use HTTPS in deployed environments.
+the request digest, status, lease, and receipt. Accessibility results are
+bounded and stored only when the owner grants the platform's screen-read
+scope. The Windows companion encrypts its paired credential and any pending
+receipt with current-user DPAPI. The Android companion encrypts credentials,
+app selections, and a pending receipt using an Android Keystore key. After a
+restart either client may resend the same receipt but never repeats the action.
+Message intake and reply APIs remain separate. API callers must use HTTPS in
+deployed environments.
 
-This is not full-device accessibility. A browser page cannot inspect another
-app's screen, click its controls, type into it, initiate calls, or keep
-operating when the page is closed. Those features require a platform-specific
-native companion and explicit OS permissions (for example, an Android
-Accessibility Service enabled by the device owner). Such a client and its
-screen/action protocol are not implemented here. Do not treat pairing or a
-browser token as authorization for arbitrary actions.
+The native Windows client is a bounded companion, not full-device
+accessibility. It uses UI Automation only for apps the Windows user explicitly
+adds, verifies the process/window before action, and asks for local
+confirmation for every command. Optional OCR captures only the approved
+foreground window in memory and sends bounded OCR text, not an image. It
+requires Pillow, pytesseract, the Tesseract executable, `windows.screen.read`,
+and local per-command approval.
+
+The Android client is under `companions/android`. It uses intents for
+user-selected app launch and an owner-enabled Accessibility Service for bounded
+foreground-app inspection and accessible control. Android notification access
+is requested separately and forwards only notifications from selected apps
+when `messages.read` is granted. Secure windows, password controls, hidden
+apps, and unsupported app surfaces remain inaccessible. Neither native client
+is signed for production distribution or accepted on a physical device yet.
+Do not treat pairing or a browser token as authorization for arbitrary actions.
 
 Available scopes:
 
@@ -183,10 +212,20 @@ Available scopes:
 | `messages.draft` | Jalora prepares an editable reply draft |
 | `messages.send` | Companion retrieves a reply only after the user explicitly approves it |
 | `remote.browser.open_url` | Target approves opening public web links in its browser |
+| `windows.apps.launch` | Launch an app explicitly added to the Windows companion allowlist |
+| `windows.screen.read` | Read accessible controls or OCR text from an approved Windows app |
+| `windows.screen.control` | Click accessible controls or type into an approved app |
+| `android.apps.launch` | Launch an app explicitly selected in the Android companion |
+| `android.screen.read` | Read accessibility controls from a selected foreground Android app |
+| `android.screen.control` | Click unique accessible controls or enter text in non-password fields |
 
 `messages.send` requires `messages.read`. Each send requires a separate
 user-approved action in Jalora; merely pairing a device never authorizes
-sending.
+sending. Windows screen reading requires `windows.apps.launch`. Windows screen
+control requires both `windows.apps.launch` and `windows.screen.read`. Android
+screen reading requires `android.apps.launch`; Android screen control requires
+both `android.apps.launch` and `android.screen.read`. Both native companions
+present a local approval for each received command.
 
 ## Companion protocol
 
@@ -208,32 +247,65 @@ All companion requests use `Authorization: Bearer <device_token>`.
 5. The user can revoke a device with `DELETE /api/devices/{device_id}`.
    Revocation immediately invalidates its token and prevents further polling.
 
-   ## Capability discovery
+## Capability discovery
 
-   The authenticated user can query `GET /api/devices/capabilities` for a
-   user-scoped inventory of paired-device status, granted operation scopes,
-   registered Windows local apps, connected cloud integrations, and central
-   browser/research tools. The same read-only inventory is available to the
-   central agent through `discover_available_device_capabilities`.
+The authenticated user can query `GET /api/devices/capabilities` for a
+user-scoped inventory of paired-device status, granted operation scopes,
+registered Windows local apps, native companion manifests, connected cloud
+integrations, and central browser/research tools. The same read-only inventory
+is available to the central agent through
+`discover_available_device_capabilities`.
 
-   The response distinguishes `available`, `offline`, `permission_required`,
-   `registered_unavailable`, and `unsupported`. In particular, message inbox and
-   reply endpoints being registered does not mean the current browser companion
-   can access OS notifications or deliver replies; that requires a native
-   companion. Pairing never implies installed-app discovery, screen inspection,
-   or native UI control. Windows controls are listed only when the authenticated
-   request is loopback to a Windows-hosted backend.
+The response distinguishes `available`, `offline`, `permission_required`,
+`registered_unavailable`, and `unsupported`. Message inbox and reply endpoints
+being registered does not mean the browser companion can access OS
+notifications or deliver replies. Native app inventory includes only apps
+explicitly selected in that companion; pairing alone does not enumerate
+installed software. Local-host Windows controls are listed only when the
+authenticated request is loopback to a Windows-hosted backend.
 
-   Keep message content only as long as needed. The signed-in user can remove
+## Windows companion installation
+
+The source-run Windows client is under `companions/windows`. It requires
+Python 3.11+, `httpx`, `pywinauto`, and Windows UI Automation. Follow
+[`companions/windows/README.md`](../companions/windows/README.md) to create a
+virtual environment and run it. Pairing is initiated in Jalora Integrations;
+paste the one-time pairing link into the Windows client and review the account,
+server, and requested permissions before approval. Add trusted `.exe` files
+through the local file picker. The companion hashes each executable and
+revalidates it before launch.
+
+The agent can queue one task-linked Windows operation after Jalora's shared
+task-level approval. The target user then separately approves it in the
+Windows companion. A queued command is not proof of completion; the owner can
+review the receipt and accessible-control evidence in Integrations. Full
+multi-step cross-device task waiting, recovery, and task-result delivery to the
+central agent are part of the later shared-workflow phase. The central agent
+can query the persisted outcome with `get_remote_device_action_status`; this
+does not automatically resume a previously interrupted task.
+
+## Android companion installation
+
+The Android source project is under `companions/android`. Build and pairing
+instructions, system-permission explanations, and known restrictions are in
+[`companions/android/README.md`](../companions/android/README.md). It requires
+Android 8.0+, JDK 17, Android SDK Platform 35, and Android Studio or compatible
+Gradle. Accessibility and notification access are separate owner-enabled
+Android settings. Notification contents from selected apps are forwarded only
+with `messages.read`; native UI commands require per-command approval. This
+workspace has no Android build tools or test device, so the APK has not been
+built or device-tested here.
+
+Keep message content only as long as needed. The signed-in user can remove
 individual messages from the device messages panel. A native client must
 request only the OS permissions it needs and must honor notification privacy
 settings and locked-screen redaction.
 
 ## Platform limitations
 
-Android may expose eligible notifications through a user-enabled notification
-listener and may support inline reply actions for some apps. It does not grant
-universal access to every app or message. iOS does not provide third-party apps
+Android may expose notifications only after the user enables notification
+access; content may be redacted and app-specific. It does not grant universal
+access to every app or message. iOS does not provide third-party apps
 with general access to other apps' messages. Desktop access is likewise
 app-specific and requires explicit OS/app integration. Calls are not handled
 by this bridge; existing Twilio/Telnyx call integrations are separate,

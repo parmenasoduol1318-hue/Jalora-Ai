@@ -6,10 +6,8 @@ import re
 import sys
 import webbrowser
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from typing import Literal
-
-from langchain_core.messages import HumanMessage, SystemMessage
-from sqlalchemy import select
 
 from app.context import get_tool_context, get_tool_model_router
 from app.database.session import SessionLocal
@@ -17,6 +15,7 @@ from app.errors import JaloraError, ToolResult
 from app.models.device import (
     DeviceConnection,
     DeviceMessage,
+    DeviceRemoteCommand,
     LocalDeviceApp,
 )
 from app.models.user import User
@@ -28,6 +27,8 @@ from app.services.device_command_protocol import (
 )
 from app.services.url_safety import validate_external_url
 from app.tools.base import PermissionLevel, registry
+from langchain_core.messages import HumanMessage, SystemMessage
+from sqlalchemy import select
 
 logger = logging.getLogger("jalora.device_tools")
 
@@ -322,6 +323,200 @@ async def request_remote_url(
         )
 
 
+async def _request_remote_native_action(
+    device_id: str,
+    action: str,
+    app_id: str,
+    name: str = "",
+    automation_id: str = "",
+    text: str = "",
+    key: str = "Enter",
+    *,
+    platform: Literal["windows", "android"],
+) -> ToolResult:
+    """Queue one approval-gated operation for an explicitly paired native device.
+
+    Jalora task approval and local device approval are independent gates.
+    A queued command is not evidence that the device action completed.
+    """
+    context = get_tool_context()
+    with SessionLocal() as db:
+        device = db.get(DeviceConnection, device_id)
+        if (
+            device is None
+            or device.user_id != context.user_id
+            or device.status != "active"
+            or device.platform != platform
+        ):
+            return ToolResult.fail(
+                f"{platform.upper()}_DEVICE_NOT_AVAILABLE",
+                f"The requested active paired {platform.title()} companion was not found.",
+            )
+        last_seen = device.last_seen_at
+        if last_seen is None:
+            return ToolResult.fail(
+                f"{platform.upper()}_DEVICE_OFFLINE",
+                f"The {platform.title()} companion has not checked in.",
+            )
+        if last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=timezone.utc)
+        if last_seen < datetime.now(timezone.utc) - timedelta(seconds=30):
+            return ToolResult.fail(
+                f"{platform.upper()}_DEVICE_OFFLINE",
+                f"The {platform.title()} companion is currently offline.",
+            )
+
+        arguments: dict[str, str] = {"app_id": app_id}
+        if action in {"windows.screen.click", "android.screen.click"}:
+            arguments.update({"name": name, "automation_id": automation_id})
+        elif action in {"windows.screen.type", "android.screen.type"}:
+            arguments.update({
+                "text": text,
+                "name": name,
+                "automation_id": automation_id,
+            })
+        elif action == "windows.screen.key":
+            arguments["key"] = key
+        try:
+            command, already_queued = queue_device_command(
+                db,
+                user_id=context.user_id,
+                device=device,
+                action=action,
+                arguments=arguments,
+                context=context,
+            )
+            db.commit()
+        except DeviceIdempotencyConflict as exc:
+            db.rollback()
+            return ToolResult.fail("IDEMPOTENCY_CONFLICT", str(exc))
+        except DeviceProtocolError as exc:
+            db.rollback()
+            return ToolResult.fail("DEVICE_COMMAND_INVALID", str(exc))
+        db.refresh(command)
+        return ToolResult.ok(
+            f"Queued '{action}' for '{device.name}'. The device user must approve "
+            "it locally; execution is not confirmed until the companion reports a receipt.",
+            {
+                "command_id": command.id,
+                "device_id": device.id,
+                "device_name": device.name,
+                "action": command.action,
+                "app_id": app_id,
+                "status": command.status,
+                "protocol_status": command.protocol_status,
+                "task_id": command.task_id,
+                "run_id": command.run_id,
+                "task_step_id": command.task_step_id,
+                "already_queued": already_queued,
+                "target_approval_required": True,
+            },
+        )
+
+
+async def request_remote_windows_action(
+    device_id: str,
+    action: Literal[
+        "windows.app.launch",
+        "windows.app.close",
+        "windows.screen.inspect",
+        "windows.screen.ocr",
+        "windows.screen.click",
+        "windows.screen.type",
+        "windows.screen.key",
+    ],
+    app_id: str,
+    name: str = "",
+    automation_id: str = "",
+    text: str = "",
+    key: Literal[
+        "Enter", "Tab", "Esc", "Backspace", "Space", "Up", "Down", "Left", "Right"
+    ] = "Enter",
+) -> ToolResult:
+    """Queue a Windows action through Jalora's shared approvals."""
+    return await _request_remote_native_action(
+        device_id,
+        action,
+        app_id,
+        name,
+        automation_id,
+        text,
+        key,
+        platform="windows",
+    )
+
+
+async def request_remote_android_action(
+    device_id: str,
+    action: Literal[
+        "android.app.launch",
+        "android.screen.inspect",
+        "android.screen.click",
+        "android.screen.type",
+    ],
+    app_id: str,
+    name: str = "",
+    automation_id: str = "",
+    text: str = "",
+) -> ToolResult:
+    """Queue an Android action through Jalora's shared approvals."""
+    return await _request_remote_native_action(
+        device_id,
+        action,
+        app_id,
+        name,
+        automation_id,
+        text,
+        platform="android",
+    )
+
+
+async def get_remote_device_action_status(command_id: str) -> ToolResult:
+    """Read the persisted result of a command queued for this user's device."""
+    context = get_tool_context()
+    with SessionLocal() as db:
+        command = db.scalar(
+            select(DeviceRemoteCommand).where(
+                DeviceRemoteCommand.id == command_id,
+                DeviceRemoteCommand.user_id == context.user_id,
+            )
+        )
+        if command is None:
+            return ToolResult.fail(
+                "DEVICE_COMMAND_NOT_FOUND",
+                "No device command with that ID is available to this user.",
+            )
+        evidence = (
+            command.receipt.get("evidence", {})
+            if isinstance(command.receipt, dict)
+            else {}
+        )
+        result = {
+            "command_id": command.id,
+            "device_id": command.device_id,
+            "action": command.action,
+            "status": command.status,
+            "protocol_status": command.protocol_status,
+            "error_code": command.error_code,
+            "receipt_status": (
+                command.receipt.get("status")
+                if isinstance(command.receipt, dict)
+                else None
+            ),
+            "evidence": evidence,
+            "completed_at": command.completed_at,
+        }
+    if result["protocol_status"] in {"queued", "delivered", "running"}:
+        return ToolResult.ok(
+            "This device action is still pending or running; completion is not confirmed.",
+            result,
+        )
+    return ToolResult.ok(
+        "Returned the persisted device action outcome.",
+        result,
+    )
+
+
 async def queue_device_reply(message_id: str, reply: str) -> ToolResult:
     """Queue an approved reply for delivery by the paired device companion."""
     if not reply.strip() or len(reply) > 4000:
@@ -581,6 +776,30 @@ registry.register(
     category="device_control",
     tags=["remote_device", "browser", "open_url"],
     side_effect="external",
+    required_signals=["remote_device_control"],
+)
+registry.register(
+    request_remote_windows_action,
+    permission=PermissionLevel.CONFIRM,
+    category="device_control",
+    tags=["remote_device", "windows", "application", "screen"],
+    side_effect="external",
+    required_signals=["remote_device_control"],
+)
+registry.register(
+    request_remote_android_action,
+    permission=PermissionLevel.CONFIRM,
+    category="device_control",
+    tags=["remote_device", "android", "application", "screen"],
+    side_effect="external",
+    required_signals=["remote_device_control"],
+)
+registry.register(
+    get_remote_device_action_status,
+    permission=PermissionLevel.AUTO,
+    category="device_control",
+    tags=["remote_device", "status", "recovery"],
+    side_effect="read_only",
     required_signals=["remote_device_control"],
 )
 registry.register(

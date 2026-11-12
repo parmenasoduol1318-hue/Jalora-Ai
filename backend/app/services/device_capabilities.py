@@ -5,12 +5,11 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
 from app.models.device import DeviceConnection, LocalDeviceApp
 from app.services.integration_registry import provider_registry
 from app.tools.base import registry
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 DEVICE_ONLINE_WINDOW = timedelta(seconds=30)
 
@@ -40,14 +39,6 @@ _REMOTE_OPERATIONS = (
         "approval_required": True,
     },
 )
-
-_NATIVE_OPERATIONS = (
-    ("application.launch", "Launch an approved application"),
-    ("screen.accessibility.inspect", "Inspect accessible application controls"),
-    ("screen.capture_ocr", "Capture a screenshot for OCR"),
-    ("screen.control", "Click, type, or use supported keyboard controls"),
-)
-
 
 def _online(device: DeviceConnection, now: datetime) -> bool:
     if device.status != "active" or device.last_seen_at is None:
@@ -118,6 +109,116 @@ def discover_device_capabilities(
                     else "This device connection has been revoked."
                 ),
             })
+        manifest = device.capability_manifest or {}
+        applications = (
+            manifest.get("applications", [])
+            if isinstance(manifest.get("applications", []), list)
+            else []
+        )
+        native_prefix = device.platform
+        for operation, label, scope in (
+            (
+                "application.launch",
+                "Launch an approved application",
+                f"{native_prefix}.apps.launch",
+            ),
+            (
+                "application.close",
+                "Request a graceful app close",
+                f"{native_prefix}.apps.launch",
+            ),
+            (
+                "screen.accessibility.inspect",
+                "Inspect accessible application controls",
+                f"{native_prefix}.screen.read",
+            ),
+            (
+                "screen.control",
+                "Control an approved application",
+                f"{native_prefix}.screen.control",
+            ),
+        ):
+            required_capabilities = {
+                "application.launch": {"application.launch"},
+                "application.close": {"application.close"},
+                "screen.accessibility.inspect": {"screen.accessibility.inspect"},
+                "screen.control": {"screen.control"},
+            }[operation]
+            has_capability = any(
+                isinstance(app, dict)
+                and required_capabilities.intersection(app.get("capabilities", []))
+                for app in applications
+            )
+            if device.status != "active":
+                status = "revoked"
+            elif device.platform == "android" and operation == "application.close":
+                status = "unsupported"
+            elif device.platform not in {"windows", "android"}:
+                status = "unsupported"
+            elif scope not in granted_scopes:
+                status = "permission_required"
+            elif not online:
+                status = "offline"
+            elif has_capability:
+                status = "available"
+            else:
+                status = "registered_unavailable"
+            operations.append({
+                "operation": operation,
+                "label": label,
+                "scope": scope,
+                "approval_required": True,
+                "status": status,
+                "reason": (
+                    (
+                        f"The paired {device.platform.title()} companion has "
+                        "this capability and permission."
+                    )
+                    if status == "available"
+                    else (
+                        f"Add an application with this capability in the "
+                        f"{device.platform.title()} companion."
+                    )
+                    if status == "registered_unavailable"
+                    else (
+                        f"The paired {device.platform.title()} companion is offline."
+                    )
+                    if status == "offline"
+                    else "Android does not force-close applications."
+                    if status == "unsupported"
+                    else (
+                        f"Grant this {device.platform.title()} companion permission "
+                        "when pairing."
+                    )
+                    if status == "permission_required"
+                    else "This operation is not available on this device."
+                    if status == "unsupported"
+                    else "This device connection has been revoked."
+                ),
+            })
+        if device.platform == "windows":
+            has_ocr = any(
+                isinstance(app, dict)
+                and "screen.accessibility.inspect" in app.get("capabilities", [])
+                for app in applications
+            )
+            operations.append({
+                "operation": "screen.ocr",
+                "label": "Read OCR text from an approved foreground app",
+                "scope": "windows.screen.read",
+                "approval_required": True,
+                "status": (
+                    "revoked" if device.status != "active"
+                    else "offline" if not online
+                    else "available" if has_ocr
+                    else "registered_unavailable"
+                ),
+                "reason": (
+                    "OCR is limited to an approved foreground app and is not stored as an image."
+                    if has_ocr and online and device.status == "active"
+                    else "Add an app with screen-read permission in the Windows companion."
+                ),
+            })
         paired_devices.append({
             "id": device.id,
             "name": device.name,
@@ -127,17 +228,32 @@ def discover_device_capabilities(
             ),
             "last_seen_at": device.last_seen_at,
             "companion_capabilities": operations,
+            "applications": [
+                {
+                    "id": app["id"],
+                    "name": app["name"],
+                    "capabilities": app["capabilities"],
+                }
+                for app in applications
+                if isinstance(app, dict)
+                and isinstance(app.get("id"), str)
+                and isinstance(app.get("name"), str)
+                and isinstance(app.get("capabilities"), list)
+            ],
             "unsupported_operations": [
                 {
                     "operation": operation,
                     "label": label,
                     "status": "unsupported",
                     "reason": (
-                        "The currently shipped paired-device companion does not "
-                        "provide native application or screen-control operations."
+                        "A native companion is required for this operation."
                     ),
                 }
-                for operation, label in _NATIVE_OPERATIONS
+                for operation, label in (
+                    (("android.screen.capture", "Capture Android screenshots"),)
+                    if device.platform == "android"
+                    else ()
+                )
             ],
         })
 
@@ -206,8 +322,8 @@ def discover_device_capabilities(
             ),
         },
         "limitations": [
-            "Installed applications are not enumerated on paired devices.",
-            "The current paired browser companion cannot inspect screens or operate native apps.",
+            "Paired devices report only applications explicitly added to their companion allowlist.",
+            "The browser-only companion cannot inspect screens or operate native apps.",
             "Connected API integrations are separate from physical-device application access.",
         ],
     }

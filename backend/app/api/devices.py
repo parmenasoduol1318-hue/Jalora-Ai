@@ -11,11 +11,6 @@ from typing import Literal
 from urllib.parse import urlencode, urlsplit
 
 import jwt
-from fastapi import APIRouter, Depends, Header, Query, Request, Response
-from pydantic import BaseModel, Field
-from sqlalchemy import select, update
-from sqlalchemy.orm import Session
-
 from app.api.deps import get_current_user, get_db, get_router
 from app.config import get_settings
 from app.errors import (
@@ -34,8 +29,8 @@ from app.models.device import (
     DeviceRemoteCommand,
     LocalDeviceApp,
 )
-from app.models.user import User, utcnow
 from app.models.task import TaskStep
+from app.models.user import User, utcnow
 from app.services import local_device_control
 from app.services.device_command_protocol import (
     DEVICE_ACCESS_TTL,
@@ -49,11 +44,26 @@ from app.services.device_command_protocol import (
 from app.services.direct_action import execute_direct_action
 from app.services.model_router import ModelRouter
 from app.services.url_safety import validate_external_url
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
+from pydantic import BaseModel, Field
+from sqlalchemy import select, update
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 
 DEVICE_SCOPES = frozenset(
-    {"messages.read", "messages.draft", "messages.send", "remote.browser.open_url"}
+    {
+        "messages.read",
+        "messages.draft",
+        "messages.send",
+        "remote.browser.open_url",
+        "windows.apps.launch",
+        "windows.screen.read",
+        "windows.screen.control",
+        "android.apps.launch",
+        "android.screen.read",
+        "android.screen.control",
+    }
 )
 PAIR_REQUEST_TTL = timedelta(minutes=10)
 DEVICE_ONLINE_WINDOW = timedelta(seconds=30)
@@ -64,20 +74,30 @@ DEVICE_SCOPE_LABELS = {
     "remote.browser.open_url": (
         "Approve opening external web links in the target browser"
     ),
+    "windows.apps.launch": "Launch only applications added to the Windows companion allowlist",
+    "windows.screen.read": (
+        "Read accessibility controls or OCR from an approved Windows app"
+    ),
+    "windows.screen.control": (
+        "Click approved accessible controls or type into a selected Windows app"
+    ),
+    "android.apps.launch": "Launch only applications selected in the Android companion",
+    "android.screen.read": "Read accessibility controls from the foreground approved Android app",
+    "android.screen.control": "Control the foreground approved Android app through accessibility",
 }
 
 
 class DeviceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     platform: Literal["android", "ios", "windows", "macos", "linux"]
-    scopes: list[str] = Field(min_length=1, max_length=4)
+    scopes: list[str] = Field(min_length=1, max_length=11)
     consent_confirmed: bool
 
 
 class DevicePairRequestCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     platform: Literal["android", "ios", "windows", "macos", "linux"]
-    scopes: list[str] = Field(min_length=1, max_length=4)
+    scopes: list[str] = Field(min_length=1, max_length=11)
     consent_confirmed: bool
 
 
@@ -117,6 +137,34 @@ class DeviceProtocolReceipt(BaseModel):
     status: Literal["succeeded", "failed", "uncertain"]
     evidence: dict[str, object] = Field(default_factory=dict)
     error_code: str | None = Field(default=None, max_length=64)
+
+
+class DeviceManifestApplication(BaseModel):
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=120)
+    capabilities: list[
+        Literal[
+            "application.launch",
+            "application.close",
+            "screen.accessibility.inspect",
+            "screen.control",
+        ]
+    ] = Field(max_length=4)
+
+
+class DeviceCapabilityManifest(BaseModel):
+    schema_version: Literal[1]
+    applications: list[DeviceManifestApplication] = Field(max_length=100)
+
+    def normalized(self) -> dict:
+        rows = [app.model_dump() for app in self.applications]
+        ids = [row["id"] for row in rows]
+        if len(set(ids)) != len(ids):
+            raise BadRequestError(
+                "The device companion manifest contains duplicate app IDs.",
+                "INVALID_DEVICE_MANIFEST",
+            )
+        return {"schema_version": 1, "applications": rows}
 
 
 class DeviceMessageIn(BaseModel):
@@ -232,6 +280,7 @@ def _remote_command_out(command: DeviceRemoteCommand) -> dict:
         "task_step_id": command.task_step_id,
         "action": command.action,
         "url": command.target_url,
+        "arguments": dict(command.arguments or {}),
         "status": command.status,
         "protocol_version": command.protocol_version,
         "protocol_status": command.protocol_status,
@@ -314,16 +363,53 @@ def _verify_pairing_code(pair: DevicePairingRequest, code: str) -> None:
         )
 
 
-def _validate_device_scopes(scopes: list[str]) -> None:
+def _validate_device_scopes(
+    scopes: list[str],
+    platform: str,
+) -> None:
     invalid_scopes = set(scopes) - DEVICE_SCOPES
     if invalid_scopes:
         raise BadRequestError(
             f"Unsupported device permissions: {', '.join(sorted(invalid_scopes))}.",
             "INVALID_DEVICE_SCOPE",
         )
+    if platform != "windows" and any(scope.startswith("windows.") for scope in scopes):
+        raise BadRequestError(
+            "Windows application permissions can be granted only to a Windows device.",
+            "DEVICE_PLATFORM_SCOPE_MISMATCH",
+        )
+    if platform != "android" and any(scope.startswith("android.") for scope in scopes):
+        raise BadRequestError(
+            "Android application permissions can be granted only to an Android device.",
+            "DEVICE_PLATFORM_SCOPE_MISMATCH",
+        )
     if "messages.send" in scopes and "messages.read" not in scopes:
         raise BadRequestError(
             "Message sending requires the message-reading permission.",
+            "DEVICE_SCOPE_DEPENDENCY",
+        )
+    if "windows.screen.read" in scopes and "windows.apps.launch" not in scopes:
+        raise BadRequestError(
+            "Windows screen reading is limited to apps Jalora is allowed to launch.",
+            "DEVICE_SCOPE_DEPENDENCY",
+        )
+    if "windows.screen.control" in scopes and not {
+        "windows.apps.launch", "windows.screen.read"
+    }.issubset(scopes):
+        raise BadRequestError(
+            "Windows screen control requires app-launch and screen-read permissions.",
+            "DEVICE_SCOPE_DEPENDENCY",
+        )
+    if "android.screen.read" in scopes and "android.apps.launch" not in scopes:
+        raise BadRequestError(
+            "Android screen reading is limited to apps selected in the companion.",
+            "DEVICE_SCOPE_DEPENDENCY",
+        )
+    if "android.screen.control" in scopes and not {
+        "android.apps.launch", "android.screen.read"
+    }.issubset(scopes):
+        raise BadRequestError(
+            "Android screen control requires app-launch and screen-read permissions.",
             "DEVICE_SCOPE_DEPENDENCY",
         )
 
@@ -459,8 +545,9 @@ def list_device_scopes():
             for scope, label in DEVICE_SCOPE_LABELS.items()
         ],
         "note": (
-            "The browser companion can open target-approved public web links only. "
-            "It cannot inspect or operate other apps on the target device."
+            "The browser companion supports approved public links. Paired Windows "
+                "and Android companions can separately operate user-selected apps "
+                "through their respective native accessibility interfaces."
         ),
     }
 
@@ -522,10 +609,12 @@ def create_device(
             "DEVICE_CONSENT_REQUIRED",
         )
     scopes = list(dict.fromkeys(body.scopes))
-    _validate_device_scopes(scopes)
-    if "remote.browser.open_url" in scopes:
+    _validate_device_scopes(scopes, body.platform)
+    if "remote.browser.open_url" in scopes or any(
+        scope.startswith(("windows.", "android.")) for scope in scopes
+    ):
         raise BadRequestError(
-            "Remote device permissions must be approved on the target device.",
+            "Native companion permissions must be approved on the target device.",
             "TARGET_DEVICE_APPROVAL_REQUIRED",
         )
     token = secrets.token_urlsafe(32)
@@ -560,7 +649,7 @@ def create_device_pair_request(
     if not name:
         raise BadRequestError("Device name cannot be blank.", "INVALID_DEVICE_NAME")
     scopes = list(dict.fromkeys(body.scopes))
-    _validate_device_scopes(scopes)
+    _validate_device_scopes(scopes, body.platform)
     code = secrets.token_urlsafe(32)
     pair = DevicePairingRequest(
         user_id=user.id,
@@ -854,10 +943,74 @@ def create_protocol_session(
     }
 
 
+@router.put("/protocol/v1/manifest")
+def update_protocol_manifest(
+    body: DeviceCapabilityManifest,
+    response: Response,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, private"
+    device = _authenticate_protocol_device(authorization, db)
+    if device.platform not in {"windows", "android"}:
+        raise ForbiddenError(
+            "Only a paired native companion may report this manifest.",
+            "DEVICE_PLATFORM_UNSUPPORTED",
+        )
+    granted_scopes = set(device.scopes or [])
+    platform_prefix = f"{device.platform}."
+    native_scopes = {
+        f"{platform_prefix}apps.launch",
+        f"{platform_prefix}screen.read",
+        f"{platform_prefix}screen.control",
+    }
+    manifest = body.normalized()
+    notification_only = (
+        device.platform == "android"
+        and "messages.read" in granted_scopes
+        and not manifest["applications"]
+    )
+    if not granted_scopes.intersection(native_scopes) and not notification_only:
+        raise ForbiddenError(
+            "The native companion has no application permissions.",
+            "DEVICE_SCOPE_REQUIRED",
+        )
+    capability_scopes = {
+        "application.launch": f"{platform_prefix}apps.launch",
+        "application.close": f"{platform_prefix}apps.launch",
+        "screen.accessibility.inspect": f"{platform_prefix}screen.read",
+        "screen.control": f"{platform_prefix}screen.control",
+    }
+    for application in manifest["applications"]:
+        if device.platform == "android" and "application.close" in application["capabilities"]:
+            raise BadRequestError(
+                "The Android companion does not support terminating applications.",
+                "ANDROID_OPERATION_UNSUPPORTED",
+            )
+        if any(
+            capability_scopes[capability] not in granted_scopes
+            for capability in application["capabilities"]
+        ):
+            raise ForbiddenError(
+                "The reported application capabilities exceed this device's permissions.",
+                "DEVICE_SCOPE_REQUIRED",
+            )
+    device.capability_manifest = manifest
+    device.last_seen_at = utcnow()
+    db.commit()
+    return {
+        "accepted": True,
+        "schema_version": manifest["schema_version"],
+        "application_count": len(manifest["applications"]),
+        "last_seen_at": device.last_seen_at,
+    }
+
+
 @router.get("/protocol/v1/commands")
 def poll_protocol_commands(
     response: Response,
     wait_seconds: int = Query(default=20, ge=0, le=25),
+    client_type: Literal["browser", "windows", "android"] = Query(default="browser"),
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
@@ -865,8 +1018,47 @@ def poll_protocol_commands(
     deadline = time.monotonic() + wait_seconds
     while True:
         device = _authenticate_protocol_device(authorization, db)
-        _require_scope(device, "remote.browser.open_url")
-        commands = claim_device_commands(db, device)
+        if client_type == "browser":
+            _require_scope(device, "remote.browser.open_url")
+        elif client_type == "windows":
+            if device.platform != "windows":
+                raise ForbiddenError(
+                    "Only a paired Windows device may poll Windows companion commands.",
+                    "DEVICE_PLATFORM_UNSUPPORTED",
+                )
+            supported_scopes = {
+                "remote.browser.open_url",
+                "windows.apps.launch",
+                "windows.screen.read",
+                "windows.screen.control",
+            }
+            platform_name = "Windows"
+        else:
+            if device.platform != "android":
+                raise ForbiddenError(
+                    "Only a paired Android device may poll Android companion commands.",
+                    "DEVICE_PLATFORM_UNSUPPORTED",
+                )
+            supported_scopes = {
+                "remote.browser.open_url",
+                "android.apps.launch",
+                "android.screen.read",
+                "android.screen.control",
+                "messages.read",
+            }
+            platform_name = "Android"
+        if client_type != "browser" and not set(device.scopes or []).intersection(
+            supported_scopes
+        ):
+            raise ForbiddenError(
+                f"This {platform_name} companion has no supported command permissions.",
+                "DEVICE_SCOPE_REQUIRED",
+            )
+        commands = claim_device_commands(
+            db,
+            device,
+            client_type=client_type,
+        )
         if commands or time.monotonic() >= deadline:
             return {
                 "protocol_version": 1,

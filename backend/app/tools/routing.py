@@ -12,7 +12,6 @@ from app.agents.intent import (
 )
 from app.tools.base import PermissionLevel, registry, task_action_terms
 
-
 _LOCAL_APP_OPEN_COMMAND = re.compile(
     r"^\s*(?:(?:hey\s+)?jalora[, ]+)?(?:please\s+)?"
     r"(?:open|launch|start)\s+(?:the\s+)?"
@@ -42,14 +41,22 @@ _LOCAL_APP_ACTION = re.compile(
 _REMOTE_DEVICE_REQUEST = re.compile(
     r"\b(?:on|to|using|through)\s+"
     r"(?:(?:my|the|another|paired|remote)\s+){0,2}"
-    r"(?:phone|tablet|device|android|iphone|computer|laptop)\b"
+    r"(?:(?:android|iphone)\s+)?(?:phone|tablet|device|android|iphone|"
+    r"computer|laptop|windows|pc|desktop)\b"
     r".{0,180}\b(?:youtube|song|video|play|search|open|visit|browse|go to)\b"
     r"|"
-    r"\b(?:open|visit|browse|go to|play|search)\b.{0,120}"
-    r"\b(?:youtube|song|video|link|website|site|url)\b"
+    r"\b(?:open|visit|browse|go to|play|search|launch|start)\b.{0,120}"
+    r"\b(?:youtube|song|video|link|website|site|url|app|application)\b"
     r".{0,100}\b(?:on|to|using)\s+"
     r"(?:(?:my|the|another|paired|remote)\s+){0,2}"
-    r"(?:phone|tablet|device|android|iphone|computer|laptop)\b",
+    r"(?:(?:android|iphone)\s+)?(?:phone|tablet|device|android|iphone|computer|laptop)\b",
+    re.I,
+)
+_WINDOWS_COMPANION_REQUEST = re.compile(
+    r"\b(?:on|to|using|through)\s+"
+    r"(?:(?:my|the|another|paired|remote)\s+){0,3}"
+    r"(?:windows\s+(?:pc|computer|desktop|laptop|companion)|"
+    r"(?:windows|pc|desktop|laptop)\s+companion)\b",
     re.I,
 )
 _NON_APP_TARGETS = frozenset({
@@ -151,7 +158,15 @@ def route_request(
     """
     request_text = text or ""
     result: IntentResult = classify_intent(request_text)
-    app_command = local_app_command(request_text)
+    remote_device_request = (
+        _REMOTE_DEVICE_REQUEST.search(request_text)
+        or _WINDOWS_COMPANION_REQUEST.search(request_text)
+    )
+    app_command = (
+        None
+        if remote_device_request
+        else local_app_command(request_text)
+    )
     if app_command is not None:
         tool_names = {
             spec.name for spec in registry.all()
@@ -178,7 +193,7 @@ def route_request(
         active_signals.update(context_result.signals)
     if _LOCAL_APP_ACTION.search(request_text):
         active_signals.add("local_app_control")
-    if _REMOTE_DEVICE_REQUEST.search(request_text):
+    if remote_device_request:
         active_signals.add("remote_device_control")
     selected_intent = intent_override or (
         "task"
@@ -208,6 +223,12 @@ def route_request(
         }
         if registry.get("request_remote_url") is not None:
             selected.add("request_remote_url")
+        if registry.get("request_remote_windows_action") is not None:
+            selected.add("request_remote_windows_action")
+        if registry.get("request_remote_android_action") is not None:
+            selected.add("request_remote_android_action")
+        if registry.get("get_remote_device_action_status") is not None:
+            selected.add("get_remote_device_action_status")
         tool_names = sorted(selected)
     if _GENERIC_LOCAL_APP_COMMAND.fullmatch(request_text):
         tool_names = [

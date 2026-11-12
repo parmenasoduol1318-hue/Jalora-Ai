@@ -82,6 +82,10 @@ export function RemoteDeviceCompanion({
   const pairCode = pairLink.code;
   const pairRequestId = pairLink.requestId;
   const [pairRequest, setPairRequest] = useState<PairRequest | null>(null);
+  const nativeWindowsPair = Boolean(
+    pairRequest?.platform === "windows" &&
+    pairRequest.scopes.some((scope) => scope.startsWith("windows.")),
+  );
   const [deviceToken, setDeviceToken] = useState(
     () => pairLink.code ? "" : sessionStorage.getItem("jalora_remote_device_token") || "",
   );
@@ -197,6 +201,10 @@ export function RemoteDeviceCompanion({
 
   const approvePairing = async () => {
     if (!pairRequestId || !pairCode || !pairRequest || pairRequest.status !== "pending") return;
+    if (nativeWindowsPair) {
+      setError("Approve this Windows pairing in the Jalora Windows Companion app.");
+      return;
+    }
     setError("");
     try {
       const result = await deviceApi<DeviceCredentials>(
@@ -348,7 +356,7 @@ export function RemoteDeviceCompanion({
 
         {!deviceToken && pairRequest && (
           <div className="column gap">
-            <h3>Approve device pairing?</h3>
+            <h3>{nativeWindowsPair ? "Windows companion approval required" : "Approve device pairing?"}</h3>
             <p>
               A Jalora user requested pairing for <strong>{pairRequest.name}</strong>
               {" "}({pairRequest.platform}).
@@ -358,17 +366,20 @@ export function RemoteDeviceCompanion({
             )}
             <p>Permissions requested: {(pairRequest.scopes || []).join(", ")}</p>
             <p className="muted small">
-              Approve only if you recognize this request. Opening each web link
-              still requires your approval on this device.
+              {nativeWindowsPair
+                ? "This request includes native Windows permissions. Paste the pairing link into the Jalora Windows Companion and approve it there; a browser cannot control Windows apps."
+                : "Approve only if you recognize this request. Opening each web link still requires your approval on this device."}
             </p>
             <div className="row gap">
-              <button
-                className="btn small primary"
-                disabled={busyCommand !== "" || pairRequest.status !== "pending"}
-                onClick={() => void approvePairing()}
-              >
-                Approve pairing
-              </button>
+              {!nativeWindowsPair && (
+                <button
+                  className="btn small primary"
+                  disabled={busyCommand !== "" || pairRequest.status !== "pending"}
+                  onClick={() => void approvePairing()}
+                >
+                  Approve pairing
+                </button>
+              )}
               <button
                 className="btn small danger"
                 disabled={busyCommand !== "" || pairRequest.status !== "pending"}

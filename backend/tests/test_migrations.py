@@ -154,3 +154,17 @@ def test_protocol_migration_backfills_existing_remote_commands():
         }
         assert envelope["task_id"] is None
         assert migrated.protocol_status == "queued"
+
+
+def test_windows_companion_migration_adds_capability_manifest():
+    _reset()
+    command.upgrade(CFG, "v1j_device_command_protocol")
+    assert "capability_manifest" not in {
+        column["name"] for column in inspect(engine).get_columns("device_connections")
+    }
+
+    command.upgrade(CFG, "head")
+
+    assert "capability_manifest" in {
+        column["name"] for column in inspect(engine).get_columns("device_connections")
+    }

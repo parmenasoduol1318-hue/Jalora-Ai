@@ -29,6 +29,7 @@ class DeviceConnection(Base):
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     scopes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    capability_manifest: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -100,6 +100,7 @@ def test_local_app_agent_tools_require_explicit_approval():
         "assist_device_message": PermissionLevel.AUTO,
         "save_device_reply_draft": PermissionLevel.AUTO,
         "discover_available_device_capabilities": PermissionLevel.AUTO,
+        "get_remote_device_action_status": PermissionLevel.AUTO,
         "delete_device_message": PermissionLevel.STRICT,
     }
     for name, permission in expected_permissions.items():

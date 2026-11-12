@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Jalora Device Companion</string>
+    <string name="accessibility_description">Allows Jalora to inspect and interact with apps you explicitly select, only after each action is approved on this device.</string>
+</resources>

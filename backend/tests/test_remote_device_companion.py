@@ -279,3 +279,20 @@ def test_remote_device_command_tool_is_confirmation_gated_and_routed():
     assert "remote_device_control" in routing.signals
     assert "request_remote_url" in (routing.tool_names or [])
     assert not {"search_hotels", "book_hotel"} & set(routing.tool_names or [])
+
+    windows_tool = next(
+        item for item in device_tools.registry.all()
+        if item.name == "request_remote_windows_action"
+    )
+    assert windows_tool.permission == PermissionLevel.CONFIRM
+    windows_routing = route_request(
+        "Open the Notepad app on my paired Windows computer."
+    )
+    assert "remote_device_control" in windows_routing.signals
+    assert "request_remote_windows_action" in (windows_routing.tool_names or [])
+
+    android_routing = route_request(
+        "Open the Maps app on my paired Android phone."
+    )
+    assert "remote_device_control" in android_routing.signals
+    assert "request_remote_android_action" in (android_routing.tool_names or [])

@@ -70,7 +70,7 @@ def test_device_pairing_requires_consent_and_valid_scope(client, auth_headers):
     assert invalid_scope.status_code == 400
 
 
-def test_device_scope_catalog_matches_supported_browser_companion_permissions(
+def test_device_scope_catalog_matches_supported_companion_permissions(
     client, auth_headers
 ):
     headers = auth_headers("device-scope-catalog@test.com")
@@ -83,8 +83,14 @@ def test_device_scope_catalog_matches_supported_browser_companion_permissions(
         "messages.draft",
         "messages.send",
         "remote.browser.open_url",
+        "windows.apps.launch",
+        "windows.screen.read",
+        "windows.screen.control",
+        "android.apps.launch",
+        "android.screen.read",
+        "android.screen.control",
     }
-    assert "cannot inspect or operate other apps" in result["note"]
+    assert "Windows and Android companions" in result["note"]
 
 
 def test_device_capability_inventory_is_live_scoped_and_honest(client, auth_headers):

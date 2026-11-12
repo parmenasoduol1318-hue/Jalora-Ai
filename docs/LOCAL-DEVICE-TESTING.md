@@ -1,8 +1,8 @@
 # Local-device testing and remaining stage gates
 
 This guide prepares Jalora for safe browser-based testing from a phone or
-another computer on the same private network. It does **not** make the current
-browser companion a native Windows or Android companion.
+another computer on the same private network. The browser companion remains
+separate from the native Windows and Android companions described below.
 
 ## What is available now
 
@@ -90,26 +90,40 @@ suite is the supported boundary and live send acceptance stays blocked.
 
 ## Stage 12 — native device companions
 
-Stage 12 is **BLOCKED for native/device-wide automation**. Pairing a phone
-browser to the LAN test stack does not expose installed apps, screen content,
-accessibility trees, touch/keyboard input, phone calls, or filesystem access.
-Those are not shipped or made safe by enabling a browser permission.
+Stage 12 is **IMPLEMENTED IN SOURCE / NOT PLATFORM-ACCEPTED**. The Windows
+companion uses outbound protocol v1, current-user DPAPI credential storage, an
+owner-selected executable allowlist, local per-command approval, UI Automation,
+foreground-only OCR, visible session history, pause/stop, and bounded receipts.
+The Android source companion supports device pairing, app selection, Android
+Keystore-encrypted credentials, a foreground service, notification approval,
+scoped Accessibility Service operations, and a separate notification listener
+gated by `messages.read`. Notification-only Android pairings can connect without
+application-control scopes. Device receipts are linked back to task-step
+evidence. The Android project has not been built in this environment.
 
-Native Windows/Android implementation still requires separate companion
-projects, versioned authenticated/replay-resistant protocol, target-side
-permission enforcement, scoped OS grants, revocation/reconnect tests,
-install/update/signing, and supported-device test coverage. Android testing
-requires a physical/virtual Android device and the user to grant the specific
-OS permissions after reviewing the app and data flow. Windows remote testing
-requires a second Windows target and explicit UI Automation/desktop permission.
-The user must select the first target platform and supply/authorize those
-devices before native work can be meaningfully acceptance-tested. Do not
-describe browser pairing as completing this stage.
+Windows automated tests use mocked API responses and do not send real external
+actions. The remaining Windows acceptance requires a signed distribution,
+interactive test app, UIA/OCR evidence, and network-loss and revocation
+demonstration. Android acceptance requires building the APK, a physical or
+virtual Android target, and explicit OS-permission, launch, accessibility,
+restart/reconnect, and revocation tests after reviewing the app and data flow.
+Browser pairing does not complete native-device acceptance.
 
-The first safe local validation today is the phone browser UI and approved
-public-link handoff described above. For same-PC Windows app actions, run the
-backend locally on Windows, register one harmless test application, review each
-inspection/input approval, and verify the outcome on screen.
+## Universal workflow and reliability acceptance
+
+The shared capability registry and task-linked remote commands are implemented,
+but automatic central-agent wait/resume after a device receipt is not. Multi-app
+workflow acceptance remains incomplete. Protocol tests cover authorization,
+idempotency, command leases, cancellation, revocation, receipts, and uncertain
+recovery; no production load targets, signed companion releases, or Android
+device demonstrations have been verified in this environment. Keep Phases 5
+and 6 blocked until their listed acceptance checks in
+[`the universal device operator plan`](./UNIVERSAL-DEVICE-OPERATOR-PLAN.md)
+have been executed on the intended platforms.
+
+For Windows and Android development, follow [the companion run guide](./device-companion.md)
+and use disposable apps/accounts. For the phone browser UI and approved
+public-link handoff, use the isolated LAN test stack described above.
 
 ## Stage 14 — security, recovery, and deployment
 
@@ -145,8 +159,9 @@ does not replace HTTPS, production secret management, or operational controls.
    pairing; record what is verified versus only submitted.
 3. Run Stage 7 mock tests, then provider acceptance only after the user creates
    an authorized sandbox account.
-4. Keep Stage 12 blocked until native Windows/Android clients exist and are
-   tested on named targets; browser tests do not satisfy this gate.
+4. Keep Stage 12 unaccepted until the Windows companion is signed and validated
+   against a disposable UIA app and the Android APK is built and tested on
+   named targets; browser tests do not satisfy this gate.
 5. Complete Stage 14 deployment, security, backup/restore, rollback, and
    load/concurrency gates before exposing any production service.
 

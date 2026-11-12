@@ -39,15 +39,15 @@
 
 ### Principal gaps and constraints
 
-1. There is no resident Windows companion connected outbound to the cloud.
-   Local Windows actions work only when the backend itself runs on that
-   Windows computer.
-2. There is no native Android application or Accessibility Service. The web
-   companion does not inherit Android notification, screen, or UI permissions.
-3. Protocol v1 now transports only approved public browser links. It is not a
-   generic remote UI command protocol and has no companion-reported app
-   inventory, accessibility-tree transport, screenshot transport, or
-   cross-device UI checkpointing.
+1. Windows and Android native companion source clients now connect outbound.
+   Neither has a signed production distribution or an interactive platform
+   acceptance run in this environment.
+2. The Android Accessibility Service and notification listener require
+   explicit device-owner approval. App-specific restrictions, secure windows,
+   lock-screen redaction, and OS background limits remain authoritative.
+3. Protocol v1 now transports a bounded, typed operation set and companion
+   manifests. It does not transport screenshot images or persist cross-device
+   UI checkpoints.
 4. Existing UI actions remain narrow and approval-gated. App-specific
    restrictions and API-vs-UI selection are not yet represented by a common
    live capability contract.
@@ -86,15 +86,16 @@ native limitations, and is callable through the shared tool registry.
   Stale in-flight execution becomes `uncertain`, never an automatic retry.
   Nonce-bound decisions/receipts, cancellation, revocation, and bounded receipt
   evidence are persisted.
-- Current operation allowlist is only `browser.open_url`. Do not add raw shell,
-  arbitrary code, or UI commands until a native companion and the later
-  platform-specific gates exist.
+- The browser client receives only `browser.open_url`; native Windows and
+  Android clients receive platform-specific app and accessibility operations.
+  Neither client accepts raw shell commands or arbitrary code.
 
-**Status:** Implemented and tested for the currently supported browser-link
-operation. Focused tests cover short-lived token expiry, authorization and
-scope checks, task/run/step binding, idempotent enqueue and receipt, delivery
-reconnect, command expiry/cancellation, revocation, invalid evidence, and
-uncertain execution recovery. No native client consumes this protocol yet.
+**Status:** Implemented and tested for browser-link and the bounded Windows
+and Android operation envelopes. The browser companion remains isolated to
+browser-link commands. Focused tests cover token expiry, authorization/scopes,
+task/run/step binding, idempotent enqueue and receipt, app-manifest validation,
+client separation, command expiry/cancellation, revocation, bounded evidence,
+and uncertain execution recovery.
 
 ### Phase 3 — Windows companion
 
@@ -108,23 +109,45 @@ uncertain execution recovery. No native client consumes this protocol yet.
   state changes and stop on unexpected screens.
 - Implement pause, stop, revocation, local status, and a visible action history.
 
-**Acceptance:** disposable test applications verify launch, accessible
-inspection, bounded input, screenshot handling, verification, cancellation,
-network loss, and safe recovery. No real account or external action is used.
+**Implementation:** The source-run Tkinter client supports DPAPI-protected
+pairing credentials, user-selected/hash-checked executables, outbound
+long-polling, scoped manifests, local per-command approval, allowlisted UI
+Automation, foreground-scoped in-memory OCR, bounded receipts, visible
+in-session action history, pause/stop, and safe receipt recovery. A central
+status tool exposes persisted outcomes without claiming a queued action
+completed. It does not force-close apps or replay an action whose result is
+uncertain.
+
+**Status:** Source implementation complete; platform/release acceptance is
+blocked. Automated protocol, permission, OCR, and receipt tests pass. Code
+signing/distribution and a disposable interactive Windows app demonstration
+require Windows release credentials and a Windows target. The central agent
+can inspect persisted action status, but automatic task wait/resume delivery
+remains in Phase 5. No real account or external action has been used.
 
 ### Phase 4 — Android companion
 
 - Build a native Android companion with explicit pairing, per-capability
   permission explanations, revocation, foreground status, and privacy controls.
-- Use intents for app launch and an owner-enabled Accessibility Service only
-  for operations Android permits. Request notification access separately;
-  honor notification redaction, app restrictions, and background-execution
-  limits.
+- Use intents for selected-app launch and an owner-enabled Accessibility
+  Service for bounded foreground inspection, unique accessible control clicks,
+  and non-password text entry. Request notification access separately and
+  forward only selected-app notifications when `messages.read` is granted.
+- Encrypt credentials and pending receipts with Android Keystore; reconcile an
+  interrupted in-flight operation as `uncertain` rather than repeating it.
 - Never bypass credentials, MFA, secure windows, or application sandboxing.
 
-**Acceptance:** emulator and physical-device tests cover permission denial,
-grant, revocation, app launch, permitted node inspection/action, process
-restart, offline reconnect, and app-specific unsupported states.
+**Implementation:** A native Android Gradle project and companion service now
+use the shared pair request, manifest, command, decision, and receipt protocol.
+Each action requires a device notification approval. Screen operations stop
+unless the selected package is the foreground app. The separate notification
+listener honors `messages.read` and the selected-app allowlist.
+
+**Status:** Source implementation is present; Android acceptance remains
+blocked. This environment has no JDK, Gradle, Android SDK, emulator, or
+physical Android device, so the APK cannot be built or permission, lifecycle,
+accessibility, offline reconnect, and revocation behavior demonstrated here.
+These are mandatory acceptance gates before production use.
 
 ### Phase 5 — Verified multi-application workflows
 
@@ -142,6 +165,15 @@ restart, offline reconnect, and app-specific unsupported states.
 isolation, per-step verification, editing, pause/resume, cancellation, restart
 recovery, and duplicate prevention without real external side effects.
 
+**Status:** Partially implemented. Capability discovery, central registry
+routing, task-linked commands, individual shared/local approval, persisted
+command status, and bounded receipts are implemented. Authenticated device
+receipts now update the linked task-step evidence and verification status; the
+central prompt requires discovery before choosing a device and forbids treating
+a queued command as completed. There is no durable automatic agent
+wait/resume when a device later submits its receipt, and there is no end-to-end
+mocked multi-application workflow test covering the full acceptance list.
+
 ### Phase 6 — Reliability, privacy, and rollout
 
 - Add protocol compatibility tests, load/concurrency tests, redacted audit
@@ -156,12 +188,21 @@ recovery, and duplicate prevention without real external side effects.
 targets, and production demonstrations use dedicated test accounts/apps with
 recorded evidence.
 
+**Status:** Partially implemented. Protocol tests cover scoped access,
+idempotency, delivery/execution leases, cancellation, revocation, bounded
+receipts, and uncertain outcomes; companion unit tests use mocks. There are no
+measured load/concurrency thresholds, production threat-model sign-off,
+signed companion release, Android device acceptance, or demonstrated
+backup/restore and retention drills in this environment.
+
 ## Current implementation status
 
-Phases 1 and 2 are implemented. The protocol is a transport foundation for the
-existing approved public-link operation, and the shipped browser companion
-uses protocol v1 for those requests. Message bridge APIs remain separate.
-Native Windows and Android companions, generalized remote UI execution,
-screenshot-based reasoning, and cross-device workflow recovery remain future
-phases. The existing local Windows controls and browser-link companion retain
-their previous, narrower behavior.
+Phases 1 and 2 are implemented. Phase 3 now has an expanded Windows companion
+source implementation; code signing, interactive Windows acceptance, and
+automatic central-task wait/resume remain incomplete. Phase 4 has an Android
+companion source implementation but has not been built or tested on Android.
+Phases 5 and 6 are partially implemented as stated above and are not accepted.
+The browser companion remains restricted to approved public links. Message
+bridge APIs remain separate. Screenshot-image reasoning and automatic
+cross-device task wait/resume remain future work. The existing same-host
+Windows controls retain their previous behavior.

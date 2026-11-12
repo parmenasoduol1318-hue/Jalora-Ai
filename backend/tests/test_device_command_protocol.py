@@ -191,10 +191,7 @@ def test_protocol_v1_is_task_linked_idempotent_and_uncertain_safe(
         headers=protocol_headers,
     )
     assert second_poll.status_code == 200
-    waiting_delivery = second_poll.json()["commands"][0]
-    assert waiting_delivery["command_id"] == envelope["command_id"]
-    assert waiting_delivery["nonce"] == envelope["nonce"]
-    assert waiting_delivery["delivery_count"] == 1
+    assert second_poll.json()["commands"] == []
     with SessionLocal() as db:
         command = db.get(DeviceRemoteCommand, envelope["command_id"])
         assert command is not None

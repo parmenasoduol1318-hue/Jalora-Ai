@@ -26,13 +26,19 @@ type RemoteCommand = {
   device_id: string;
   action: string;
   url: string;
+  arguments?: Record<string, unknown>;
   status: string;
   protocol_status?: string;
   delivery_count?: number;
   error_code?: string | null;
   receipt?: {
     status?: string;
-    evidence?: Record<string, unknown>;
+    evidence?: {
+      browser_open_receipt?: boolean;
+      operation_result?: Record<string, unknown>;
+      accessible_controls?: Array<Record<string, unknown>>;
+      reason?: string;
+    };
   } | null;
   created_at: string;
 };
@@ -132,11 +138,31 @@ export function DeviceAccessPanel({
   }, [load]);
 
   const toggleScope = (scope: string) => {
-    setScopes((current) =>
-      current.includes(scope)
-        ? current.filter((value) => value !== scope)
-        : [...current, scope],
-    );
+    setScopes((current) => {
+      const next = new Set(current);
+      if (next.has(scope)) {
+        next.delete(scope);
+        if (scope.endsWith(".apps.launch")) {
+          next.delete(scope.replace(".apps.launch", ".screen.read"));
+          next.delete(scope.replace(".apps.launch", ".screen.control"));
+        } else if (scope.endsWith(".screen.read")) {
+          next.delete(scope.replace(".screen.read", ".screen.control"));
+        } else if (scope === "messages.read") {
+          next.delete("messages.send");
+        }
+      } else {
+        next.add(scope);
+        if (scope.endsWith(".screen.read")) {
+          next.add(scope.replace(".screen.read", ".apps.launch"));
+        } else if (scope.endsWith(".screen.control")) {
+          next.add(scope.replace(".screen.control", ".screen.read"));
+          next.add(scope.replace(".screen.control", ".apps.launch"));
+        } else if (scope === "messages.send") {
+          next.add("messages.read");
+        }
+      }
+      return [...next];
+    });
   };
 
   const pairDevice = async (currentBrowser: boolean) => {
@@ -334,9 +360,10 @@ export function DeviceAccessPanel({
       <h3>Another device — remote companion pairing</h3>
       <p className="muted small">
         Choose whether to pair the browser/device you are using now or a different
-        device. The target approves the short-lived request. This is separate from
-        Windows app control above: this browser companion can open approved public
-        web links only; it cannot read screens, delete files, or control other apps.
+        device. The target approves the short-lived request. The browser companion
+        can open approved public links. For native control, run the Windows or
+        Android Companion on the target and paste this pairing link there. Each
+        companion operates only apps selected on that device and asks before each action.
       </p>
 
       <div className="form-grid">
@@ -355,7 +382,13 @@ export function DeviceAccessPanel({
             value={platform}
             onChange={(event) => {
               const nextPlatform = event.target.value;
-              if (isDevicePlatform(nextPlatform)) setPlatform(nextPlatform);
+              if (isDevicePlatform(nextPlatform)) {
+                setPlatform(nextPlatform);
+                setScopes((current) => current.filter((scope) =>
+                  (!scope.startsWith("windows.") || nextPlatform === "windows")
+                  && (!scope.startsWith("android.") || nextPlatform === "android"),
+                ));
+              }
             }}
           >
             <option value="android">Android</option>
@@ -367,7 +400,12 @@ export function DeviceAccessPanel({
         </label>
       </div>
       <div className="column gap">
-        {permissionOptions.map((permission) => (
+        {permissionOptions
+          .filter((permission) =>
+            (!permission.id.startsWith("windows.") || platform === "windows")
+            && (!permission.id.startsWith("android.") || platform === "android"),
+          )
+          .map((permission) => (
           <label className="row gap" key={permission.id}>
             <input
               type="checkbox"
@@ -376,7 +414,7 @@ export function DeviceAccessPanel({
             />
             {permission.label}
           </label>
-        ))}
+          ))}
       </div>
       <label className="row gap">
         <input
@@ -472,8 +510,8 @@ export function DeviceAccessPanel({
 
       <h4>Open a web link on a paired device</h4>
       <p className="muted small">
-        The target companion page must be open. It will display the request and
-        wait for a local approval before opening the external link.
+        The target companion must be connected. It displays the request and waits
+        for local approval before handing the external link to its browser.
       </p>
       <div className="form-grid">
         <label>
@@ -517,16 +555,36 @@ export function DeviceAccessPanel({
               <div>
                 <div className="name">
                   {devices.find((device) => device.id === command.device_id)?.name || "Device"}
-                  {" · "}{command.url}
+                  {" · "}{command.url || command.action}
+                  {!command.url && command.arguments?.app_id
+                    ? ` · app ${String(command.arguments.app_id)}`
+                    : ""}
                 </div>
                 <div className="model">
                   {command.protocol_status || command.status}
                   {command.delivery_count ? ` · deliveries ${command.delivery_count}` : ""}
                   {command.error_code ? ` · ${command.error_code}` : ""}
+                  {typeof command.receipt?.evidence?.operation_result?.status === "string"
+                    ? ` · ${command.receipt.evidence.operation_result.status}`
+                    : ""}
                   {command.receipt?.evidence?.browser_open_receipt === true
                     ? " · browser handoff reported"
                     : ""}
                 </div>
+                {(command.receipt?.evidence?.accessible_controls?.length ||
+                  command.receipt?.evidence?.reason) ? (
+                  <details className="small">
+                    <summary>Device result</summary>
+                    <pre className="small">
+                      {JSON.stringify(
+                        command.receipt.evidence.accessible_controls ||
+                          command.receipt.evidence.reason,
+                        null,
+                        2,
+                      )}
+                    </pre>
+                  </details>
+                ) : null}
               </div>
               {["queued", "delivered", "running"].includes(command.protocol_status || "") && (
                 <button
