@@ -310,18 +310,16 @@ class Settings(BaseSettings):
     voice_max_seconds: int = 600
     # Voice latency / speed tuning (Phase 1 live call):
     #   * voice_vad_silence_ms — trailing silence before a user's utterance is
-    #     finalised and sent to STT. 300ms keeps real-time feel vs. the 800ms
-    #     conservative default; raise for noisy environments.
+    #     finalised and sent to STT. 650ms avoids cutting off natural pauses
+    #     between phrases while keeping turn-taking responsive.
     #   * voice_fast_model — optional smaller Ollama/cloud model the live-voice
     #     path prefers for speed; empty = use the normal tier ladder.
     #   * voice_stream_tokens — when True, LLM tokens are pushed incrementally
     #     into TTS so the assistant speaks while still generating (overlapped
-    #     speech). When False (the default for now, to keep the buffered path
-    #     and the existing offline tests stable), the whole reply is buffered
-    #     first. Flip to True once the streaming TTS sink is proven offline.
-    voice_vad_silence_ms: int = 300
+    #     speech). The streaming path is covered by offline tests.
+    voice_vad_silence_ms: int = 650
     voice_fast_model: str | None = None
-    voice_stream_tokens: bool = False
+    voice_stream_tokens: bool = True
     # Optional cloud STT providers (only used when selected/falling back).
     deepgram_api_key: str | None = None
 

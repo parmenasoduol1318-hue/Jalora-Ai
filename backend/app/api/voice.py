@@ -101,10 +101,11 @@ async def live_call_websocket(websocket: WebSocket) -> None:
     """Live in-app two-way voice call (Phase 1).
 
     Auth is via ``?token=<jwt>`` (browsers cannot set headers on WebSockets).
-    The client sends binary PCM16 @ 16 kHz frames plus JSON control messages
-    (``end`` to finish a push-to-talk utterance, ``text`` for typed input,
-    ``confirm`` for tool approvals, ``hangup`` to end); the server streams back
-    transcript, tool and PCM16 audio events. See ``app.services.voice_session``.
+    The     client sends a ``start`` control after its microphone and playback context
+    are ready, then binary PCM16 @ 16 kHz frames plus JSON control messages
+    (``end`` to finish an utterance, ``text`` for typed input, ``confirm`` for
+    tool approvals, ``hangup`` to end). The server streams transcript, call
+    state, tool and PCM16 audio events. See ``app.services.voice_session``.
     """
     settings = get_settings()
     if not getattr(settings, "voice_enabled", True):
@@ -152,7 +153,8 @@ async def live_call_websocket(websocket: WebSocket) -> None:
         router=voice_session_service.get_model_router(),
     )
     try:
-        await session.start()
+        await session.prepare()
+        started = False
         while True:
             try:
                 message = await websocket.receive()
@@ -162,7 +164,8 @@ async def live_call_websocket(websocket: WebSocket) -> None:
             if mtype == "websocket.disconnect":
                 break
             if message.get("bytes") is not None:
-                await session.handle_audio(message["bytes"])
+                if started:
+                    await session.handle_audio(message["bytes"])
                 continue
             raw = message.get("text")
             if not raw:
@@ -176,6 +179,15 @@ async def live_call_websocket(websocket: WebSocket) -> None:
             if data.get("type") in ("hangup", "stop"):
                 await session.close("hangup")
                 break
+            if data.get("type") == "start" and not started:
+                purpose = str(data.get("purpose") or "").strip()
+                if purpose:
+                    session.purpose = purpose
+                await session.start()
+                started = True
+                continue
+            if not started:
+                continue
             await session.handle_control(data)
     finally:
         await session.close("disconnect")

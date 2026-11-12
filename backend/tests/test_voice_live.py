@@ -47,10 +47,13 @@ def _session(user_id: str, *, phrase: str = "hello there"):
     async def send(ev: dict) -> None:
         events.append(ev)
 
+    from app.config import get_settings
+
     session = VoiceSession.create(
         user_id=user_id, send=send,
         stt=STTChain([MockSTT(phrase)]),
         tts=TTSChain([MockTTS()]),
+        settings=get_settings().model_copy(update={"voice_stream_tokens": False}),
         purpose="unit test call",
     )
     return session, events
@@ -127,9 +130,12 @@ def test_voice_turns_are_persisted_in_the_bound_conversation(client, auth_header
     async def send(ev: dict) -> None:
         events.append(ev)
 
+    from app.config import get_settings
+
     session = VoiceSession.create(
         user_id=user_id, conversation_id=conversation_id, send=send,
         stt=STTChain([MockSTT("voice question")]), tts=TTSChain([MockTTS()]),
+        settings=get_settings().model_copy(update={"voice_stream_tokens": False}),
     )
 
     async def run() -> None:
@@ -737,6 +743,11 @@ def test_live_ws_text_turn_and_hangup(
 
     with client.websocket_connect(f"/api/voice/live?token={token}") as ws:
         assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "start", "purpose": "a natural two-way conversation"})
+        greeting = _drain_until(ws, "listening")
+        assert any(event["type"] == "greeting" for event in greeting)
+        assert any(event["type"] == "audio_begin" for event in greeting)
+        assert any(event["type"] == "audio" for event in greeting)
 
         ws.send_json({"type": "text", "text": "hello"})
         seen = _drain_until(ws, "agent")
@@ -748,6 +759,56 @@ def test_live_ws_text_turn_and_hangup(
         tail = _drain_until(ws, "ended")
         assert tail[-1]["type"] == "ended"
 
+
+def test_live_ws_automatically_turn_takes_binary_microphone_audio(
+    client, auth_headers, monkeypatch,
+):
+    from app.config import get_settings
+
+    token = auth_headers()["Authorization"].split(" ", 1)[1]
+    original_create = VoiceSession.create
+
+    def create_test_session(**kwargs):
+        return original_create(
+            **{
+                **kwargs,
+                "router": None,
+                "settings": get_settings().model_copy(
+                    update={"voice_stream_tokens": False}
+                ),
+                "stt": STTChain([MockSTT("hello from the microphone")]),
+                "tts": TTSChain([MockTTS()]),
+            }
+        )
+
+    async def fake_stream(self, messages):
+        return AIMessage(content="I heard you clearly."), "stub"
+
+    monkeypatch.setattr(VoiceSession, "create", staticmethod(create_test_session))
+    monkeypatch.setattr(VoiceSession, "_stream_ai", fake_stream)
+
+    with client.websocket_connect(f"/api/voice/live?token={token}") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "start"})
+        greeting = _drain_until(ws, "listening")
+        assert any(event["type"] == "audio" for event in greeting)
+
+        ws.send_bytes(_loud(300))
+        ws.send_bytes(bytes(int(16000 * 2 * 0.8)))
+        turn = _drain_until(ws, "agent")
+        turn.extend(_drain_until(ws, "audio_end"))
+        types = [event["type"] for event in turn]
+        assert "speech_started" in types
+        assert "transcribing" in types
+        assert any(
+            event["type"] == "user"
+            and event["text"] == "hello from the microphone"
+            for event in turn
+        )
+        assert any(event["type"] == "audio" for event in turn)
+
+        ws.send_json({"type": "hangup"})
+        _drain_until(ws, "ended")
 
 
 
@@ -821,28 +882,32 @@ def test_voice_math_fast_path_is_instant(client, auth_headers, monkeypatch):
         assert "user" in roles and "agent" in roles
 
 
-def test_voice_vad_floor_300ms(client, auth_headers, monkeypatch):
+def test_voice_vad_allows_natural_pauses(client, auth_headers, monkeypatch):
     from app.config import get_settings
 
-    assert SILENCE_MS == 300
-    assert get_settings().voice_vad_silence_ms == 300
+    assert SILENCE_MS == 650
+    assert get_settings().voice_vad_silence_ms == 650
     auth_headers()
     user_id = _first_user_id()
     monkeypatch.setattr(VoiceSession, "_stream_ai", _stub_ai("pong"))
     session, events = _session(user_id, phrase="ping")
     speech = _loud(300)                        # 300 ms speech (> MIN_SPEECH_MS 250)
-    below = bytes(int(16000 * 2 * 0.25))       # 250 ms trailing silence (< 300 floor)
-    above = bytes(int(16000 * 2 * 0.35))       # +350 ms -> 600 ms total, crosses 300
+    below = bytes(int(16000 * 2 * 0.5))        # 500 ms pause must not end the turn
+    above = bytes(int(16000 * 2 * 0.2))        # +200 ms crosses the 650 ms floor
     async def run():
         await session.start()
         await session.handle_audio(speech)
-        await session.handle_audio(below)      # below the 300 ms floor -> no turn yet
+        await session.handle_audio(below)      # below the 650 ms floor -> no turn yet
         assert not any(e["type"] == "user" for e in events)
-        await session.handle_audio(above)      # crosses the floor -> utterance finalised
+        await session.handle_audio(above)      # crosses the 650 ms floor
     asyncio.run(run())
     users = [e for e in events if e["type"] == "user"]
     assert len(users) == 1 and users[0]["text"] == "ping"
     assert any(e["type"] == "agent" for e in events)
+    types = [event["type"] for event in events]
+    assert types.index("speech_started") < types.index("transcribing")
+    assert types.index("transcribing") < types.index("user")
+    assert types.index("thinking") < types.index("agent")
 
 
 def test_voice_latency_budget_switches_provider(client, auth_headers, monkeypatch):
@@ -984,6 +1049,8 @@ def test_live_ws_uses_central_task_lifecycle(
 
     with client.websocket_connect(f"/api/voice/live?token={token}") as ws:
         assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "start"})
+        _drain_until(ws, "listening")
         ws.send_json({"type": "text", "text": "hello"})
         seen = _drain_until(ws, "agent")
 
@@ -1030,6 +1097,8 @@ def test_live_ws_streams_central_reply_audio_over_wire(
 
     with client.websocket_connect(f"/api/voice/live?token={token}") as ws:
         assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "start"})
+        _drain_until(ws, "listening")
         ws.send_json({"type": "text", "text": "hello"})
         seen = _drain_until(ws, "agent")
         ws.send_json({"type": "hangup"})

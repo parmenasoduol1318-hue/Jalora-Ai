@@ -6,8 +6,8 @@
  * only capture/transport/playback so it stays transport-agnostic.
  *
  * The server speaks a small JSON protocol plus binary audio:
- *   out:  ready, user, agent, tool_calls, tool_result, needs_confirmation,
- *         provider_fallback, audio, audio_end, ended, error
+ *   out:  ready, speech_started, transcribing, thinking, user, agent,
+ *         needs_confirmation, audio, audio_end, ended, error
  *   in :  { type: "start" | "end" | "text" | "confirm" | "hangup", ... }
  */
 import { voiceLiveUrl } from "./api";
@@ -20,6 +20,7 @@ export interface LiveEvent {
 export interface LiveCallHandlers {
   onEvent?: (event: LiveEvent) => void;
   onMicLevel?: (level: number) => void;
+  onPlaybackState?: (state: "speaking" | "listening") => void;
   onClose?: (reason: string) => void;
   onError?: (message: string) => void;
 }
@@ -73,7 +74,9 @@ export class LiveVoiceCall {
   private source: MediaStreamAudioSourceNode | null = null;
   private processor: ScriptProcessorNode | null = null;
   private sink: GainNode | null = null;
+  private playbackNodes = new Set<AudioBufferSourceNode>();
   private playTime = 0;
+  private playbackFinished = true;
   private closed = false;
   private purpose: string;
   private conversationId: string | null;
@@ -107,12 +110,22 @@ export class LiveVoiceCall {
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     this.ws = ws;
-    await new Promise<void>((resolve, reject) => {
-      ws.onopen = () => resolve();
-      ws.onerror = () => reject(new Error("Could not reach the voice server."));
+    const opened = new Promise<void>((resolve, reject) => {
+      ws.addEventListener("open", () => resolve(), { once: true });
+      ws.addEventListener(
+        "error",
+        () => reject(new Error("Could not reach the voice server.")),
+        { once: true },
+      );
+      ws.addEventListener(
+        "close",
+        () => reject(new Error("The voice server closed the connection.")),
+        { once: true },
+      );
     });
-    ws.onmessage = (event) => this.handleMessage(event);
-    ws.onclose = () => this.handleClose("socket closed");
+    ws.addEventListener("message", (event) => this.handleMessage(event));
+    ws.addEventListener("close", () => this.handleClose("socket closed"));
+    await opened;
     await this.startMic();
     this.send({ type: "start", purpose: this.purpose });
   }
@@ -152,6 +165,18 @@ export class LiveVoiceCall {
   close(reason = "closed"): void {
     if (this.closed) return;
     this.closed = true;
+    this.cleanupAudio();
+    if (this.ws && this.ws.readyState <= WebSocket.OPEN) {
+      try {
+        this.ws.close(1000, reason);
+      } catch {
+        /* already closing */
+      }
+    }
+    this.handlers.onClose?.(reason);
+  }
+
+  private cleanupAudio(): void {
     if (this.processor) {
       this.processor.onaudioprocess = null;
       try {
@@ -167,6 +192,14 @@ export class LiveVoiceCall {
         /* already detached */
       }
     }
+    for (const node of this.playbackNodes) {
+      try {
+        node.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
+    this.playbackNodes.clear();
     if (this.sink) {
       try {
         this.sink.disconnect();
@@ -179,14 +212,6 @@ export class LiveVoiceCall {
     void this.playbackCtx?.close().catch(() => undefined);
     this.micCtx = this.playbackCtx = null;
     this.stream = null;
-    if (this.ws && this.ws.readyState <= WebSocket.OPEN) {
-      try {
-        this.ws.close(1000, reason);
-      } catch {
-        /* already closing */
-      }
-    }
-    this.handlers.onClose?.(reason);
   }
 
   private send(payload: Record<string, unknown>): void {
@@ -209,6 +234,7 @@ export class LiveVoiceCall {
     const ctx = new Ctor();
     this.micCtx = ctx;
     this.playbackCtx = ctx;
+    await ctx.resume();
     this.source = ctx.createMediaStreamSource(stream);
     this.processor = ctx.createScriptProcessor(4096, 1, 1);
     this.sink = ctx.createGain();
@@ -216,7 +242,11 @@ export class LiveVoiceCall {
     this.processor.onaudioprocess = (event) => {
       if (this.muted || this.ws?.readyState !== WebSocket.OPEN) return;
       const channel = event.inputBuffer.getChannelData(0);
-      const level = Math.min(1, Math.abs(channel[1] ?? 0));
+      let sumSquares = 0;
+      for (let i = 0; i < channel.length; i += 1) {
+        sumSquares += channel[i] * channel[i];
+      }
+      const level = Math.min(1, Math.sqrt(sumSquares / Math.max(1, channel.length)));
       this.handlers.onMicLevel?.(level);
       const pcm = float32ToInt16(downsample(channel, ctx.sampleRate, this.sampleRate));
       this.ws.send(pcm.buffer);
@@ -254,6 +284,13 @@ export class LiveVoiceCall {
     ) {
       this.pendingApprovalId = null;
     }
+    if (payload.type === "audio_begin") {
+      this.playbackFinished = false;
+      this.handlers.onPlaybackState?.("speaking");
+    } else if (payload.type === "audio_end") {
+      this.playbackFinished = true;
+      this.finishPlaybackIfDrained();
+    }
     if (payload.type === "audio" && typeof payload.data === "string") {
       this.enqueueAudio(payload.data, Number(payload.sample_rate) || 22050);
       return;
@@ -276,15 +313,28 @@ export class LiveVoiceCall {
     const node = ctx.createBufferSource();
     node.buffer = buffer;
     node.connect(ctx.destination);
+    this.playbackNodes.add(node);
+    node.onended = () => {
+      this.playbackNodes.delete(node);
+      this.finishPlaybackIfDrained();
+    };
     const now = ctx.currentTime;
     if (this.playTime < now) this.playTime = now + 0.05;
     node.start(this.playTime);
     this.playTime += buffer.duration;
   }
 
+  private finishPlaybackIfDrained(): void {
+    if (!this.closed && this.playbackFinished && this.playbackNodes.size === 0) {
+      this.playTime = this.playbackCtx?.currentTime ?? 0;
+      this.handlers.onPlaybackState?.("listening");
+    }
+  }
+
   private handleClose(reason: string): void {
     if (!this.closed) {
       this.closed = true;
+      this.cleanupAudio();
       this.handlers.onClose?.(reason);
     }
   }

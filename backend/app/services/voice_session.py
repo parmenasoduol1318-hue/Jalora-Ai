@@ -74,7 +74,7 @@ logger = logging.getLogger("jalora.voice.live")
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 
 # --- energy VAD + turn shaping (module-level so tests can retune) ---------- #
-SILENCE_MS = 300            # trailing silence that ends an utterance (overridable via settings.voice_vad_silence_ms)
+SILENCE_MS = 650            # trailing silence that ends an utterance (overridable via settings.voice_vad_silence_ms)
 MIN_SPEECH_MS = 250         # ignore blips shorter than this
 MAX_UTTERANCE_MS = 30_000   # hard cap so a long monologue still turns
 ENERGY_RMS = 420.0          # int16 RMS above which a frame counts as speech
@@ -192,6 +192,8 @@ class VoiceSession:
         self._silence_ms = 0
         self._in_speech = False
         self._closed = False
+        self._prepared = False
+        self._greeted = False
         self._seq = 0
         self._processing = asyncio.Lock()
 
@@ -316,7 +318,9 @@ class VoiceSession:
     # lifecycle
     # ------------------------------------------------------------------ #
 
-    async def start(self) -> None:
+    async def prepare(self) -> None:
+        if self._closed or self._prepared:
+            return
         set_tool_context(ToolContext(
             user_id=self.user_id, task_id=self.task_id,
             conversation_id=self.conversation_id,
@@ -333,6 +337,13 @@ class VoiceSession:
             "stt": self._stt.describe(),
             "tts": self._tts.describe(),
         })
+        self._prepared = True
+
+    async def start(self) -> None:
+        await self.prepare()
+        if self._closed or self._greeted:
+            return
+        self._greeted = True
         # Greet immediately on call start (like ChatGPT's live call):
         # persist to the call transcript, add to conversation history so the
         # LLM has context, emit the text for the UI, and speak via TTS so the
@@ -341,6 +352,7 @@ class VoiceSession:
         self._messages.append(AIMessage(content=GREETING))
         await self._emit({"type": "greeting", "text": GREETING})
         await self._speak(GREETING)
+        await self._emit({"type": "listening"})
         if self._router is not None and self._pending_approval is not None:
             await self._emit_pending_approval()
 
@@ -366,6 +378,8 @@ class VoiceSession:
         frame_ms = int(len(pcm16) / 2 / max(1, self._sample_rate) * 1000)
         rms = _rms(pcm16)
         if rms >= ENERGY_RMS:
+            if not self._in_speech:
+                await self._emit({"type": "speech_started"})
             self._in_speech = True
             self._speech_ms += frame_ms
             self._silence_ms = 0
@@ -380,6 +394,7 @@ class VoiceSession:
         silence_budget = int(getattr(self._settings, "voice_vad_silence_ms", SILENCE_MS))
         if (self._in_speech and self._silence_ms >= silence_budget
                 and self._speech_ms >= MIN_SPEECH_MS):
+            await self._emit({"type": "transcribing"})
             await self._finalize_utterance()
         elif total_ms >= MAX_UTTERANCE_MS:
             await self._finalize_utterance()
@@ -439,6 +454,7 @@ class VoiceSession:
             text = (text or "").strip()
             if not text:
                 await self._emit({"type": "stt_empty", "provider": provider})
+                await self._emit({"type": "listening"})
                 return
             await self._respond_to_user(text)
 
@@ -446,6 +462,7 @@ class VoiceSession:
         if self._router is not None:
             await self._respond_through_central_agent(text)
             return
+        await self._emit({"type": "thinking"})
         if self._pending_tool is not None:
             verdict = _classify(text)
             if verdict != "unclear":
@@ -500,6 +517,7 @@ class VoiceSession:
         self._persist("user", "speech", text, persist_conversation=False)
         self._messages.append(HumanMessage(content=text))
         await self._emit({"type": "user", "text": text})
+        await self._emit({"type": "thinking"})
         from app.events import ListEmitter
         from app.services.chat_service import execute_chat
 
@@ -1226,11 +1244,13 @@ class VoiceSession:
     # ------------------------------------------------------------------ #
 
     async def _speak(self, text: str) -> None:
+        await self._emit({"type": "speaking"})
         try:
             audio, rate, provider = await self._tts.synthesize(text)
         except Exception as exc:  # noqa: BLE001 - never fail the turn on TTS
             logger.warning("TTS failed: %s", exc)
             await self._emit({"type": "tts_error", "detail": str(exc)})
+            await self._emit({"type": "listening"})
             return
         await self._emit_audio_frames(audio, rate, provider)
 

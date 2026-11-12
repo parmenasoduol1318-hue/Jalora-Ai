@@ -32,17 +32,34 @@ export function LiveCallView({
     switch (event.type) {
       case "ready":
         if (typeof event.call_id === "string") setLastCallId(event.call_id);
-        setStatus("Connected - listening");
+        setStatus("Setting up microphone...");
+        break;
+      case "speech_started":
+        setStatus("You're speaking");
+        break;
+      case "transcribing":
+        setStatus("Processing your speech...");
+        break;
+      case "thinking":
+        setStatus("Jalora is thinking...");
+        break;
+      case "listening":
+        setStatus("Listening for your next turn");
+        break;
+      case "stt_empty":
+        setStatus("I didn't catch that — please try again");
         break;
       case "user":
         pushTurn("user", String(event.text));
+        setStatus("Jalora is thinking...");
         break;
       case "agent":
         pushTurn("agent", String(event.text));
+        setStatus("Jalora is responding...");
         break;
       case "greeting":
         pushTurn("agent", String(event.text));
-        setStatus("listening...");
+        setStatus("Jalora is speaking...");
         break;
       case "tool_result":
         pushTurn("tool", "tool: " + String(event.name ?? ""));
@@ -52,6 +69,7 @@ export function LiveCallView({
         break;
       case "needs_confirmation":
         setPending(String(event.question ?? "Should I go ahead?"));
+        setStatus("Waiting for your approval");
         break;
       case "ended":
         if (typeof event.call_id === "string") setLastCallId(event.call_id);
@@ -71,6 +89,11 @@ export function LiveCallView({
     const call = new LiveVoiceCall("a natural two-way conversation", {
       onEvent: handleEvent,
       onMicLevel: (level) => setLevels(level),
+      onPlaybackState: (state) => {
+        setStatus(state === "speaking"
+          ? "Jalora is speaking..."
+          : "Listening for your next turn");
+      },
       onClose: () => {
         setActive(false);
         setStatus("");
@@ -117,7 +140,7 @@ export function LiveCallView({
     <div className="call-panel in_progress" style={{ marginBottom: 16 }}>
       <div className="call-head">
         <span className="call-phone">🎙 Live call</span>
-        {status && <span className="call-purpose">{status}</span>}
+        {status &&         <span className="call-purpose" aria-live="polite">{status}</span>}
         {active ? (
           <>
             <button className="btn small" onClick={() => callRef.current?.finishUtterance()}>
