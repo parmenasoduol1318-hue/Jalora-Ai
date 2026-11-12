@@ -7,6 +7,26 @@ def test_health_ok(client):
     assert data["env"] == "test"
 
 
+def test_root_explains_backend_endpoints_when_frontend_is_not_bundled(
+    monkeypatch, tmp_path
+):
+    from fastapi.testclient import TestClient
+
+    from app import main
+
+    monkeypatch.setattr(main, "REACT_DIST", tmp_path / "missing-frontend")
+    with TestClient(main.create_app()) as test_client:
+        response = test_client.get("/")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "service": "Jalora AI",
+        "status": "running",
+        "health": "/api/health",
+        "api_docs": "/api/docs",
+    }
+
+
 def test_health_returns_service_unavailable_when_database_probe_fails(client, monkeypatch):
     from app.api.system import get_db
 

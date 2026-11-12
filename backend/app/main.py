@@ -155,7 +155,24 @@ def create_app() -> FastAPI:
 
     # ---- static frontend: serve from the React build (frontend-react/dist) --
     root = REACT_DIST
-    if root.exists():
+    digest_for_cache_bust = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+
+    @app.get("/", include_in_schema=False)
+    def index():
+        index_file = root / "index.html"
+        if index_file.is_file():
+            return FileResponse(
+                index_file,
+                headers=digest_for_cache_bust,
+            )
+        return JSONResponse({
+            "service": settings.app_name,
+            "status": "running",
+            "health": "/api/health",
+            "api_docs": "/api/docs",
+        })
+
+    if root.is_dir() and (root / "index.html").is_file():
         assets = root / "assets"
         if assets.exists():
             app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
@@ -163,14 +180,6 @@ def create_app() -> FastAPI:
         # The SPA shell must never be cached: assets/ files are content-hashed
         # (immutable), but index.html must be revalidated so users always get the
         # latest bundle after a rebuild (Phase J stale-build bug).
-        digest_for_cache_bust = {"Cache-Control": "no-cache, no-store, must-revalidate"}
-
-        @app.get("/", include_in_schema=False)
-        def index():
-            return FileResponse(
-                root / "index.html",
-                headers=digest_for_cache_bust,
-            )
 
         @app.get("/{path:path}", include_in_schema=False)
         def spa_fallback(path: str):
