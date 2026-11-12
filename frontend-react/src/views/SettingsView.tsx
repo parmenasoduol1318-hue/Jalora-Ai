@@ -104,6 +104,7 @@ export function SettingsView({
     try {
       const next = await api<AppSettings>("/api/settings", { method: "PATCH", body });
       setSettings(next);
+      window.dispatchEvent(new Event("jalora:settings-changed"));
       if (okMsg) onToast(okMsg);
       return true;
     } catch (err) {
@@ -224,6 +225,9 @@ export function SettingsView({
 
   /* Determine whether a provider shows "Connect" (needs a per-user key). */
   const needsApiKey = (name: string, info: ProviderInfo): boolean => {
+    if (name === "google" || name === "groq") {
+      return !providerKeys.has(name);
+    }
     if (info.configured) return false;            // env key already present
     if (info.keyless) return false;               // local, no key needed
     if (providerKeys.has(name)) return false;     // user already supplied a key
@@ -238,7 +242,11 @@ export function SettingsView({
       <div className="panel">
         <h3>{t("providers")}</h3>
         <div className="provider-list">
-          {Object.entries(providers).map(([name, info]) => (
+          {Object.entries(providers).map(([name, info]) => {
+            const hasKey = providerKeys.has(name);
+            const hasProviderConfig = info.configured || hasKey;
+            const usable = !info.disabled && (info.usable || hasKey);
+            return (
             <div key={name} className="provider-row">
               <div>
                 <div className="name">
@@ -247,19 +255,17 @@ export function SettingsView({
                 </div>
                 <div className="model">{info.model}</div>
               </div>
-              {(() => {
-                const hasKey = providerKeys.has(name);
-                const usable = info.usable || hasKey;
-                return (
-                  <span className={`badge ${usable ? "ok" : info.disabled ? "warn" : ""}`}>
-                    {usable
+              <span className={`badge ${usable ? "ok" : info.disabled ? "warn" : ""}`}>
+                {hasKey && (name === "google" || name === "groq")
+                  ? t("personalProviderKey")
+                  : info.configured && (name === "google" || name === "groq")
+                    ? t("sharedProviderKey")
+                    : usable
                       ? t("configured")
                       : info.disabled
                         ? t("disabled")
                         : t("notConfigured")}
-                  </span>
-                );
-              })()}
+              </span>
 
               {/* Keyless local provider: open dashboard / usage page */}
               {info.keyless && KEYLESS_PROVIDERS.has(name) ? (
@@ -271,7 +277,7 @@ export function SettingsView({
               {/* User has stored a per-user key: allow removal */}
               {providerKeys.has(name) ? (
                 <button className="btn small danger" onClick={() => removeProviderKey(name)}>
-                  {t("disconnectProvider")}
+                  {t("removePersonalKey")}
                 </button>
               ) : null}
 
@@ -281,12 +287,14 @@ export function SettingsView({
                   className="btn small primary"
                   onClick={() => { setConnectProvider(name); setApiKeyInput(""); }}
                 >
-                  {t("connectProvider")}
+                  {name === "google" || name === "groq"
+                    ? t("connectPersonalKey")
+                    : t("connectProvider")}
                 </button>
               ) : null}
 
               {/* Configured (env key present): existing disconnect / reconnect */}
-              {info.configured && !providerKeys.has(name) ? (
+              {hasProviderConfig ? (
                 info.disabled ? (
                   <button className="btn small" onClick={() => toggleProvider(name, false)}>
                     {t("reconnectProvider")}
@@ -298,7 +306,8 @@ export function SettingsView({
                 )
               ) : null}
             </div>
-          ))}
+          );
+          })}
         </div>
 
         {/* LM Studio local provider configuration */}
@@ -367,6 +376,7 @@ export function SettingsView({
             id="autonomy-select"
             value={settings ? String(settings.autonomy) : ""}
             onChange={(e) => patchSettings({ autonomy: Number(e.target.value) }, t("autonomyUpdated"))}
+            disabled={!settings}
           >
             <option value="0">{t("auto0")}</option>
             <option value="1">{t("auto1")}</option>
@@ -374,6 +384,7 @@ export function SettingsView({
             <option value="3">{t("auto3")}</option>
             <option value="4">{t("auto4")}</option>
           </select>
+          <p className="hint">{t("autonomyHint")}</p>
         </div>
 
         <h3>{t("toolPolicies")}</h3>
@@ -598,7 +609,33 @@ export function SettingsView({
           <label>{t("notifDesktop")}</label>
           <select
             value={settings?.notifications_enabled ? "on" : "off"}
-            onChange={(e) => patchSettings({ notifications_enabled: e.target.value === "on" }, "Preferences saved")}
+            disabled={!settings}
+            onChange={async (e) => {
+              const enabled = e.target.value === "on";
+              if (enabled) {
+                if (!("Notification" in window)) {
+                  onToast(t("notificationUnsupported"), true);
+                  return;
+                }
+                try {
+                  const permission = await window.Notification.requestPermission();
+                  if (permission !== "granted") {
+                    onToast(t("notificationPermissionDenied"), true);
+                    return;
+                  }
+                } catch (err) {
+                  onToast(
+                    `${t("notificationPermissionDenied")} ${(err as Error).message}`,
+                    true,
+                  );
+                  return;
+                }
+              }
+              await patchSettings(
+                { notifications_enabled: enabled },
+                t("preferencesSaved"),
+              );
+            }}
           >
             <option value="on">{t("enabled")}</option>
             <option value="off">{t("disabled")}</option>
@@ -608,7 +645,8 @@ export function SettingsView({
           <label>{t("notifSound")}</label>
           <select
             value={settings?.notification_sound ? "on" : "off"}
-            onChange={(e) => patchSettings({ notification_sound: e.target.value === "on" }, "Preferences saved")}
+            disabled={!settings}
+            onChange={(e) => patchSettings({ notification_sound: e.target.value === "on" }, t("preferencesSaved"))}
           >
             <option value="on">{t("enabled")}</option>
             <option value="off">{t("disabled")}</option>
@@ -618,7 +656,8 @@ export function SettingsView({
           <label>{t("notifSchedule")}</label>
           <select
             value={settings?.schedule_alerts ? "on" : "off"}
-            onChange={(e) => patchSettings({ schedule_alerts: e.target.value === "on" }, "Preferences saved")}
+            disabled={!settings}
+            onChange={(e) => patchSettings({ schedule_alerts: e.target.value === "on" }, t("preferencesSaved"))}
           >
             <option value="on">{t("enabled")}</option>
             <option value="off">{t("disabled")}</option>
@@ -628,7 +667,8 @@ export function SettingsView({
           <label>{t("notifApproval")}</label>
           <select
             value={settings?.approval_alerts ? "on" : "off"}
-            onChange={(e) => patchSettings({ approval_alerts: e.target.value === "on" }, "Preferences saved")}
+            disabled={!settings}
+            onChange={(e) => patchSettings({ approval_alerts: e.target.value === "on" }, t("preferencesSaved"))}
           >
             <option value="on">{t("enabled")}</option>
             <option value="off">{t("disabled")}</option>
@@ -665,6 +705,10 @@ export function SettingsView({
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>{t("connectToProvider").replace("{provider}", connectProvider)}</h3>
             <p>{t("apiKeyRequired")}</p>
+            {(connectProvider === "google" || connectProvider === "groq")
+              && providers[connectProvider]?.configured ? (
+                <p className="hint">{t("providerKeyFallback")}</p>
+              ) : null}
             {PROVIDER_DASHBOARD_URLS[connectProvider] ? (
               <p>
                 <a

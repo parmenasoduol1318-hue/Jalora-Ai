@@ -77,6 +77,7 @@ class AgentState(TypedDict, total=False):
     status: str  # running | completed | partial | paused_approval | stopped | error
     run_id: str
     user_id: str
+    trigger_kind: str
     force_final: bool
     # P3 agent-core fields
     policy: dict[str, Any]  # {"autonomy": int, "tool_policies": {name: policy}}
@@ -532,6 +533,7 @@ def serialize_state(state: AgentState) -> dict[str, Any]:
         "status": state.get("status", "running"),
         "run_id": state.get("run_id", ""),
         "user_id": state.get("user_id", ""),
+        "trigger_kind": state.get("trigger_kind", "chat"),
         "approved_call_ids": state.get("approved_call_ids", []),
         "rejected_call_ids": state.get("rejected_call_ids", []),
         "skipped_call_ids": state.get("skipped_call_ids", []),
@@ -565,6 +567,7 @@ def deserialize_state(data: dict[str, Any]) -> AgentState:
         "status": data.get("status", "running"),
         "run_id": data.get("run_id", ""),
         "user_id": data.get("user_id", ""),
+        "trigger_kind": data.get("trigger_kind", "chat"),
         "approved_call_ids": data.get("approved_call_ids", []),
         "rejected_call_ids": data.get("rejected_call_ids", []),
         "skipped_call_ids": data.get("skipped_call_ids", []),
@@ -2772,7 +2775,11 @@ def build_graph(
             # --- user action policy (autonomy + per-tool policies) --------
             decision = decide(
                 permission=spec.permission,
-                autonomy=autonomy,
+                autonomy=(
+                    min(autonomy, 2)
+                    if state.get("trigger_kind") == "schedule" and autonomy < 4
+                    else autonomy
+                ),
                 policy=tool_policies.get(name, ""),
                 tags=spec.tags,
             )
@@ -5281,6 +5288,19 @@ async def _create_approval(*, user_id: str, run_id: str, call_id: str,
             task.status = "waiting_for_approval"
         db.commit()
         db.refresh(approval)
+        if not task or (task.trigger_data or {}).get("kind") != "schedule":
+            from app.services.notifications import notify
+
+            notify(
+                db,
+                user_id=user_id,
+                text=f"Approval required for {tool_name}. Review it in Tasks.",
+                kind="approval_required",
+                link=task.conversation_id if task else None,
+                run_id=run_id,
+                task_id=canonical_task_id,
+            )
+            db.commit()
         log_activity(
             db, user_id=user_id, run_id=run_id, agent="supervisor", tool=tool_name,
             arguments=arguments, result_summary="Approval requested", success=True,

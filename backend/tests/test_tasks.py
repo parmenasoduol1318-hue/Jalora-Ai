@@ -314,6 +314,12 @@ def test_policy_can_require_approval_for_an_auto_tool(client, fake_router):
     assert data["status"] == "paused_approval"
     assert data["approval"]["tool_name"] == "store_memory"
     assert client.get("/api/memory", headers=headers).json() == []
+    alerts = client.get("/api/notifications", headers=headers).json()
+    assert any(
+        item["kind"] == "approval_required"
+        and item["task_id"] == data["task_id"]
+        for item in alerts
+    )
 
     # task reflects the pause, then completes after approval
     task = client.get(f"/api/tasks/{data['task_id']}", headers=headers).json()
@@ -372,6 +378,83 @@ def test_automatic_policy_respects_level_and_strict_tools(client, fake_router, c
     assert data["status"] == "paused_approval"
     assert _PAID == []
     client.post(f"/api/approvals/{data['approval']['id']}/reject", headers=headers)
+
+
+def test_autonomy_three_runs_confirm_actions_without_tool_override(
+    client, fake_router, confirm_calls
+):
+    headers = _headers(client, "autonomy-default-policy@test.com")
+    assert client.patch(
+        "/api/settings", json={"autonomy": 3}, headers=headers
+    ).status_code == 200
+    fake_router.script.append(AIMessage(content="", tool_calls=[
+        _tc("ping_external", {"message": "autonomous action"}, "auto_default"),
+    ]))
+    fake_router.script.append(AIMessage(content="Action completed."))
+
+    data = client.post(
+        "/api/chat", json={"message": "ping someone"}, headers=headers
+    ).json()
+
+    assert data["status"] == "completed"
+    assert data["approval"] is None
+    assert confirm_calls == [{"message": "autonomous action"}]
+
+
+def test_notification_preferences_filter_approval_and_schedule_alerts(
+    client,
+):
+    headers = _headers(client, "notification-prefs@test.com")
+    saved = client.patch("/api/settings", json={
+        "approval_alerts": False,
+        "schedule_alerts": False,
+    }, headers=headers)
+    assert saved.status_code == 200, saved.text
+
+    from app.database.session import SessionLocal
+    from app.services.notifications import notify
+
+    with SessionLocal() as db:
+        user_id = client.get("/api/auth/me", headers=headers).json()["id"]
+        approval = notify(
+            db, user_id=user_id, text="Approval is waiting",
+            kind="approval_required",
+        )
+        scheduled = notify(
+            db, user_id=user_id, text="Scheduled task completed",
+            kind="scheduled_task_completed",
+        )
+        system = notify(
+            db, user_id=user_id, text="General update", kind="system",
+        )
+        db.commit()
+        assert approval is None
+        assert scheduled is None
+        assert system is not None
+
+    notifications = client.get("/api/notifications", headers=headers).json()
+    assert [item["kind"] for item in notifications] == ["system"]
+
+
+def test_disabling_approval_alerts_suppresses_task_approval_notification(
+    client, fake_router
+):
+    headers = _headers(client, "approval-alerts-off@test.com")
+    saved = client.patch(
+        "/api/settings", json={"approval_alerts": False}, headers=headers
+    )
+    assert saved.status_code == 200
+    fake_router.script.append(AIMessage(content="", tool_calls=[
+        _tc("ping_external", {"message": "approval needed"}, "no_alert"),
+    ]))
+    fake_router.script.append(AIMessage(content="Waiting for approval."))
+
+    data = client.post(
+        "/api/chat", json={"message": "ping someone"}, headers=headers
+    ).json()
+
+    assert data["status"] == "paused_approval"
+    assert client.get("/api/notifications", headers=headers).json() == []
 
 
 # --- retries (spec §61) -----------------------------------------------------
@@ -519,6 +602,10 @@ def test_settings_api_roundtrip(client):
     body = got.json()
     assert body["autonomy"] == 2
     assert body["tool_policies"] == {}
+    assert body["notifications_enabled"] is False
+    assert body["notification_sound"] is False
+    assert body["schedule_alerts"] is True
+    assert body["approval_alerts"] is True
     names = {t["name"] for t in body["tools"]}
     assert {"store_memory", "update_plan", "search_web"} <= names
 
@@ -540,6 +627,8 @@ def test_settings_api_roundtrip(client):
     ok = client.patch("/api/settings", json={
         "autonomy": 3, "memory_enabled": False, "locale": "sw",
         "tool_policies": {"store_memory": "denied"},
+        "notifications_enabled": True, "notification_sound": True,
+        "schedule_alerts": False, "approval_alerts": False,
     }, headers=headers)
     assert ok.status_code == 200
     body = ok.json()
@@ -547,5 +636,15 @@ def test_settings_api_roundtrip(client):
     assert body["memory_enabled"] is False
     assert body["locale"] == "sw"
     assert body["tool_policies"] == {"store_memory": "denied"}
+    assert body["notifications_enabled"] is True
+    assert body["notification_sound"] is True
+    assert body["schedule_alerts"] is False
+    assert body["approval_alerts"] is False
+
+    persisted = client.get("/api/settings", headers=headers).json()
+    assert persisted["notifications_enabled"] is True
+    assert persisted["notification_sound"] is True
+    assert persisted["schedule_alerts"] is False
+    assert persisted["approval_alerts"] is False
 
     assert client.get("/api/settings").status_code == 401

@@ -975,6 +975,7 @@ def _restore_paused_approval_state(
         "status": "paused_approval",
         "run_id": run.id,
         "user_id": run.user_id,
+        "trigger_kind": str((task.trigger_data or {}).get("kind") or "chat"),
         "approved_call_ids": [
             str((item.arguments or {}).get("call_id") or "")
             for item in decisions
@@ -2367,6 +2368,7 @@ async def execute_chat(
                 "status": "running",
                 "run_id": run_id,
                 "user_id": user_id,
+                "trigger_kind": trigger_kind,
                 "task_id": task_id,
                 "plan": None,
                 "tool_calls": 0,

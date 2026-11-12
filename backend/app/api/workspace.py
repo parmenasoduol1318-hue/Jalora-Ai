@@ -404,6 +404,7 @@ async def workspace_chat(payload: WorkspaceChatRequest,
                 project=_WORKSPACE_PROJECT,
                 direct_tool_call={
                     "tool_name": "run_external_coding_agent",
+                    "require_approval": True,
                     "arguments": {
                         "provider": payload.model_provider,
                         "request_message": payload.message,

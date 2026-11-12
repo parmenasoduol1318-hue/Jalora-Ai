@@ -85,6 +85,10 @@ def _settings_out(prefs: dict) -> SettingsOut:
     return SettingsOut(
         autonomy=normalize_autonomy(prefs.get("autonomy")),
         tool_policies=normalize_tool_policies(prefs.get("tool_policies")),
+        notifications_enabled=bool(prefs.get("notifications_enabled", False)),
+        notification_sound=bool(prefs.get("notification_sound", False)),
+        schedule_alerts=bool(prefs.get("schedule_alerts", True)),
+        approval_alerts=bool(prefs.get("approval_alerts", True)),
         memory_enabled=bool(prefs.get("memory_enabled", get_settings().memory_enabled)),
         memory_retention_days=prefs.get("memory_retention_days"),
         locale=str(prefs.get("locale", "en")),
@@ -128,6 +132,16 @@ def patch_settings(body: SettingsPatch, user: User = Depends(get_current_user),
                     "INVALID_POLICY",
                 )
         prefs["tool_policies"] = dict(body.tool_policies)
+
+    for key in (
+        "notifications_enabled",
+        "notification_sound",
+        "schedule_alerts",
+        "approval_alerts",
+    ):
+        value = getattr(body, key)
+        if value is not None:
+            prefs[key] = value
 
     if body.memory_enabled is not None:
         prefs["memory_enabled"] = bool(body.memory_enabled)

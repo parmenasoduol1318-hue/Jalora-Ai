@@ -4,9 +4,9 @@ Crosses user-configurable per-tool policies with the autonomy level:
 
   L0 Chat        — no tools (internal planner tool exempt)
   L1 Assisted    — read-only tools only (static AUTO/NOTIFY)
-  L2 Tool Agent  — approved actions; "automatic" policy cannot loosen CONFIRM
-  L3 Autonomous  — honours "automatic" policy on CONFIRM tools
-  L4 Scheduled   — same enforcement as L3 (scheduling lands in P11)
+  L2 Tool Agent  — CONFIRM actions require approval
+  L3 Autonomous  — interactive CONFIRM actions run automatically unless explicitly set to approval
+  L4 Scheduled   — L3 rules plus automatic CONFIRM actions in scheduled runs
 
 STRICT tools (payments, deletion) always require approval — never loosened.
 Policy values: "automatic" | "approval" | "denied".
@@ -115,10 +115,9 @@ def decide(
 
     if policy == POLICY_APPROVAL:
         require_approval = True
-    elif policy == POLICY_AUTOMATIC:
-        if permission >= PermissionLevel.STRICT:
-            require_approval = True  # never loosened
-        elif autonomy >= 3:
-            require_approval = False
+    elif permission >= PermissionLevel.STRICT:
+        require_approval = True
+    elif autonomy >= 3 and permission >= PermissionLevel.CONFIRM:
+        require_approval = False
 
     return Decision(allowed=True, require_approval=require_approval)

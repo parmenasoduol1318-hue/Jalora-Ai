@@ -75,6 +75,37 @@ def test_poolside_per_user_key_is_accepted_and_never_returned(client):
     assert "poolside" not in client.get("/api/settings", headers=headers).json()["provider_keys"]
 
 
+def test_google_and_groq_accept_personal_keys_without_exposing_them(client):
+    headers = _auth_headers(client, "google-groq-keys@test.com")
+    credentials = {
+        "google": "google-user-secret",
+        "groq": "groq-user-secret",
+    }
+
+    for provider, api_key in credentials.items():
+        saved = client.post(
+            "/api/settings/provider-key",
+            headers=headers,
+            json={"provider": provider, "api_key": api_key},
+        )
+        assert saved.status_code == 200, saved.text
+        assert api_key not in saved.text
+
+    stored_names = client.get("/api/settings", headers=headers).json()["provider_keys"]
+    assert {"google", "groq"} <= set(stored_names)
+    assert client.get("/api/settings/provider-keys", headers=headers).status_code == 200
+
+    for provider, api_key in credentials.items():
+        removed = client.delete(
+            f"/api/settings/provider-key/{provider}", headers=headers
+        )
+        assert removed.status_code == 200, removed.text
+        assert api_key not in removed.text
+
+    remaining = set(client.get("/api/settings", headers=headers).json()["provider_keys"])
+    assert not {"google", "groq"} & remaining
+
+
 def test_disconnect_reconnect_round_trip(client):
     headers = _auth_headers(client)
     resp = client.patch("/api/settings", headers=headers, json={

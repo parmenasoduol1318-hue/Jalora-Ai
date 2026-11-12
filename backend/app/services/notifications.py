@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.events import emit
 from app.models.notification import Notification
+from app.models.user import User
 
 # Simple in-memory cache for unread counts
 _unread_cache: dict[str, tuple[int, float]] = {}  # {user_id: (count, timestamp)}
@@ -45,6 +46,18 @@ def _set_cached_unread_count(user_id: str, count: int) -> None:
         _unread_cache[user_id] = (count, time.time())
 
 
+def _alerts_enabled(db: Session, user_id: str, kind: str) -> bool:
+    user = db.get(User, user_id)
+    if user is None:
+        return True
+    prefs = user.prefs or {}
+    if kind == "approval_required":
+        return prefs.get("approval_alerts", True) is not False
+    if kind == "reminder" or kind.startswith("scheduled_task_"):
+        return prefs.get("schedule_alerts", True) is not False
+    return True
+
+
 def notify(
     db: Session,
     *,
@@ -56,7 +69,9 @@ def notify(
     task_id: str | None = None,
     schedule_id: str | None = None,
     occurrence_id: str | None = None,
-) -> Notification:
+) -> Notification | None:
+    if not _alerts_enabled(db, user_id, kind):
+        return None
     row = Notification(
         user_id=user_id,
         text=text[:2000],
@@ -100,6 +115,8 @@ def update_notification(
     row.schedule_id = schedule_id
     row.read_at = None
     db.flush()
+    if not _alerts_enabled(db, row.user_id, kind):
+        return row
     with _cache_lock:
         _unread_cache.pop(row.user_id, None)
     emit("notification", {

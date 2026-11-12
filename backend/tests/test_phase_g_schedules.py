@@ -309,6 +309,40 @@ def test_scheduled_task_pauses_for_approval_at_l2(client, fake_router, confirm_c
         assert occurrence.task_id is not None
 
 
+def test_scheduled_task_at_l3_waits_for_explicit_scheduled_autonomy(
+    client, fake_router, confirm_calls
+):
+    data = _register(client, "l3-scheduled@test.com")
+    uid = data["user"]["id"]
+    _set_prefs(uid, {
+        "autonomy": 3,
+        "tool_policies": {"ping_external": "automatic"},
+    })
+    fake_router.script.append(AIMessage(
+        content="", tool_calls=[{
+            "name": "ping_external", "args": {"message": "scheduled l3"},
+            "id": "call_l3_scheduled", "type": "tool_call",
+        }],
+    ))
+    fake_router.script.append(AIMessage(content="Waiting for approval."))
+
+    scheduler_service.set_router_override(fake_router)
+    try:
+        row = scheduler_service.create_schedule(
+            user_id=uid, task_template="Ping the external system",
+            text="every day at 9am", notify_only=False, now=NOW,
+        )
+        log = asyncio.run(scheduler_service.run_schedule(row.id, now=NOW))
+    finally:
+        scheduler_service.clear_router_override()
+
+    assert log["status"] == "approval_required"
+    assert confirm_calls == []
+    alerts = _notifications_for(uid)
+    assert len(alerts) == 1
+    assert alerts[0].kind == "approval_required"
+
+
 def test_scheduled_occurrence_and_notice_update_after_task_resumes(
     client, fake_router, confirm_calls,
 ):
@@ -605,11 +639,10 @@ def test_old_misfire_is_recorded_without_dispatch(client):
 
 
 def test_scheduled_task_auto_runs_at_l4(client, fake_router, confirm_calls):
-    """L4 autonomy + 'automatic' policy: the scheduled fire executes the
-    CONFIRM tool without pausing (real policy engine — no blanket exemption)."""
+    """L4 autonomy auto-runs eligible scheduled CONFIRM tools by default."""
     data = _register(client, "l4@test.com")
     uid = data["user"]["id"]
-    _set_prefs(uid, {"autonomy": 4, "tool_policies": {"ping_external": "automatic"}})
+    _set_prefs(uid, {"autonomy": 4})
     fake_router.script.append(AIMessage(
         content="", tool_calls=[{
             "name": "ping_external", "args": {"message": "auto ping"},

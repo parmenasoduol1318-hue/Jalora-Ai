@@ -225,6 +225,10 @@ export interface VoiceConfig {
 export interface AppSettings {
   autonomy: number;
   tool_policies: Record<string, string>;
+  notifications_enabled: boolean;
+  notification_sound: boolean;
+  schedule_alerts: boolean;
+  approval_alerts: boolean;
   memory_enabled: boolean;
   locale: string;
   voice: VoiceSettings;
@@ -245,10 +249,6 @@ export interface AppSettings {
   // Appearance & resources (spec §settings-audit).
   theme?: "dark" | "light";
   ram_safety_floor_gb?: number;
-  notifications_enabled?: boolean;
-  notification_sound?: boolean;
-  schedule_alerts?: boolean;
-  approval_alerts?: boolean;
   privacy_data_export?: boolean;
   memory_persist?: boolean;
 }

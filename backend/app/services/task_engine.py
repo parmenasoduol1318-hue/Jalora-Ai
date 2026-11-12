@@ -818,6 +818,18 @@ class TaskEngine:
         task.updated_at = _utcnow()
         self.db.commit()
         self.db.refresh(approval)
+        from app.services.notifications import notify
+
+        notify(
+            self.db,
+            user_id=task.user_id,
+            text=f"Approval required for {tool_name}. Review it in Tasks.",
+            kind="approval_required",
+            link=task.conversation_id,
+            run_id=task.run_id,
+            task_id=task.id,
+        )
+        self.db.commit()
 
         # Mark the step as pending-approval.
         steps = self._load_steps(task_id)

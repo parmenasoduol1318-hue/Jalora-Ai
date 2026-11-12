@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
-import type { NotificationT } from "../lib/types";
+import type { AppSettings, NotificationT } from "../lib/types";
 
 const KIND_KEY: Record<string, string> = {
   reminder: "notificationReminder",
@@ -23,9 +23,32 @@ export function NotificationBell({
   const [items, setItems] = useState<NotificationT[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const [notificationPrefs, setNotificationPrefs] = useState({
+    notifications_enabled: false,
+    notification_sound: false,
+  });
   const nodeRef = useRef<HTMLDivElement | null>(null);
-  const prevCount = useRef(0);
-  const permissionAsked = useRef(false);
+  const prevCount = useRef(-1);
+
+  const loadNotificationPrefs = useCallback(async () => {
+    try {
+      const prefs = await api<AppSettings>("/api/settings");
+      setNotificationPrefs({
+        notifications_enabled: prefs.notifications_enabled,
+        notification_sound: prefs.notification_sound,
+      });
+    } catch (err) {
+      onToast((err as Error).message, true);
+    }
+  }, [onToast]);
+
+  useEffect(() => {
+    void loadNotificationPrefs();
+    window.addEventListener("jalora:settings-changed", loadNotificationPrefs);
+    return () => {
+      window.removeEventListener("jalora:settings-changed", loadNotificationPrefs);
+    };
+  }, [loadNotificationPrefs]);
 
   const loadItems = useCallback(async () => {
     setLoading(true);
@@ -43,7 +66,11 @@ export function NotificationBell({
 
   const fireBrowser = useCallback(
     async (title: string) => {
-      if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+      if (
+        !notificationPrefs.notifications_enabled
+        || typeof Notification === "undefined"
+        || Notification.permission !== "granted"
+      ) return;
       try {
         const latest = await api<NotificationT[]>("/api/notifications?limit=1");
         const item = latest[0];
@@ -55,22 +82,60 @@ export function NotificationBell({
           loadItems();
         };
       } catch {
-        /* OS notification is best-effort */
+        console.warn("Could not display the desktop notification.");
       }
     },
-    [loadItems],
+    [loadItems, notificationPrefs.notifications_enabled],
   );
+
+  const playSound = useCallback(() => {
+    if (!notificationPrefs.notification_sound || typeof window.AudioContext === "undefined") {
+      return;
+    }
+    try {
+      const context = new window.AudioContext();
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "sine";
+      oscillator.frequency.value = 880;
+      gain.gain.setValueAtTime(0.08, context.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.16);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.onended = () => {
+        void context.close().catch((err: unknown) => {
+          console.warn("Could not close the notification audio context.", err);
+        });
+      };
+      void context.resume().then(() => {
+        oscillator.start();
+        oscillator.stop(context.currentTime + 0.16);
+      }).catch((err: unknown) => {
+        console.warn("Could not play the notification sound.", err);
+        void context.close().catch((closeErr: unknown) => {
+          console.warn("Could not close the notification audio context.", closeErr);
+        });
+      });
+    } catch (err) {
+      console.warn("Could not initialize the notification sound.", err);
+    }
+  }, [notificationPrefs.notification_sound]);
 
   const refreshCount = useCallback(async () => {
     try {
       const r = await api<{ count: number }>("/api/notifications/unread-count");
-      if (r.count > prevCount.current) fireBrowser(t("notifications"));
+      if (prevCount.current < 0) {
+        prevCount.current = r.count;
+      } else if (r.count > prevCount.current) {
+        fireBrowser(t("notifications"));
+        playSound();
+      }
       prevCount.current = r.count;
       setCount(r.count);
     } catch {
       /* bell is non-critical */
     }
-  }, [fireBrowser, t]);
+  }, [fireBrowser, playSound, t]);
 
   useEffect(() => {
     refreshCount();
@@ -87,26 +152,8 @@ export function NotificationBell({
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
-  const requestPermission = async () => {
-    if (permissionAsked.current) return;
-    permissionAsked.current = true;
-    if (
-      typeof Notification === "undefined" ||
-      Notification.permission === "granted" ||
-      Notification.permission === "denied"
-    ) {
-      return;
-    }
-    try {
-      await Notification.requestPermission();
-    } catch {
-      /* permission request is best-effort */
-    }
-  };
-
   const openPanel = async () => {
     if (!open) {
-      requestPermission();
       loadItems();
     }
     setOpen((o) => !o);

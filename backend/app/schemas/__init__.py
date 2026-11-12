@@ -267,6 +267,10 @@ class VoiceSettings(BaseModel):
 class SettingsPatch(BaseModel):
     autonomy: int | None = Field(default=None, ge=0, le=4)
     tool_policies: dict[str, str] | None = None
+    notifications_enabled: bool | None = None
+    notification_sound: bool | None = None
+    schedule_alerts: bool | None = None
+    approval_alerts: bool | None = None
     memory_enabled: bool | None = None
     memory_retention_days: int | None = Field(default=None, gt=0, le=3650)
     locale: str | None = Field(default=None, max_length=8)
@@ -321,6 +325,10 @@ class ModelsResponse(BaseModel):
 class SettingsOut(BaseModel):
     autonomy: int
     tool_policies: dict[str, str] = Field(default_factory=dict)
+    notifications_enabled: bool = False
+    notification_sound: bool = False
+    schedule_alerts: bool = True
+    approval_alerts: bool = True
     memory_enabled: bool = True
     memory_retention_days: int | None = None
     locale: str = "en"

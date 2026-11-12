@@ -931,7 +931,7 @@ def _notify_occurrence(
         schedule_id=occurrence.schedule_id,
         occurrence_id=occurrence.id,
     )
-    occurrence.notification_id = note.id
+    occurrence.notification_id = note.id if note is not None else None
 
 
 def sync_task_occurrence(db, task: Task) -> None:
