@@ -32,7 +32,9 @@ a registered executable are not discovered.
 - Read up to 40 accessible controls from an app launched by this companion.
 - Click one uniquely named or identified enabled accessible control.
 - Type up to 2,000 characters into one uniquely identified accessible edit
-  field, or press a small allowlist of keys.
+  field after checking it is not a password field; report success only when
+  UI Automation confirms the requested text. Field contents are not included
+  in the receipt. Otherwise report an uncertain result.
 - Request a graceful close only for an app launched in this companion session.
 - Open a public HTTP(S) link after local approval when that scope was granted.
 - Capture OCR text from the approved app's foreground window, if OCR dependencies

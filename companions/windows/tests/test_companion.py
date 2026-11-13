@@ -165,6 +165,7 @@ class FakeElement:
         *,
         enabled: bool = True,
         visible: bool = True,
+        password: bool = False,
     ) -> None:
         self.element_info = type("Info", (), {
             "name": name,
@@ -174,12 +175,20 @@ class FakeElement:
             "visible": visible,
         })()
         self.clicked = False
+        self.password = password
+        self.value = ""
 
     def is_enabled(self):
         return self.element_info.enabled
 
     def is_visible(self):
         return self.element_info.visible
+
+    def is_password(self):
+        return self.password
+
+    def get_value(self):
+        return self.value
 
     def click_input(self):
         self.clicked = True
@@ -378,13 +387,16 @@ def test_windows_executor_click_requires_and_verifies_exact_accessible_control(
 def test_windows_executor_types_only_into_allowlisted_edit_control(
     monkeypatch, tmp_path
 ):
-    executor, applications, _window = _fake_windows(monkeypatch, tmp_path)
+    executor, applications, window = _fake_windows(monkeypatch, tmp_path)
     executor.execute("windows.app.launch", {"app_id": "test-app"}, applications)
-    sent = []
+
+    def send_unicode(text):
+        window.controls[0].value += text
+
     monkeypatch.setattr(
         WindowsExecutor,
         "_send_unicode",
-        staticmethod(lambda text: sent.append(text)),
+        staticmethod(send_unicode),
     )
 
     result = executor.execute(
@@ -399,9 +411,63 @@ def test_windows_executor_types_only_into_allowlisted_edit_control(
     )
 
     assert result[0] == "succeeded"
-    assert result[1]["operation_result"]["verified"] is False
+    assert result[1]["operation_result"]["verified"] is True
     assert result[1]["operation_result"]["characters"] == len("safe test text")
-    assert sent == ["safe test text"]
+    assert window.controls[0].value == "safe test text"
+    assert "safe test text" not in str(result[1])
+
+
+def test_windows_executor_never_types_into_password_fields(monkeypatch, tmp_path):
+    executor, applications, window = _fake_windows(monkeypatch, tmp_path)
+    window.controls[0].password = True
+    executor.execute("windows.app.launch", {"app_id": "test-app"}, applications)
+    sent = []
+    monkeypatch.setattr(
+        WindowsExecutor,
+        "_send_unicode",
+        staticmethod(lambda text: sent.append(text)),
+    )
+
+    result = executor.execute(
+        "windows.screen.type",
+        {
+            "app_id": "test-app",
+            "name": "Editor",
+            "automation_id": "text",
+            "text": "never enter secrets",
+        },
+        applications,
+    )
+
+    assert result[0] == "failed"
+    assert result[2] == "WINDOWS_PASSWORD_INPUT_BLOCKED"
+    assert sent == []
+
+
+def test_windows_executor_reports_uncertain_when_typed_value_is_not_observed(
+    monkeypatch, tmp_path
+):
+    executor, applications, _window = _fake_windows(monkeypatch, tmp_path)
+    executor.execute("windows.app.launch", {"app_id": "test-app"}, applications)
+    monkeypatch.setattr(
+        WindowsExecutor,
+        "_send_unicode",
+        staticmethod(lambda _text: None),
+    )
+
+    result = executor.execute(
+        "windows.screen.type",
+        {
+            "app_id": "test-app",
+            "name": "Editor",
+            "automation_id": "text",
+            "text": "not entered",
+        },
+        applications,
+    )
+
+    assert result[0] == "uncertain"
+    assert result[2] == "WINDOWS_TEXT_INPUT_UNVERIFIED"
 
 
 def test_windows_executor_refuses_changed_allowlisted_executable(monkeypatch, tmp_path):

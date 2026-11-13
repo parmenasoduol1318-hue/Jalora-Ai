@@ -418,21 +418,49 @@ class WindowsExecutor:
                     "WINDOWS_TEXT_TARGET_UNSUPPORTED",
                     "Text can only be entered into an accessible edit field.",
                 )
+            try:
+                if control.is_password():
+                    raise WindowsActionError(
+                        "WINDOWS_PASSWORD_INPUT_BLOCKED",
+                        "The companion does not enter text into password fields.",
+                    )
+                before = control.get_value()
+            except WindowsActionError:
+                raise
+            except _AUTOMATION_ERRORS as exc:
+                raise WindowsActionError(
+                    "WINDOWS_TEXT_VERIFICATION_UNAVAILABLE",
+                    "The accessible edit field does not expose a value for safe verification.",
+                ) from exc
             self._focus(session, window)
             try:
                 control.set_focus()
                 self._send_unicode(str(arguments["text"]))
+                time.sleep(0.1)
+                after = control.get_value()
             except _AUTOMATION_ERRORS as exc:
                 raise WindowsActionError(
                     "WINDOWS_TEXT_INPUT_UNVERIFIED",
                     f"Windows did not confirm text input: {exc}",
                     uncertain=True,
                 ) from exc
+            requested_text = str(arguments["text"])
+            if (
+                not isinstance(after, str)
+                or not requested_text
+                or after == before
+                or requested_text not in after
+            ):
+                raise WindowsActionError(
+                    "WINDOWS_TEXT_INPUT_UNVERIFIED",
+                    "Text entry was attempted, but the accessible field did not confirm the requested text.",
+                    uncertain=True,
+                )
             return {
                 "app_name": entry["name"],
                 "status": "input_sent",
-                "verified": False,
-                "characters": len(arguments["text"]),
+                "verified": True,
+                "characters": len(requested_text),
             }
         if operation == "windows.screen.key":
             key = arguments.get("key")
