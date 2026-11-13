@@ -116,6 +116,78 @@ def test_complexity_uses_strong_model():
     assert complex_.model == "gpt-4o"
 
 
+@pytest.mark.parametrize(
+    ("provider", "api_key_setting", "mapping_name"),
+    [
+        ("groq", "groq_api_key", "groq"),
+        ("google", "google_api_key", "google_ai_studio"),
+        ("openrouter", "openrouter_api_key", "openrouter"),
+        ("mistral", "mistral_api_key", "mistral"),
+        ("nvidia", "nvidia_api_key", "nvidia_nim"),
+        ("cerebras", "cerebras_api_key", "cerebras"),
+    ],
+)
+def test_complex_reasoning_model_mapping_is_used_for_provider_overrides(
+    provider, api_key_setting, mapping_name
+):
+    settings = _settings(**{api_key_setting: "test-provider-key"})
+    router = ModelRouter(settings)
+
+    route = router.route(
+        provider_override=provider,
+        message="research and compare these approaches",
+    )
+
+    configured = mr.COMPLEX_REASONING_MODELS[mapping_name]
+    assert route.provider.name == provider
+    assert route.provider.base_url.rstrip("/") == configured["base_url"].rstrip("/")
+    assert route.model == configured["model"]
+
+
+def test_complex_reasoning_mapping_is_used_for_pinned_provider():
+    router = ModelRouter(
+        _settings(default_provider="mistral", mistral_api_key="mistral-test")
+    )
+
+    route = router.route(message="research and compare these approaches")
+
+    assert route.provider.name == "mistral"
+    assert route.model == mr.COMPLEX_REASONING_MODELS["mistral"]["model"]
+
+
+def test_explicit_model_override_precedes_complex_reasoning_mapping():
+    router = ModelRouter(_settings(groq_api_key="test-provider-key"))
+
+    route = router.route(
+        provider_override="groq",
+        message="research and compare these approaches",
+        model_override="custom-model",
+    )
+
+    assert route.model == "custom-model"
+
+
+def test_complex_reasoning_model_mapping_is_used_in_fallback_chain():
+    router = ModelRouter(
+        _settings(
+            groq_api_key="groq-test",
+            google_api_key="google-test",
+        )
+    )
+
+    routes = router.route_chain(
+        provider_override="groq",
+        message="research and compare these approaches",
+    )
+
+    assert routes[0].provider.name == "groq"
+    assert routes[0].model == mr.COMPLEX_REASONING_MODELS["groq"]["model"]
+    google_route = next(route for route in routes if route.provider.name == "google")
+    assert google_route.model == mr.COMPLEX_REASONING_MODELS[
+        "google_ai_studio"
+    ]["model"]
+
+
 def test_auto_falls_back_to_local_when_no_keys():
     # Local providers are keyless, so auto routing still works honestly offline.
     router = ModelRouter(_settings())

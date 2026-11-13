@@ -47,6 +47,42 @@ COMPLEXITY_MARKERS = (
     "code", "debug", "refactor", "prove", "derivation",
 )
 
+COMPLEX_REASONING_MODELS = {
+    "groq": {
+        "base_url": "https://api.groq.com/openai/v1",
+        "model": "openai/gpt-oss-120b",
+    },
+    "google_ai_studio": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "model": "gemini-3.8-flash",
+    },
+    "openrouter": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "nvidia/nemotron-3-super-vl:free",
+    },
+    "mistral": {
+        "base_url": "https://api.mistral.ai/v1",
+        "model": "mistral-large-latest",
+    },
+    "nvidia_nim": {
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "model": "mistralai/mistral-large-4",
+    },
+    "cerebras": {
+        "base_url": "https://api.cerebras.ai/v1",
+        "model": "gpt-oss-120b",
+    },
+}
+
+
+def _complex_model_for_provider(provider_name: str) -> str | None:
+    mapping_name = {
+        "google": "google_ai_studio",
+        "nvidia": "nvidia_nim",
+    }.get(provider_name, provider_name)
+    model = COMPLEX_REASONING_MODELS.get(mapping_name, {}).get("model")
+    return model or None
+
 
 def _reduced_tpm_completion_limit(payload: dict[str, Any], body: str) -> int | None:
     """Return a safer output budget for a provider's explicit TPM rejection."""
@@ -155,19 +191,39 @@ def build_provider_specs(s: Settings) -> dict[str, ProviderSpec]:
                                s.openai_api_key, s.openai_model, s.openai_reasoning_model),
         "anthropic": ProviderSpec("anthropic", "anthropic", s.anthropic_base_url.rstrip("/"),
                                   s.anthropic_api_key, s.anthropic_model, s.anthropic_model),
-        "google": ProviderSpec("google", "openai",
-                               "https://generativelanguage.googleapis.com/v1beta/openai",
-                               s.google_api_key, s.google_model, s.google_model),
-        "groq": ProviderSpec("groq", "openai", "https://api.groq.com/openai/v1",
-                             s.groq_api_key, s.groq_model, s.groq_model),
+        "google": ProviderSpec(
+            "google",
+            "openai",
+            COMPLEX_REASONING_MODELS["google_ai_studio"]["base_url"].rstrip("/"),
+            s.google_api_key,
+            s.google_model,
+            COMPLEX_REASONING_MODELS["google_ai_studio"]["model"],
+        ),
+        "groq": ProviderSpec(
+            "groq",
+            "openai",
+            COMPLEX_REASONING_MODELS["groq"]["base_url"],
+            s.groq_api_key,
+            s.groq_model,
+            COMPLEX_REASONING_MODELS["groq"]["model"],
+        ),
         "deepseek": ProviderSpec("deepseek", "openai", "https://api.deepseek.com/v1",
                                  s.deepseek_api_key, s.deepseek_model, s.deepseek_model),
-        "mistral": ProviderSpec("mistral", "openai", "https://api.mistral.ai/v1",
-                                s.mistral_api_key, s.mistral_model, s.mistral_model),
-        "openrouter": ProviderSpec("openrouter", "openai", "https://openrouter.ai/api/v1",
-                                   s.openrouter_api_key, s.openrouter_model, s.openrouter_model),
-        "nvidia": ProviderSpec("nvidia", "openai", "https://integrate.api.nvidia.com/v1",
-                               s.nvidia_api_key, s.nvidia_model, s.nvidia_model),
+        "mistral": ProviderSpec(
+            "mistral", "openai", COMPLEX_REASONING_MODELS["mistral"]["base_url"],
+            s.mistral_api_key, s.mistral_model,
+            COMPLEX_REASONING_MODELS["mistral"]["model"],
+        ),
+        "openrouter": ProviderSpec(
+            "openrouter", "openai", COMPLEX_REASONING_MODELS["openrouter"]["base_url"],
+            s.openrouter_api_key, s.openrouter_model,
+            COMPLEX_REASONING_MODELS["openrouter"]["model"],
+        ),
+        "nvidia": ProviderSpec(
+            "nvidia", "openai", COMPLEX_REASONING_MODELS["nvidia_nim"]["base_url"],
+            s.nvidia_api_key, s.nvidia_model,
+            COMPLEX_REASONING_MODELS["nvidia_nim"]["model"],
+        ),
         "ollama": ProviderSpec("ollama", "openai", f"{s.ollama_base_url.rstrip('/')}/v1",
                                None, s.ollama_model, s.ollama_model, requires_key=False),
     }
@@ -1089,6 +1145,20 @@ class ModelRouter:
             return ollama_memory.pick_ollama_model().model
         return spec.default_model
 
+    def _model_for_complexity(
+        self,
+        spec: ProviderSpec,
+        model_override: str | None,
+        complexity: str,
+    ) -> str:
+        if model_override:
+            return model_override
+        if spec.name == "ollama":
+            return self._model_for(spec, None)
+        if complexity == "complex":
+            return _complex_model_for_provider(spec.name) or spec.strong_model
+        return spec.default_model
+
     def route(
         self,
         *,
@@ -1101,6 +1171,9 @@ class ModelRouter:
         disabled: Iterable[str] | None = None,
     ) -> TaskRoute:
         disabled = set(disabled or ())
+        if complexity == "auto":
+            complexity = estimate_complexity(message)
+
         if provider_override:
             if provider_override not in self.specs:
                 raise BadRequestError(f"Unknown provider '{provider_override}'.", "UNKNOWN_PROVIDER")
@@ -1108,12 +1181,16 @@ class ModelRouter:
             # fall through to auto-routing instead of failing the turn.
             if self.is_usable(provider_override, disabled):
                 spec = self.specs[provider_override]
-                return TaskRoute(spec, self._model_for(spec, model_override), "user override")
+                return TaskRoute(
+                    spec,
+                    self._model_for_complexity(spec, model_override, complexity),
+                    "user override",
+                )
 
         if self.settings.default_provider != "auto":
             if self.is_usable(self.settings.default_provider, disabled):
                 spec = self.specs[self.settings.default_provider]
-                model = self._model_for(spec, model_override)
+                model = self._model_for_complexity(spec, model_override, complexity)
                 return TaskRoute(spec, model, "configured default provider")
 
         pool = PRIVATE_PRIORITY if prefer_private else AUTO_PRIORITY
@@ -1125,9 +1202,6 @@ class ModelRouter:
             raise ModelNotConfiguredError()
 
         spec = self.specs[chosen_name]
-        if complexity == "auto":
-            complexity = estimate_complexity(message)
-
         if modality == "image":
             # vision-capable providers first; keep the chosen one when it is vision-capable
             vision_order = ["openai", "anthropic", "google", "ollama"]
@@ -1137,12 +1211,7 @@ class ModelRouter:
                         spec = self.specs[name]
                         break
 
-        if chosen_name == "ollama":
-            model = self._model_for(spec, model_override)
-        else:
-            model = model_override or (
-                spec.strong_model if complexity == "complex" else spec.default_model
-            )
+        model = self._model_for_complexity(spec, model_override, complexity)
         return TaskRoute(spec, model, f"auto ({complexity}, {modality})")
 
     def get_model(self, route: TaskRoute) -> JaloraChatModel:
@@ -1170,6 +1239,8 @@ class ModelRouter:
         provider.
         """
         disabled = set(disabled or ())
+        if complexity == "auto":
+            complexity = estimate_complexity(message)
         order: list[str] = []
 
         def _add(name: str | None) -> None:
@@ -1187,8 +1258,13 @@ class ModelRouter:
             _add(name)
 
         return [
-            TaskRoute(self.specs[name], self._model_for(self.specs[name], model_override),
-                      f"chain:{name}")
+            TaskRoute(
+                self.specs[name],
+                self._model_for_complexity(
+                    self.specs[name], model_override, complexity
+                ),
+                f"chain:{name}",
+            )
             for name in order
         ]
 

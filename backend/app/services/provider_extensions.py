@@ -35,6 +35,7 @@ from app.config import Settings
 from app.services.model_router import (
     AUTO_PRIORITY as _orig_auto_priority,
 )
+from app.services.model_router import COMPLEX_REASONING_MODELS
 from app.services.model_router import (
     ModelRouter,
     ProviderSpec,
@@ -241,10 +242,10 @@ def _extra_specs(s: Settings) -> dict[str, ProviderSpec]:
         "cerebras": ProviderSpec(
             name="cerebras",
             api_style="openai",
-            base_url="https://api.cerebras.ai/v1",
+            base_url=COMPLEX_REASONING_MODELS["cerebras"]["base_url"],
             api_key=s.cerebras_api_key,
             default_model=s.cerebras_model,
-            strong_model=s.cerebras_model,
+            strong_model=COMPLEX_REASONING_MODELS["cerebras"]["model"],
         ),
         # Perplexity — cloud, OpenAI-compatible endpoint.
         "perplexity": ProviderSpec(
