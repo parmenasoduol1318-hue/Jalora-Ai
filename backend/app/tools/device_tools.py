@@ -461,6 +461,7 @@ async def request_remote_android_action(
     action: Literal[
         "android.app.launch",
         "android.screen.inspect",
+        "android.screen.back",
         "android.screen.click",
         "android.screen.scroll",
         "android.screen.type",

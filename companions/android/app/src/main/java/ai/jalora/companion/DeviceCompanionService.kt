@@ -242,6 +242,7 @@ class DeviceCompanionService : Service() {
                 ActionResult.succeeded("launch_requested", verified = false)
             }
             "android.screen.inspect",
+            "android.screen.back",
             "android.screen.click",
             "android.screen.scroll",
             "android.screen.type" -> {

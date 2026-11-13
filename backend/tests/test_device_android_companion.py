@@ -646,3 +646,26 @@ def test_android_scroll_is_queued_for_one_approved_accessible_target(
         "automation_id": "content",
         "direction": "up",
     }
+
+    back_context = ToolContext(
+        user_id=context.user_id,
+        idempotency_key="android-back-step",
+    )
+    with bind_tool_execution(back_context):
+        back_queued = asyncio.run(
+            request_remote_android_action(
+                device["id"],
+                "android.screen.back",
+                "scrollable-app",
+            )
+        )
+    assert back_queued.success
+    back_poll = client.get(
+        "/api/devices/protocol/v1/commands?wait_seconds=0&client_type=android",
+        headers=access_headers,
+    )
+    assert back_poll.status_code == 200, back_poll.text
+    back_command = back_poll.json()["commands"][0]
+    assert back_command["operation"] == "android.screen.back"
+    assert back_command["required_scope"] == "android.screen.control"
+    assert back_command["arguments"] == {"app_id": "scrollable-app"}

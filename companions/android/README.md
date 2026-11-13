@@ -56,6 +56,9 @@ inspection. Clicks require a unique exact accessible-name or view-ID match.
 Scrolling requires a unique visible, enabled, scrollable accessibility node and
 uses one native forward/backward scroll action; success is reported only when
 the accessibility tree changes.
+Back navigation is an explicit, separately approved Android global-back action.
+It is reported as verified only when the foreground app remains selected and
+the accessibility tree changes.
 Text entry is limited to a unique, visible, enabled, non-password edit control.
 Every remote action has a separate approval notification; the expanded
 notification shows the exact request on an unlocked device. No screen image,

@@ -328,7 +328,7 @@ class MainActivity : Activity() {
     private fun scopeLabel(scope: String): String = when (scope) {
         "android.apps.launch" -> "Launch only apps selected on this phone"
         "android.screen.read" -> "Read accessible content from selected foreground apps"
-        "android.screen.control" -> "Click, scroll, or enter approved text in selected apps"
+        "android.screen.control" -> "Navigate, click, scroll, or enter approved text in selected apps"
         "messages.read" -> "Read selected apps' notification content"
         else -> scope
     }

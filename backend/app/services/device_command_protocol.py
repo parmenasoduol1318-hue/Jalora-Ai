@@ -39,6 +39,7 @@ _OPERATION_SCOPES = {
     "windows.screen.key": "windows.screen.control",
     "android.app.launch": "android.apps.launch",
     "android.screen.inspect": "android.screen.read",
+    "android.screen.back": "android.screen.control",
     "android.screen.click": "android.screen.control",
     "android.screen.scroll": "android.screen.control",
     "android.screen.type": "android.screen.control",
@@ -190,6 +191,7 @@ def _normalized_command(
         "windows.screen.key": "screen.control",
         "android.app.launch": "application.launch",
         "android.screen.inspect": "screen.accessibility.inspect",
+        "android.screen.back": "screen.control",
         "android.screen.click": "screen.control",
         "android.screen.scroll": "screen.control",
         "android.screen.type": "screen.control",
@@ -204,6 +206,7 @@ def _normalized_command(
         "android.screen.click",
         "android.screen.scroll",
         "android.screen.type",
+        "android.screen.back",
     } and (
         f"{platform}.screen.read" not in (device.scopes or [])
         or "screen.accessibility.inspect" not in app.get("capabilities", [])
@@ -219,6 +222,7 @@ def _normalized_command(
         "android.app.launch",
         "windows.screen.ocr",
         "android.screen.inspect",
+        "android.screen.back",
     }:
         if set(arguments) != {"app_id"}:
             raise DeviceProtocolError("The native command has unexpected arguments.")
@@ -466,6 +470,7 @@ def claim_device_commands(
         supported_operations = (
             "android.app.launch",
             "android.screen.inspect",
+            "android.screen.back",
             "android.screen.click",
             "android.screen.scroll",
             "android.screen.type",

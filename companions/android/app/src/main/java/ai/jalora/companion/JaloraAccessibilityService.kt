@@ -43,6 +43,7 @@ class JaloraAccessibilityService : AccessibilityService() {
         return try {
             when (operation) {
                 "android.screen.inspect" -> inspect(root, app.optString("name"))
+                "android.screen.back" -> back(root)
                 "android.screen.click" -> click(root, arguments)
                 "android.screen.scroll" -> scroll(root, arguments)
                 "android.screen.type" -> type(root, arguments)
@@ -121,6 +122,41 @@ class JaloraAccessibilityService : AccessibilityService() {
             ActionResult.uncertain("ANDROID_CLICK_UNVERIFIED", "The click was accepted, but no accessibility state change was observed.")
         } else {
             ActionResult.succeeded("clicked", verified = true)
+        }
+    }
+
+    private fun back(root: AccessibilityNodeInfo): ActionResult {
+        val before = signature(root)
+        if (!performGlobalAction(GLOBAL_ACTION_BACK)) {
+            return ActionResult.failed(
+                "ANDROID_BACK_FAILED",
+                "Android did not accept the back-navigation action.",
+            )
+        }
+        Thread.sleep(250)
+        val afterRoot = rootInActiveWindow
+            ?: return ActionResult.uncertain(
+                "ANDROID_BACK_UNVERIFIED",
+                "Android accepted back navigation, but no active screen is available.",
+            )
+        val after = try {
+            if (afterRoot.packageName != root.packageName) {
+                return ActionResult.uncertain(
+                    "ANDROID_FOREGROUND_APP_CHANGED",
+                    "Back navigation changed the foreground app; the result is uncertain.",
+                )
+            }
+            signature(afterRoot)
+        } finally {
+            afterRoot.recycle()
+        }
+        return if (before == after) {
+            ActionResult.uncertain(
+                "ANDROID_BACK_UNVERIFIED",
+                "Android accepted back navigation, but no accessibility state change was observed.",
+            )
+        } else {
+            ActionResult.succeeded("navigated_back", verified = true)
         }
     }
 

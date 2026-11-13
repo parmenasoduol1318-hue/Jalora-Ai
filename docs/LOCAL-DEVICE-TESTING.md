@@ -107,6 +107,8 @@ They report success only when the accessibility tree changes; otherwise the
 result is uncertain. Protocol tests cover scope and direction validation for
 both platforms; Windows executor tests cover accessibility-change verification
 and uncertain outcomes. Android source has not been built or device-tested.
+Android also supports an explicitly approved global back action and reports an
+uncertain result if it cannot verify the resulting foreground UI.
 
 Windows automated tests use mocked API responses and do not send real external
 actions. The remaining Windows acceptance requires a signed distribution,

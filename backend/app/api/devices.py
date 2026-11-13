@@ -84,7 +84,7 @@ DEVICE_SCOPE_LABELS = {
     "android.apps.launch": "Launch only applications selected in the Android companion",
     "android.screen.read": "Read accessibility controls from the foreground approved Android app",
     "android.screen.control": (
-        "Click, scroll, or type into the foreground approved Android app"
+        "Navigate, click, scroll, or type into the foreground approved Android app"
     ),
 }
 

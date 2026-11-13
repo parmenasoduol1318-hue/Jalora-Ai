@@ -147,7 +147,8 @@ idempotency key, expected evidence, and delivery lease. Protocol v1 allows
 `windows.screen.click`, `windows.screen.scroll`, `windows.screen.type`, and
 `windows.screen.key`), and
 bounded Android operations (`android.app.launch`, `android.screen.inspect`,
-`android.screen.click`, `android.screen.scroll`, and `android.screen.type`). Browser clients poll with
+`android.screen.back`, `android.screen.click`, `android.screen.scroll`, and
+`android.screen.type`). Browser clients poll with
 the default `client_type=browser`; native clients use `client_type=windows` or
 `client_type=android` and are accepted only for matching paired devices. Raw
 shell commands, arbitrary code, screenshot uploads, and generic coordinate
@@ -204,11 +205,13 @@ and local per-command approval.
 
 The Android client is under `companions/android`. It uses intents for
 user-selected app launch and an owner-enabled Accessibility Service for bounded
-foreground-app inspection and accessible control. Android notification access
-is requested separately and forwards only notifications from selected apps
-when `messages.read` is granted. Scroll uses an accessible scrollable control
-and reports success only when the accessibility tree changes. Secure windows, password controls, hidden
-apps, and unsupported app surfaces remain inaccessible. Neither native client
+foreground-app inspection, back navigation, and accessible control. Android
+notification access is requested separately and forwards only notifications
+from selected apps when `messages.read` is granted. Scroll uses an accessible
+scrollable control and reports success only when the accessibility tree
+changes. Back navigation is reported as uncertain if the foreground app
+changes or no accessibility change can be observed. Secure windows, password
+controls, hidden apps, and unsupported app surfaces remain inaccessible. Neither native client
 is signed for production distribution or accepted on a physical device yet.
 Do not treat pairing or a browser token as authorization for arbitrary actions.
 
