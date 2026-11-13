@@ -1,7 +1,7 @@
 # JALORA capability gap audit and implementation plan
 
-**Audit date:** 13 November 2026  
-**Audited checkout:** `fix/search-pairing`, commit `d62f330`  
+**Audit date:** 13 November 2026
+**Audited checkout:** `fix/search-pairing`, commit `d62f330`
 **Purpose:** compare the capabilities in the supplied ChatGPT benchmark with the
 current JALORA source and recorded acceptance evidence, then provide an ordered
 plan to close the highest-value gaps.
@@ -134,7 +134,7 @@ policy, approval, and evidence lifecycle.
 
 ### 0. Keep the capability inventory truthful
 
-**Roadmap alignment:** stages 11, 12, 13, 15.  
+**Roadmap alignment:** stages 11, 12, 13, 15.
 **Priority:** immediate documentation and release hygiene.
 
 - Maintain a capability catalog with per-feature status: implemented,
@@ -153,7 +153,7 @@ documentation.
 
 ### 1. Close shared task, approval, and recovery gaps
 
-**Roadmap alignment:** complete stage 7, then stage 15.  
+**Roadmap alignment:** complete stage 7, then stage 15.
 **Priority:** highest; prerequisite for dependable multi-app workflows.
 
 - Finish lifecycle parity for direct email/calendar/document/device actions,
