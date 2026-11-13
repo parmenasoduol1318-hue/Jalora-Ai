@@ -168,17 +168,16 @@ recovery, and duplicate prevention without real external side effects.
 **Status:** Partially implemented. Capability discovery, central registry
 routing, task-linked commands, individual shared/local approval, persisted
 command status, and bounded receipts are implemented. Authenticated device
-receipts update the linked task-step evidence and verification status. A
-successful receipt for the final tool step completes the shared task; if
-additional tool steps remain, the saved run state and completed step are
-available through the existing explicit run-resume path. The central prompt
-requires discovery before choosing a device and forbids treating a queued
-command as completed. Mock coverage now verifies two allowlisted Android apps
-can create separately approved commands whose receipts update distinct steps
-in the same task. This is a protocol/task-lifecycle acceptance, not proof that
-the central planner can autonomously sequence multiple real apps. Automatic
-receipt-triggered continuation of remaining dependent steps and the full
-mocked multi-app acceptance list remain incomplete.
+receipts update the linked task-step evidence and verification status.
+Successful receipts automatically resume remaining central-agent steps, and
+an identical receipt can retry continuation if an earlier attempt was
+interrupted; a conditional run-status claim prevents concurrent duplicate
+resumes. Mock coverage verifies two allowlisted Android apps can create
+separately approved commands whose receipts update distinct steps in the same
+task, and a receipt resumes the remaining response step. This is a
+protocol/task-lifecycle acceptance, not proof that the central planner can
+autonomously sequence multiple real apps. Full mocked multi-app workflow
+coverage and native-device acceptance remain incomplete.
 
 The legacy browser-link `/opened` route now records through the same receipt
 and task-update path as protocol v1. Approval leaves the task partial; only a

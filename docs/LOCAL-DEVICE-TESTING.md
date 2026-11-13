@@ -91,8 +91,9 @@ suite is the supported boundary and live send acceptance stays blocked.
 ## Stage 12 — native device companions
 
 Stage 12 is **IMPLEMENTED IN SOURCE / NOT PLATFORM-ACCEPTED**. The Windows
-companion uses outbound protocol v1, current-user DPAPI credential storage, an
-owner-selected executable allowlist, local per-command approval, UI Automation,
+companion uses outbound protocol v1, current-user DPAPI credential storage,
+registry-based discovery of classic desktop executables plus a
+user-selected local allowlist, local per-command approval, UI Automation,
 foreground-only OCR, visible session history, pause/stop, and bounded receipts.
 The Android source companion supports device pairing, app selection, Android
 Keystore-encrypted credentials, a foreground service, notification approval,
@@ -111,13 +112,15 @@ Browser pairing does not complete native-device acceptance.
 
 ## Universal workflow and reliability acceptance
 
-The shared capability registry and task-linked remote commands are implemented,
-but automatic central-agent wait/resume after a device receipt is not. Multi-app
-workflow acceptance remains incomplete. Protocol tests cover authorization,
-idempotency, command leases, cancellation, revocation, receipts, and uncertain
-recovery; no production load targets, signed companion releases, or Android
-device demonstrations have been verified in this environment. Keep Phases 5
-and 6 blocked until their listed acceptance checks in
+The shared capability registry and task-linked remote commands are implemented.
+A successful device receipt now resumes remaining central-agent steps; a
+repeated identical receipt can retry continuation after an interrupted attempt.
+Mocked Android coverage exercises this lifecycle, but real multi-app workflow
+acceptance remains incomplete. Protocol tests cover authorization, idempotency,
+command leases, cancellation, revocation, receipts, and uncertain recovery; no
+production load targets, signed companion releases, or Android device
+demonstrations have been verified in this environment. Keep Phases 5 and 6
+blocked until their listed acceptance checks in
 [`the universal device operator plan`](./UNIVERSAL-DEVICE-OPERATOR-PLAN.md)
 have been executed on the intended platforms.
 

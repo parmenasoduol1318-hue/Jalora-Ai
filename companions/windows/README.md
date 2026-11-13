@@ -19,9 +19,12 @@ py -3 -m venv .venv
 In Jalora Integrations, create a Windows pairing request. Select only the
 permissions needed, then copy its pairing link into the companion. Review the
 Jalora server, requesting account, and requested permissions before approving.
-Add applications by selecting their exact `.exe` path in the companion. The
-companion records a SHA-256 digest and refuses to launch that executable if it
-later changes.
+Use **Discover installed apps** to inspect classic desktop apps registered in
+the Windows uninstall registry, or select an exact `.exe` path manually.
+Discovery never adds an application automatically: choose which entries to
+allowlist locally. The companion records a SHA-256 digest and refuses to
+launch that executable if it later changes. Packaged/UWP apps and apps without
+a registered executable are not discovered.
 
 ## Supported operations
 
@@ -61,6 +64,7 @@ contains only operation, result, and time, and is not persisted.
 Windows UI Automation requires applications to expose accessible controls and
 may not work across privilege levels. The companion does not bypass login,
 MFA, application restrictions, secure desktops, or OS consent. Closing Jalora
-while an action is in progress can leave its result uncertain. Cross-application
-workflow recovery and returning screen data to the central agent remain later
-universal-operator work.
+while an action is in progress can leave its result uncertain. Verified
+receipts are returned to the central task, but real multi-app planning,
+connection-loss recovery, signing, and interactive device acceptance have not
+been demonstrated.

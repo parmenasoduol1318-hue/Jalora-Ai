@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import logging
 import os
+import re
 import subprocess
 import time
 import webbrowser
@@ -45,6 +47,7 @@ _SUPPORTED_KEYS = {
 }
 _KEYEVENTF_KEYUP = 0x0002
 _KEYEVENTF_UNICODE = 0x0004
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -74,6 +77,110 @@ class WindowsExecutor:
             for block in iter(lambda: source.read(1024 * 1024), b""):
                 digest.update(block)
         return digest.hexdigest()
+
+    @staticmethod
+    def _executable_from_display_icon(display_icon: str) -> Path | None:
+        value = display_icon.strip()
+        if value.startswith('"'):
+            match = re.fullmatch(
+                r'"([^"]+\.exe)"(?:\s*,\s*-?\d+)?',
+                value,
+                re.IGNORECASE,
+            )
+        else:
+            match = re.fullmatch(
+                r"(.+?\.exe)(?:\s*,\s*-?\d+)?",
+                value,
+                re.IGNORECASE,
+            )
+        if match is None:
+            return None
+        path = Path(os.path.expandvars(match.group(1).strip())).expanduser()
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError:
+            return None
+        return resolved if resolved.is_file() and resolved.suffix.casefold() == ".exe" else None
+
+    @classmethod
+    def discover_installed_applications(cls) -> list[dict[str, str]]:
+        if os.name != "nt":
+            raise RuntimeError("Installed-app discovery is available only on Windows.")
+
+        import winreg
+
+        uninstall_key = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
+        registry_views = (
+            0,
+            getattr(winreg, "KEY_WOW64_32KEY", 0),
+            getattr(winreg, "KEY_WOW64_64KEY", 0),
+        )
+        discovered: dict[str, dict[str, str]] = {}
+        for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            for view in registry_views:
+                try:
+                    root_key = winreg.OpenKey(
+                        root,
+                        uninstall_key,
+                        0,
+                        winreg.KEY_READ | view,
+                    )
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    _logger.warning(
+                        "Could not read the Windows installed-app registry view %s",
+                        view,
+                        exc_info=True,
+                    )
+                    continue
+                with root_key:
+                    index = 0
+                    while True:
+                        try:
+                            subkey_name = winreg.EnumKey(root_key, index)
+                        except OSError as exc:
+                            if getattr(exc, "winerror", None) != 259:
+                                _logger.warning(
+                                    "Could not enumerate Windows installed apps in registry view %s",
+                                    view,
+                                    exc_info=True,
+                                )
+                            break
+                        index += 1
+                        try:
+                            with winreg.OpenKey(root_key, subkey_name) as app_key:
+                                name = str(
+                                    winreg.QueryValueEx(app_key, "DisplayName")[0]
+                                ).strip()
+                                display_icon = str(
+                                    winreg.QueryValueEx(app_key, "DisplayIcon")[0]
+                                )
+                        except FileNotFoundError:
+                            continue
+                        except OSError:
+                            _logger.warning(
+                                "Could not inspect installed-app registry entry %s",
+                                subkey_name,
+                                exc_info=True,
+                            )
+                            continue
+                        executable = cls._executable_from_display_icon(display_icon)
+                        if (
+                            executable is None
+                            or not name
+                            or len(name) > 120
+                        ):
+                            continue
+                        key = str(executable).casefold()
+                        discovered.setdefault(key, {
+                            "name": name,
+                            "path": str(executable),
+                        })
+        return sorted(
+            discovered.values(),
+            key=lambda item: (item["name"].casefold(), item["path"].casefold()),
+        )
 
     def _approved_entry(self, app_id: str, applications: list[dict]) -> dict:
         entry = next(

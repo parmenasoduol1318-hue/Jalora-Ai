@@ -57,6 +57,81 @@ def test_windows_manifest_contains_only_granted_capabilities():
     }
 
 
+def test_installed_application_discovery_is_local_and_exe_only(
+    monkeypatch, tmp_path
+):
+    executable = tmp_path / "Desktop App.exe"
+    executable.write_bytes(b"disposable installed application")
+    uninstall_key = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
+    roots = ("current_user", "local_machine")
+    entries = {
+        "current_user": {
+            "desktop-app": {
+                "DisplayName": "Desktop App",
+                "DisplayIcon": f'"{executable}",0',
+            },
+            "non-executable": {
+                "DisplayName": "Packaged App",
+                "DisplayIcon": r"C:\Apps\packaged.dll,0",
+            },
+        },
+        "local_machine": {},
+    }
+
+    class RegistryKey:
+        def __init__(self, path, values=None):
+            self.path = path
+            self.values = values or {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class FakeRegistry:
+        HKEY_CURRENT_USER = roots[0]
+        HKEY_LOCAL_MACHINE = roots[1]
+        KEY_READ = 1
+        KEY_WOW64_32KEY = 2
+        KEY_WOW64_64KEY = 4
+
+        @staticmethod
+        def OpenKey(root, path, *_args):
+            if isinstance(root, RegistryKey):
+                if path in entries[root.path]:
+                    return RegistryKey(
+                        (root.path, path),
+                        entries[root.path][path],
+                    )
+                raise FileNotFoundError(path)
+            if path == uninstall_key:
+                return RegistryKey(root)
+            raise FileNotFoundError(path)
+
+        @staticmethod
+        def EnumKey(key, index):
+            names = list(entries[key.path])
+            if index >= len(names):
+                error = OSError("No more data")
+                error.winerror = 259
+                raise error
+            return names[index]
+
+        @staticmethod
+        def QueryValueEx(key, value_name):
+            if value_name not in key.values:
+                raise FileNotFoundError(value_name)
+            return key.values[value_name], 1
+
+    monkeypatch.setitem(sys.modules, "winreg", FakeRegistry)
+
+    assert WindowsExecutor.discover_installed_applications() == [{
+        "name": "Desktop App",
+        "path": str(executable.resolve()),
+    }]
+
+
 def test_browser_action_reports_only_the_local_handoff(monkeypatch):
     monkeypatch.setattr(
         executor_module.webbrowser,

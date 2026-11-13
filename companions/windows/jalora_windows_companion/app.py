@@ -102,6 +102,11 @@ class JaloraWindowsCompanion:
         buttons = ttk.Frame(apps_frame)
         buttons.pack(fill="x")
         ttk.Button(buttons, text="Add .exe", command=self._add_application).pack(side="left")
+        ttk.Button(
+            buttons,
+            text="Discover installed apps",
+            command=self._discover_applications,
+        ).pack(side="left", padx=6)
         ttk.Button(buttons, text="Remove selected", command=self._remove_application).pack(
             side="left", padx=6
         )
@@ -170,25 +175,129 @@ class JaloraWindowsCompanion:
         )
         if not name or not name.strip():
             return
+        self._store_application(path, name)
+
+    def _store_application(self, path: Path, name: str) -> None:
+        try:
+            path = path.resolve(strict=True)
+        except OSError as exc:
+            messagebox.showerror(
+                "Invalid application",
+                f"The selected executable is not available: {exc}",
+                parent=self.root,
+            )
+            return
+        if path.suffix.casefold() != ".exe" or not path.is_file():
+            messagebox.showerror(
+                "Invalid application",
+                "Choose an existing .exe file.",
+                parent=self.root,
+            )
+            return
         digest_state = hashlib.sha256()
-        with path.open("rb") as source:
-            for block in iter(lambda: source.read(1024 * 1024), b""):
-                digest_state.update(block)
+        try:
+            with path.open("rb") as source:
+                for block in iter(lambda: source.read(1024 * 1024), b""):
+                    digest_state.update(block)
+        except OSError as exc:
+            messagebox.showerror(
+                "Application unavailable",
+                f"Could not verify the selected executable: {exc}",
+                parent=self.root,
+            )
+            return
         digest = digest_state.hexdigest()
         app_id = hashlib.sha256(str(path).casefold().encode("utf-8")).hexdigest()[:20]
-        self.config["applications"] = [
+        applications = [
             item for item in self.config["applications"] if item.get("id") != app_id
         ]
-        self.config["applications"].append({
+        applications.append({
             "id": app_id,
             "name": name.strip()[:120],
             "path": str(path),
             "sha256": digest,
         })
-        save_config(self.config)
+        try:
+            save_config({**self.config, "applications": applications})
+        except OSError as exc:
+            messagebox.showerror(
+                "Could not save application",
+                f"The local allowlist was not saved: {exc}",
+                parent=self.root,
+            )
+            return
+        self.config["applications"] = applications
         self.manifest_changed.set()
         self._render_apps()
         self.status.set("Application added to this computer's local allowlist.")
+
+    def _discover_applications(self) -> None:
+        try:
+            applications = self.executor.discover_installed_applications()
+        except (ImportError, OSError, RuntimeError) as exc:
+            messagebox.showerror(
+                "Application discovery failed",
+                str(exc),
+                parent=self.root,
+            )
+            return
+        if not applications:
+            messagebox.showinfo(
+                "No discoverable applications",
+                "No classic desktop applications with a registered .exe were found.",
+                parent=self.root,
+            )
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Discover installed desktop apps")
+        dialog.transient(self.root)
+        dialog.geometry("620x460")
+        dialog.grab_set()
+        body = ttk.Frame(dialog, padding=12)
+        body.pack(fill="both", expand=True)
+        ttk.Label(
+            body,
+            text=(
+                "Choose apps to add to this computer's local allowlist. "
+                "Discovery does not grant Jalora access; selected executables "
+                "are shared only after you connect."
+            ),
+            wraplength=560,
+        ).pack(anchor="w", pady=(0, 8))
+        entries = tk.Listbox(body, selectmode=tk.EXTENDED, exportselection=False)
+        entries.pack(fill="both", expand=True)
+        for application in applications:
+            entries.insert(
+                tk.END,
+                f"{application['name']}  ·  {application['path']}",
+            )
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x", pady=(8, 0))
+
+        def add_selected() -> None:
+            selected = entries.curselection()
+            if not selected:
+                messagebox.showinfo(
+                    "Select applications",
+                    "Choose at least one application to add.",
+                    parent=dialog,
+                )
+                return
+            for index in selected:
+                application = applications[index]
+                self._store_application(
+                    Path(application["path"]),
+                    application["name"],
+                )
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right")
+        ttk.Button(buttons, text="Add selected", command=add_selected).pack(
+            side="right",
+            padx=(0, 8),
+        )
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
 
     def _remove_application(self) -> None:
         selected = self.apps_list.curselection()
