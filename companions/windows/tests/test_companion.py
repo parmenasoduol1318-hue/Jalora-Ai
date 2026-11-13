@@ -177,18 +177,22 @@ class FakeElement:
         self.clicked = False
         self.password = password
         self.value = ""
+        self.element_info.element = type(
+            "FakeAutomationElement",
+            (),
+            {"CurrentIsPassword": property(lambda _self: self.password)},
+        )()
+        self.iface_value = type(
+            "FakeValuePattern",
+            (),
+            {"CurrentValue": property(lambda _self: self.value)},
+        )()
 
     def is_enabled(self):
         return self.element_info.enabled
 
     def is_visible(self):
         return self.element_info.visible
-
-    def is_password(self):
-        return self.password
-
-    def get_value(self):
-        return self.value
 
     def click_input(self):
         self.clicked = True

@@ -21,6 +21,7 @@ from pywinauto.findwindows import (
     WindowAmbiguousError,
     WindowNotFoundError,
 )
+from pywinauto.uia_defines import NoPatternInterfaceError
 
 _AUTOMATION_ERRORS = (
     AttributeError,
@@ -31,6 +32,7 @@ _AUTOMATION_ERRORS = (
     TypeError,
     WindowAmbiguousError,
     WindowNotFoundError,
+    NoPatternInterfaceError,
     pywintypes.error,
 )
 
@@ -357,10 +359,10 @@ class WindowsExecutor:
                         "Document",
                     }:
                         try:
-                            if control.is_password():
+                            if control.element_info.element.CurrentIsPassword:
                                 control_data["value_status"] = "redacted_password"
                             else:
-                                value = control.get_value()
+                                value = control.iface_value.CurrentValue
                                 if isinstance(value, str):
                                     control_data["value"] = value[:500]
                                     control_data["value_status"] = "available"
@@ -437,12 +439,12 @@ class WindowsExecutor:
                     "Text can only be entered into an accessible edit field.",
                 )
             try:
-                if control.is_password():
+                if control.element_info.element.CurrentIsPassword:
                     raise WindowsActionError(
                         "WINDOWS_PASSWORD_INPUT_BLOCKED",
                         "The companion does not enter text into password fields.",
                     )
-                before = control.get_value()
+                before = control.iface_value.CurrentValue
             except WindowsActionError:
                 raise
             except _AUTOMATION_ERRORS as exc:
@@ -455,7 +457,7 @@ class WindowsExecutor:
                 control.set_focus()
                 self._send_unicode(str(arguments["text"]))
                 time.sleep(0.1)
-                after = control.get_value()
+                after = control.iface_value.CurrentValue
             except _AUTOMATION_ERRORS as exc:
                 raise WindowsActionError(
                     "WINDOWS_TEXT_INPUT_UNVERIFIED",
