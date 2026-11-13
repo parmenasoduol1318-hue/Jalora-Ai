@@ -5,7 +5,7 @@ from app.context import ToolContext, bind_tool_execution
 from app.database.session import SessionLocal
 from app.models.agent import AgentRun
 from app.models.conversation import Conversation
-from app.models.task import Task, TaskStep
+from app.models.task import Task, TaskStep, TaskStepAttempt
 from app.models.user import User
 from app.tools.device_tools import (
     get_remote_device_action_status,
@@ -92,7 +92,7 @@ def test_android_notification_only_pairing_accepts_empty_app_manifest(
 
 
 def test_android_companion_uses_shared_manifest_approval_and_receipt_lifecycle(
-    client, auth_headers
+    client, auth_headers, fake_router
 ):
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -167,7 +167,28 @@ def test_android_companion_uses_shared_manifest_approval_and_receipt_lifecycle(
             description="Inspect the selected app",
             tool_id="request_remote_android_action",
         )
+        report_step = TaskStep(
+            task_id=task.id,
+            idx=1,
+            plan_step_id="summarize-inspected-app",
+            description="Summarize the inspected app.",
+            capability="response",
+            status="pending",
+            outcome_status="planned",
+        )
         db.add(step)
+        db.add(report_step)
+        db.flush()
+        db.add(TaskStepAttempt(
+            task_id=task.id,
+            step_id=step.id,
+            run_id=run.id,
+            attempt_number=1,
+            tool_call_id="android-inspect-call",
+            payload_digest="a" * 64,
+            state="completed",
+            outcome_status="submitted",
+        ))
         db.commit()
         context = ToolContext(
             user_id=user.id,
@@ -224,6 +245,12 @@ def test_android_companion_uses_shared_manifest_approval_and_receipt_lifecycle(
             },
             "dependencies": [],
             "status": "active",
+        }, {
+            "id": "summarize-inspected-app",
+            "description": "Summarize the inspected app.",
+            "kind": "response",
+            "dependencies": [0],
+            "status": "pending",
         }],
         "status": "partial",
         "recoverable": True,
@@ -261,6 +288,9 @@ def test_android_companion_uses_shared_manifest_approval_and_receipt_lifecycle(
     )
     assert decision.status_code == 200
     assert decision.json()["execute"] is True
+    fake_router.script.append(AIMessage(
+        content="The device inspection shows one accessible Continue button."
+    ))
     receipt = client.post(
         f"/api/devices/protocol/v1/commands/{command['command_id']}/receipt",
         headers=access_headers,
@@ -285,18 +315,33 @@ def test_android_companion_uses_shared_manifest_approval_and_receipt_lifecycle(
     )
     assert receipt.status_code == 200, receipt.text
     assert receipt.json()["status"] == "succeeded"
-    assert receipt.json()["task_resume"]["status"] == "completed"
+    assert receipt.json()["task_resume"]["status"] == "completed", (
+        receipt.json()["task_resume"]
+    )
+    assert receipt.json()["task_resume"]["reply"] == (
+        "The device inspection shows one accessible Continue button."
+    )
     task_detail = client.get(f"/api/tasks/{context.task_id}", headers=owner_headers)
     assert task_detail.status_code == 200, task_detail.text
     assert task_detail.json()["status"] == "completed"
+    device_step = next(
+        step
+        for step in task_detail.json()["steps"]
+        if step["plan_step_id"] == "inspect-selected-app"
+    )
     step_receipt = next(
         evidence
-        for evidence in task_detail.json()["steps"][0]["evidence"]
+        for evidence in device_step["evidence"]
         if evidence.get("type") == "remote_device_receipt"
     )
     assert step_receipt["command_id"] == command["command_id"]
     assert step_receipt["status"] == "succeeded"
-    assert task_detail.json()["steps"][0]["verification_status"] == "verified"
+    assert device_step["verification_status"] == "verified"
+    assert next(
+        step
+        for step in task_detail.json()["steps"]
+        if step["plan_step_id"] == "summarize-inspected-app"
+    )["status"] == "done"
     with bind_tool_execution(context):
         stored_status = asyncio.run(
             get_remote_device_action_status(command["command_id"])

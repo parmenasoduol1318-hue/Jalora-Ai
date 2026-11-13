@@ -3073,6 +3073,22 @@ async def resume_run(
             raise BadRequestError(
                 "This run has no recoverable state to continue.", "RUN_NOT_RESUMABLE"
             )
+        claimed = db.execute(
+            update(AgentRun)
+            .where(
+                AgentRun.id == run.id,
+                AgentRun.user_id == user_id,
+                AgentRun.status.in_(("paused", "partial")),
+                AgentRun.state_json.is_not(None),
+            )
+            .values(status="running", error=None)
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            raise BadRequestError(
+                "This run is already resuming or no longer resumable.",
+                "RUN_NOT_RESUMABLE",
+            )
         run.status = "running"
         run.error = None
         task = db.scalar(select(Task).where(Task.run_id == run.id))

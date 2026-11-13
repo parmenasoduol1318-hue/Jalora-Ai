@@ -1106,12 +1106,13 @@ def decide_protocol_command(
 
 
 @router.post("/protocol/v1/commands/{command_id}/receipt")
-def record_protocol_command_receipt(
+async def record_protocol_command_receipt(
     command_id: str,
     body: DeviceProtocolReceipt,
     response: Response,
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
+    model_router: ModelRouter = Depends(get_router),
 ):
     response.headers["Cache-Control"] = "no-store, private"
     device = _authenticate_protocol_device(authorization, db)
@@ -1138,8 +1139,11 @@ def record_protocol_command_receipt(
         )
     except DeviceProtocolError as exc:
         raise ConflictError(str(exc), "DEVICE_COMMAND_PROTOCOL_CONFLICT") from exc
-    task_resume = _update_task_from_device_receipt(
-        db, command=command, status=status, recorded=recorded
+    task_resume = await _update_task_from_device_receipt(
+        db,
+        command=command,
+        status=status,
+        model_router=model_router,
     )
     return {
         "status": status,
@@ -1151,22 +1155,22 @@ def record_protocol_command_receipt(
     }
 
 
-def _update_task_from_device_receipt(
+async def _update_task_from_device_receipt(
     db: Session,
     *,
     command: DeviceRemoteCommand,
     status: str,
-    recorded: bool,
+    model_router: ModelRouter,
 ) -> dict[str, str] | None:
     if (
-        not recorded
-        or status != "succeeded"
+        status != "succeeded"
         or not command.run_id
         or not command.task_id
         or not command.task_step_id
     ):
         return None
 
+    from app.errors import ToolResult
     from langchain_core.messages import ToolMessage
 
     from app.models.agent import AgentRun
@@ -1174,6 +1178,7 @@ def _update_task_from_device_receipt(
     from app.services.chat_service import (
         _finalize_task,
         deserialize_state,
+        resume_run,
         serialize_state,
     )
 
@@ -1220,19 +1225,18 @@ def _update_task_from_device_receipt(
                 isinstance(message, ToolMessage)
                 and message.tool_call_id == attempt.tool_call_id
             ):
-                message.content = (
-                    "Paired device completed and verified this action. "
-                    f"Receipt: {receipt_result}"
-                )
+                message.content = ToolResult.ok(
+                    "Paired device completed and verified this action.",
+                    receipt_result,
+                ).model_dump_json()
                 break
     run.state_json = serialize_state(state)
     db.commit()
 
-    pending_tool_step = db.scalar(
+    pending_step = db.scalar(
         select(TaskStep.id)
         .where(
             TaskStep.task_id == command.task_id,
-            TaskStep.tool_id.is_not(None),
             TaskStep.status.notin_(("done", "skipped")),
         )
         .limit(1)
@@ -1245,7 +1249,7 @@ def _update_task_from_device_receipt(
         )
         .limit(1)
     )
-    if pending_tool_step is None and unknown_outcome is None:
+    if pending_step is None and unknown_outcome is None:
         reply = f"The paired device completed and verified '{command.action}'."
         run.status = "completed"
         run.error = None
@@ -1267,7 +1271,30 @@ def _update_task_from_device_receipt(
     if unknown_outcome is not None:
         reply = "A device action still has an unknown outcome. Reconcile it before continuing."
     else:
-        reply = "The device receipt was verified. Remaining task steps are saved and ready to resume."
+        try:
+            outcome = await resume_run(
+                user_id=command.user_id,
+                run_id=command.run_id,
+                router=model_router,
+            )
+        except BadRequestError as exc:
+            if exc.code != "RUN_NOT_RESUMABLE":
+                raise
+            db.refresh(run)
+            if run.status not in {"running", "paused_approval", "completed"}:
+                raise
+            return {
+                "status": run.status,
+                "reply": run.error or "The task is already continuing.",
+                "task_id": command.task_id,
+                "run_id": command.run_id,
+            }
+        return {
+            "status": outcome.status,
+            "reply": outcome.reply,
+            "task_id": command.task_id,
+            "run_id": command.run_id,
+        }
     return {
         "status": "partial",
         "reply": reply,
@@ -1380,11 +1407,12 @@ def decide_remote_command(
 
 
 @router.post("/remote-commands/{command_id}/opened")
-def mark_remote_command_opened(
+async def mark_remote_command_opened(
     command_id: str,
     body: DeviceRemoteCommandOpened,
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
+    model_router: ModelRouter = Depends(get_router),
 ):
     device = _authenticate_device(authorization, db)
     _require_scope(device, "remote.browser.open_url")
@@ -1407,8 +1435,11 @@ def mark_remote_command_opened(
         raise ConflictError(
             str(exc), "DEVICE_COMMAND_PROTOCOL_CONFLICT"
         ) from exc
-    task_resume = _update_task_from_device_receipt(
-        db, command=command, status=status, recorded=recorded
+    task_resume = await _update_task_from_device_receipt(
+        db,
+        command=command,
+        status=status,
+        model_router=model_router,
     )
     return {
         "status": "opened" if status == "succeeded" else "failed",
