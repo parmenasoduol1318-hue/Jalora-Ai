@@ -373,7 +373,7 @@ def is_multi_step_request(text: str) -> bool:
         return False
     clauses = (clause.strip() for clause in _MULTI_STEP_SEPARATORS.split(text or ""))
     action_terms = task_action_terms()
-    actionable_clauses: list[set[str]] = []
+    actionable_clause_count = 0
     clause_action_counts: list[int] = []
     for clause in clauses:
         if not clause:
@@ -382,21 +382,17 @@ def is_multi_step_request(text: str) -> bool:
             r"\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b", " ", clause, flags=re.I
         )
         verbs = set(re.findall(r"[a-z]+", action_text.lower())) & action_terms
-        action_tools = {
-            name
-            for name in registry.select_for_task(clause)
-            if (spec := registry.get(name)) is not None
-            and name != "update_plan"
-            and not (
-                spec.always_available
-                and spec.permission == PermissionLevel.AUTO
-            )
-        }
-        if verbs or action_tools:
-            actionable_clauses.append(action_tools)
+        if re.search(
+            r"\b(?:email|message)\s+draft\b",
+            action_text,
+            re.IGNORECASE,
+        ):
+            verbs.discard("draft")
+        if verbs:
+            actionable_clause_count += 1
             clause_action_counts.append(len(verbs))
 
     return (
-        len(actionable_clauses) > 1
+        actionable_clause_count > 1
         or any(action_count > 1 for action_count in clause_action_counts)
     )

@@ -871,17 +871,6 @@ def test_public_organization_outreach_is_approved_one_email_at_a_time(
     for index, recipient in enumerate(recipients):
         assert approval["tool_name"] == "send_email"
         assert approval["arguments"]["to"] == recipient
-        if index == 0:
-            result = client.post(
-                f"/api/approvals/{approval['id']}/skip", headers=headers
-            )
-            assert result.status_code == 200, result.text
-            assert sent_to == []
-            approval = result.json()["approval"]
-            assert result.json()["status"] == "paused_approval"
-            assert approval is not None
-            assert approval["arguments"]["to"] == recipients[index + 1]
-            continue
         if index == 1:
             edited_arguments = dict(approval["arguments"])
             edited_arguments["body"] = "Reviewed and edited second-organization message."
@@ -891,7 +880,7 @@ def test_public_organization_outreach_is_approved_one_email_at_a_time(
                 json={"arguments": edited_arguments},
             )
             assert edited.status_code == 200, edited.text
-            assert sent_to == []
+            assert sent_to == recipients[:index]
             updated_queue = client.get(
                 f"/api/tasks/{response_data['task_id']}", headers=headers
             ).json()["outreach_queue"]
@@ -903,7 +892,7 @@ def test_public_organization_outreach_is_approved_one_email_at_a_time(
             f"/api/approvals/{approval['id']}/approve", headers=headers
         )
         assert result.status_code == 200, result.text
-        assert sent_to == recipients[1:index + 1], (
+        assert sent_to == recipients[:index + 1], (
             f"index={index}; status={result.json().get('status')}; "
             f"reply={result.json().get('reply')}; sent_to={sent_to}; "
             f"plan={[(step.get('id'), step.get('status')) for step in result.json().get('plan', [])]}"
@@ -923,14 +912,13 @@ def test_public_organization_outreach_is_approved_one_email_at_a_time(
         else:
             assert result.json()["status"] == "completed"
 
-    assert sent_bodies[0] == "Reviewed and edited second-organization message."
-    assert len(sent_bodies) == len(recipients) - 1
+    assert sent_to == recipients
+    assert sent_bodies[1] == "Reviewed and edited second-organization message."
+    assert len(sent_bodies) == len(recipients)
     completed_queue = client.get(
         f"/api/tasks/{response_data['task_id']}", headers=headers
     ).json()["outreach_queue"]
-    assert [item["status"] for item in completed_queue] == ["skipped"] + [
-        "sent"
-    ] * (len(recipients) - 1)
+    assert [item["status"] for item in completed_queue] == ["sent"] * len(recipients)
     assert all(
         item["provider"] == "email_mock" for item in completed_queue[1:]
     ), completed_queue

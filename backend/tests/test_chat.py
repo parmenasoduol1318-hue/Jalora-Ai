@@ -277,6 +277,35 @@ def test_resume_keeps_single_recipient_public_outreach_as_draft_only():
     assert "send_email" not in tools
 
 
+def test_resume_rebinds_single_recipient_public_email_send():
+    state = {
+        "intent": "email",
+        "messages": [HumanMessage(content=(
+            "Find the official contact email for Katiba Institute and send "
+            "a tailored outreach email after I approve it."
+        ))],
+        "plan": [{
+            "id": "send_katiba",
+            "description": "Send email to Katiba Institute",
+            "status": "pending",
+            "tool": "send_email",
+            "dependencies": [0],
+        }],
+    }
+
+    tools = set(_tool_names_for_resume(
+        state,
+        task_goal=(
+            "Find the official contact email for Katiba Institute and send "
+            "a tailored outreach email after I approve it."
+        ),
+        coding=False,
+    ))
+
+    assert "send_email" in tools
+    assert "send_email_batch" not in tools
+
+
 def test_resume_recovers_saved_multi_recipient_sends_rejected_by_old_tool_scope():
     recipients = ["one@example.org", "two@example.org"]
     calls = [{
@@ -360,6 +389,210 @@ def _token(client, email="chat@test.com"):
     })
     assert resp.status_code == 201, resp.text
     return {"Authorization": f"Bearer {resp.json()['access_token']}"}
+
+
+def test_model_outage_before_planning_saves_a_resumable_task(
+    client, fake_router, monkeypatch
+):
+    from conftest import Box, FakeModel
+    from app.database.session import SessionLocal
+    from app.models.agent import AgentRun
+    from app.models.task import Task, TaskStep, TaskStepAttempt
+    from app.services import search_service
+    from app.tools import registry
+
+    class UnavailableModel(FakeModel):
+        async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+            raise RuntimeError(
+                "openai API error 429: You have no credits remaining"
+            )
+            yield
+
+    fake_router.model = UnavailableModel(
+        script=Box(),
+        tape=fake_router.tape,
+    )
+    fake_router.route_chain = lambda **_kwargs: []
+    headers = _token(client, "outreach-model-outage@test.com")
+    integration = client.post("/api/integrations", headers=headers, json={
+        "provider": "email_mock",
+        "config": {"email_address": "sender@example.com"},
+    })
+    assert integration.status_code == 200, integration.text
+
+    response = client.post("/api/chat", headers=headers, json={
+        "message": (
+            "Find the official contact email for Example Partnership Network, "
+            "draft a tailored partnership email, and send it after I approve."
+        ),
+        "mode": "agent",
+    })
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["status"] == "partial"
+    assert result["task_id"]
+    assert "resume this task" in result["reply"].casefold()
+
+    task_detail = client.get(
+        f"/api/tasks/{result['task_id']}", headers=headers
+    )
+    assert task_detail.status_code == 200, task_detail.text
+    assert task_detail.json()["status"] == "partial"
+    assert task_detail.json()["resumable"] is True
+    assert task_detail.json()["outreach_queue"] is None
+
+    with SessionLocal() as db:
+        task = db.get(Task, result["task_id"])
+        run = db.get(AgentRun, task.run_id)
+        assert run.status == "partial"
+        assert run.state_json
+
+    organization = "Example Partnership Network"
+    recipient = "partnerships@example.org"
+    contact_url = "https://example.test/contact"
+
+    async def fake_search(query: str, max_results: int):
+        return [search_service.SearchResult(
+            title=f"{organization} contact",
+            url=contact_url,
+            snippet=f"Contact {organization} at {recipient}.",
+        )]
+
+    async def fake_open_url(url: str):
+        assert url == contact_url
+        return ToolResult.ok(
+            "Opened official contact page.",
+            {
+                "url": url,
+                "title": f"{organization} contact",
+                "text": f"{organization} partnership contact: {recipient}",
+                "public_emails": [recipient],
+            },
+        ).model_dump_json()
+
+    monkeypatch.setattr(search_service, "search", fake_search)
+    monkeypatch.setattr(
+        registry.get("open_url").tool,
+        "coroutine",
+        fake_open_url,
+    )
+    fake_router.model = FakeModel(script=Box([
+        AIMessage(content="", tool_calls=[{
+            "name": "update_plan",
+            "args": {"steps": [
+                {
+                    "id": "public-contacts",
+                    "description": f"Find the official contact for {organization}",
+                    "tool": "search_public_contacts",
+                    "arguments": {"organizations": [organization]},
+                    "dependencies": [],
+                },
+                {
+                    "id": "verify-contact",
+                    "description": f"Open the official contact page for {organization}",
+                    "tool": "open_url",
+                    "arguments": {"url": contact_url},
+                    "dependencies": [0],
+                },
+                {
+                    "id": "send-outreach",
+                    "description": f"Send a tailored partnership email to {recipient}",
+                    "tool": "send_email",
+                    "arguments": {"to": recipient},
+                    "dependencies": [1],
+                },
+            ]},
+            "id": "recovered-plan",
+            "type": "tool_call",
+        }]),
+        AIMessage(content="", tool_calls=[{
+            "name": "search_public_contacts",
+            "args": {"organizations": [organization]},
+            "id": "recovered-search",
+            "type": "tool_call",
+        }]),
+        AIMessage(content="", tool_calls=[{
+            "name": "open_url",
+            "args": {"url": contact_url},
+            "id": "recovered-open",
+            "type": "tool_call",
+        }]),
+        AIMessage(content="", tool_calls=[{
+            "name": "send_email",
+            "args": {
+                "to": recipient,
+                "subject": "Partnership opportunity",
+                "body": "I would welcome a conversation about partnering.",
+            },
+            "id": "recovered-send",
+            "type": "tool_call",
+        }]),
+    ]))
+    sent_to: list[str] = []
+    from app.services import email as email_service
+
+    original_send = email_service.send_email
+
+    async def capture_send(**kwargs):
+        sent_to.append(kwargs["recipient"])
+        return await original_send(**kwargs)
+
+    monkeypatch.setattr(email_service, "send_email", capture_send)
+    with SessionLocal() as db:
+        run_id = db.get(AgentRun, result["run_id"]).id
+
+    resumed = client.post(
+        f"/api/runs/{run_id}/resume",
+        headers=headers,
+    )
+    assert resumed.status_code == 200, resumed.text
+    recovered = resumed.json()
+    assert recovered["status"] == "paused_approval", {
+        "reply": recovered.get("reply"),
+        "plan": recovered.get("plan"),
+        "error": recovered.get("error"),
+    }
+    assert recovered["approval"]["arguments"]["to"] == recipient
+    assert sent_to == []
+
+    queue = client.get(
+        f"/api/tasks/{result['task_id']}",
+        headers=headers,
+    ).json()["outreach_queue"]
+    assert len(queue) == 1
+    assert queue[0]["recipient"] == recipient
+    assert queue[0]["status"] == "awaiting_approval"
+
+    approved = client.post(
+        f"/api/approvals/{recovered['approval']['id']}/approve",
+        headers=headers,
+    )
+    assert approved.status_code == 200, approved.text
+    from sqlalchemy import select
+
+    with SessionLocal() as db:
+        task_steps = db.scalars(
+            select(TaskStep).where(TaskStep.task_id == result["task_id"])
+        ).all()
+        attempts = db.scalars(
+            select(TaskStepAttempt).where(
+                TaskStepAttempt.task_id == result["task_id"]
+            )
+        ).all()
+    assert approved.json()["status"] == "completed", {
+        "reply": approved.json().get("reply"),
+        "sent_to": sent_to,
+        "steps": [
+            (step.status, step.outcome_status, step.error_code)
+            for step in task_steps
+        ],
+        "attempts": [
+            (attempt.state, attempt.outcome_status, attempt.error_code)
+            for attempt in attempts
+        ],
+    }
+    assert sent_to == [recipient]
 
 
 def test_exact_youtube_request_opens_browser_without_model(client, fake_router, monkeypatch):

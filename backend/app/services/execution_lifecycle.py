@@ -234,9 +234,23 @@ def finish_tool_attempt(
     actual_outcome = outcome or (
         ActionOutcome.SUCCEEDED if success else ActionOutcome.FAILED
     )
+    pending_device_submission = (
+        success
+        and tool_name in {
+            "request_remote_android_action",
+            "request_remote_windows_action",
+            "request_remote_url",
+        }
+        and str(result_data.get("protocol_status") or "").lower()
+        in {"queued", "delivered", "running"}
+    )
+    if pending_device_submission:
+        actual_outcome = ActionOutcome.SUBMITTED
     if success and outcome is None:
         provider_status = str(result_data.get("status") or "").lower()
-        if provider_status == "delivered":
+        if pending_device_submission:
+            pass
+        elif provider_status == "delivered":
             actual_outcome = ActionOutcome.DELIVERED
         elif provider_status == "verified":
             actual_outcome = ActionOutcome.VERIFIED
@@ -263,10 +277,16 @@ def finish_tool_attempt(
         attempt.finished_at = utcnow()
         step.outcome_status = actual_outcome.value
         step.error_code = error_code
-        step.status = "done" if success else "failed"
-        step.completed_at = utcnow()
+        step.status = (
+            "active" if pending_device_submission
+            else "done" if success
+            else "failed"
+        )
+        step.completed_at = None if pending_device_submission else utcnow()
         verification_status = (
-            "verified"
+            "pending"
+            if pending_device_submission
+            else "verified"
             if actual_outcome in {ActionOutcome.DELIVERED, ActionOutcome.VERIFIED}
             else (
                 "pending"
@@ -292,7 +312,10 @@ def finish_tool_attempt(
             approval_id=step.approval_id,
             attempt=handle.attempt_number,
             lifecycle=(
-                StepLifecycle.COMPLETED if success else StepLifecycle.FAILED
+                StepLifecycle.RUNNING
+                if pending_device_submission
+                else StepLifecycle.COMPLETED if success
+                else StepLifecycle.FAILED
             ),
             outcome=actual_outcome,
             verification=(

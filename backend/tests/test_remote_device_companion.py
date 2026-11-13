@@ -121,7 +121,7 @@ def test_remote_url_action_requires_target_approval_and_reports_open_handoff(
         headers=owner_headers,
     )
     assert approved.status_code == 200, approved.text
-    assert approved.json()["status"] == "completed"
+    assert approved.json()["status"] == "partial"
     command = client.get(
         "/api/devices/remote-command-history", headers=owner_headers
     ).json()[0]
@@ -150,6 +150,7 @@ def test_remote_url_action_requires_target_approval_and_reports_open_handoff(
     )
     assert opened.status_code == 200
     assert opened.json()["status"] == "opened"
+    assert opened.json()["task_resume"]["status"] == "completed"
     assert client.post(
         f"/api/devices/remote-commands/{command['id']}/decision",
         headers=device_headers,

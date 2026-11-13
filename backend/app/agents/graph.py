@@ -500,14 +500,10 @@ def _normalize_email_action_args(name: str, args: dict[str, Any]) -> dict[str, A
     if not body or not to:
         return args
 
-    lower = body.lower()
-    if not re.search(
-        r"\b(?:send\s+(?:an\s+)?email|email\s+to|write\s+to|ask\s+(?:him|her|them)|tell\s+(?:him|her|them)|how\s+(?:he|she|they)\s+is\s+doing)\b",
-        lower,
-    ):
-        return args
-
     from app.services import email as email_service
+
+    if not email_service.is_email_instruction(body):
+        return args
 
     draft = email_service.generate_email_draft(to, body)
     if not draft.get("to") or not draft.get("body"):
@@ -1091,14 +1087,21 @@ def build_graph(
                 reason,
                 exc_info=True,
             )
+            reply = (
+                _model_outage_message(messages, exc)
+                + " Your request was saved as a resumable task. "
+                "After restoring a working AI provider, resume it from the "
+                "Tasks panel. No task action was completed."
+            )
             return {
                 "messages": [AIMessage(
-                    content=_model_outage_message(messages, exc),
+                    content=reply,
                     id=new_id(),
                 )],
                 "status": "partial",
                 "plan_recovery": True,
                 "force_final": False,
+                "recoverable": True,
             }
         return {
             "messages": [response],
@@ -2393,8 +2396,22 @@ def build_graph(
 
                 if parsed.success:
                     if plan:
-                        revised, changed = _complete_plan_step(
-                            plan, tname, targs, plan_steps_by_call.get(cid)
+                        pending_device_action = (
+                            tname in {
+                                "request_remote_android_action",
+                                "request_remote_windows_action",
+                                "request_remote_url",
+                            }
+                            and str(
+                                (parsed.data or {}).get("protocol_status") or ""
+                            ).lower() in {"queued", "delivered", "running"}
+                        )
+                        revised, changed = (
+                            (plan, False)
+                            if pending_device_action
+                            else _complete_plan_step(
+                                plan, tname, targs, plan_steps_by_call.get(cid)
+                            )
                         )
                         if tname == "search_public_contacts":
                             revised, verification_added = (
@@ -2820,7 +2837,13 @@ def build_graph(
             # Validate generated email content before it can become an
             # approval card.  Approval is a review of a deliverable draft,
             # not a way to launder an incomplete model response into a send.
-            if name in {"send_email", "compose_email"}:
+            direct_action = state.get("direct_action")
+            is_server_direct_action = (
+                isinstance(direct_action, dict)
+                and direct_action.get("call_id") == call_id
+                and direct_action.get("tool_name") == name
+            )
+            if name in {"send_email", "compose_email"} and not is_server_direct_action:
                 args = _normalize_email_action_args(name, args)
                 if (
                     name == "send_email"
@@ -4766,6 +4789,16 @@ def _reconcile_successful_plan_steps(
             continue
         result = _parse_tool_result(str(message.content or ""))
         if not result.success:
+            continue
+        if (
+            str(call.get("name") or "") in {
+                "request_remote_android_action",
+                "request_remote_windows_action",
+                "request_remote_url",
+            }
+            and str((result.data or {}).get("protocol_status") or "").lower()
+            in {"queued", "delivered", "running"}
+        ):
             continue
         step_index = _matching_plan_step(
             revised,

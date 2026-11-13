@@ -223,7 +223,7 @@ def _extract_task_recipients(request_text: str, fallback: str = "") -> tuple[str
     )
 
 
-def _email_intent_text(request_text: str) -> str:
+def _email_intent_text(request_text: str, recipient: str = "") -> str:
     """Keep the requested message intent, not the addressing/instruction wrapper."""
     matches = list(re.finditer(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
                                request_text, re.IGNORECASE))
@@ -231,18 +231,59 @@ def _email_intent_text(request_text: str) -> str:
     if matches and not content.strip(" .,;:-"):
         content = request_text[:matches[0].start()]
     content = re.sub(
+        r"^\s*(?:(?:please|could you|can you|would you|i need you to)\s+)?"
+        r"(?:send|write|compose|draft)\s+(?:(?:an?|the)\s+)?"
+        r"(?:email|message)\b\s*",
+        "",
+        content,
+        flags=re.IGNORECASE,
+    )
+    content = re.sub(
+        r"^\s*(?:(?:please|could you|can you|would you|i need you to)\s+)?"
+        r"email\b\s*",
+        "",
+        content,
+        flags=re.IGNORECASE,
+    )
+    recipient_name = recipient.split("@", 1)[0].split(",", 1)[0].strip()
+    if recipient_name:
+        recipient_name = re.split(r"[._+-]+", recipient_name)[0]
+        if recipient_name.isalpha():
+            content = re.sub(
+                rf"^\s*{re.escape(recipient_name)}\b(?:[, ]+)",
+                "",
+                content,
+                flags=re.IGNORECASE,
+            )
+    content = re.sub(
         r"^\s*(?:(?:and|then)\s+)?(?:tell|let)\s+"
         r"(?:him|her|them|you)\s+(?:that\s+)?",
         "", content, flags=re.IGNORECASE,
     )
+    content = re.sub(
+        r"^\s*(?:(?:and|then)\s+)?(?:to\s+)?(?:say|saying)\s+"
+        r"(?:that\s+)?",
+        "",
+        content,
+        flags=re.IGNORECASE,
+    )
+    content = re.sub(r"^\s*that\s+", "", content, flags=re.IGNORECASE)
     content = re.sub(r"^\s*(?:and\s+)?", "", content)
-    content = re.sub(r"^\s*(?:send|write|compose|draft)\s+"
-                     r"(?:an?\s+)?(?:email|message)\s*", "", content,
-                     flags=re.IGNORECASE)
     content = re.sub(r"\s+", " ", content).strip(" .")
     if content.casefold() in {"to", "cc", "bcc", "carbon copy", "blind copy"}:
         return ""
     return content
+
+
+def is_email_instruction(text: str) -> bool:
+    """Return whether text is an instruction wrapper rather than email prose."""
+    return bool(re.match(
+        r"^\s*(?:(?:please|could you|can you|would you|i need you to|"
+        r"i'd like you to|i would like you to)\s+)?"
+        r"(?:send|email|write|compose|draft)\b",
+        text or "",
+        flags=re.IGNORECASE,
+    ))
 
 
 def generate_email_draft(recipient: str, request_text: str) -> dict:
@@ -264,7 +305,11 @@ def generate_email_draft(recipient: str, request_text: str) -> dict:
         return {"to": "", "subject": "", "body": "", "cc": cc, "bcc": bcc,
                 "confidence": 0.0, "generation_method": "heuristic"}
 
-    subject, body = _auto_generate_subject_and_body(to.split(", ", 1)[0], request_text)
+    primary_recipient = to.split(", ", 1)[0]
+    intent_text = _email_intent_text(request_text, primary_recipient)
+    subject, body = _auto_generate_subject_and_body(
+        primary_recipient, intent_text
+    )
     regards = "Regards,"
 
     validation_errors = (
@@ -315,7 +360,12 @@ def _generate_default_subject_body(recipient: str, request_text: str) -> tuple[s
         body = _build_body(recipient, "I hope you're doing well. I wanted to check in and see how you are doing.")
         return subject, body
 
-    subject_source = re.sub(r"^(?:I'm|I am)\s+", "", clean_text, flags=re.I)
+    subject_source = re.sub(
+        r"^(?:(?:I'm|I am)|(?:about|regarding))\s+",
+        "",
+        clean_text,
+        flags=re.I,
+    )
     subject_source = re.sub(r"\b(?:right\s+)?now\b", "", subject_source, flags=re.I)
     subject_words = re.findall(r"[A-Za-z0-9']+", subject_source)
     subject = " ".join(word.capitalize() for word in subject_words[:8])
@@ -378,7 +428,7 @@ async def generate_email_draft_with_model(
                 "addresses."
             )),
             HumanMessage(content=json.dumps({
-                "request": _email_intent_text(request_text),
+                "request": _email_intent_text(request_text, draft["to"]),
                 "recipient": draft["to"],
             })),
         ])
@@ -439,6 +489,25 @@ def _build_body(recipient: str, message: str) -> str:
     if not normalized:
         return f"{greeting}"
 
+    normalized = re.sub(
+        r"^\s*(?:(?:and|then)\s+)?(?:tell|let)\s+"
+        r"(?:him|her|them|you)\s+(?:that\s+)?",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(
+        r"^\s*(?:(?:and|then)\s+)?(?:to\s+)?(?:say|saying)\s+"
+        r"(?:that\s+)?",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(r"^\s*that\s+", "", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized:
+        return greeting
+
     lower = normalized.lower()
     if "how are you doing" in lower or "how he is doing" in lower or "how she is doing" in lower:
         body = "I hope you're doing well. I wanted to check in and see how you are doing."
@@ -457,9 +526,12 @@ def _build_body(recipient: str, message: str) -> str:
             body += "."
         return f"{greeting}\n\n{body}"
 
-    msg = normalized
-    if not msg.endswith('.'):
-        msg = msg + '.'
+    if re.match(r"^about\b", normalized, flags=re.IGNORECASE):
+        normalized = f"I'm writing {normalized[0].lower()}{normalized[1:]}"
+    msg = normalized.rstrip(" .!?")
+    if msg:
+        msg = msg[0].upper() + msg[1:] if msg[:1].islower() else msg
+        msg += "."
 
     return f"{greeting}\n\n{msg}"
 

@@ -11,6 +11,7 @@ from app.services.model_router import JaloraChatModel, ProviderSpec
 from app.tools import registry as real_registry
 from app.tools.base import PermissionLevel, ToolRegistry
 from app.tools.routing import (
+    is_multi_step_request,
     local_app_command,
     local_app_open_target,
     resolve_intent_hint,
@@ -387,6 +388,27 @@ def test_specific_message_intent_overrides_mismatched_shortcut_hint():
 
     assert resolve_intent_hint(message, "web_search") is None
     assert route_request(message).intent == "email"
+
+
+def test_email_body_instructions_are_not_mistaken_for_a_second_task():
+    message = (
+        "Send an email to junioroduol@gmail.com and tell him that I am ready "
+        "for the showing of my current app capabilities."
+    )
+
+    assert not is_multi_step_request(message)
+
+
+def test_saving_an_email_draft_is_one_action():
+    assert not is_multi_step_request(
+        "Save the email draft to a@b.example with subject API draft."
+    )
+
+
+def test_email_then_calendar_action_requires_a_plan():
+    assert is_multi_step_request(
+        "Send an email to test@example.com and then schedule a meeting."
+    )
 
 
 def test_image_generation_signal_is_not_shadowed_by_generic_shortcut_hint():

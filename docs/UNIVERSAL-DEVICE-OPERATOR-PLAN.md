@@ -168,11 +168,22 @@ recovery, and duplicate prevention without real external side effects.
 **Status:** Partially implemented. Capability discovery, central registry
 routing, task-linked commands, individual shared/local approval, persisted
 command status, and bounded receipts are implemented. Authenticated device
-receipts now update the linked task-step evidence and verification status; the
-central prompt requires discovery before choosing a device and forbids treating
-a queued command as completed. There is no durable automatic agent
-wait/resume when a device later submits its receipt, and there is no end-to-end
-mocked multi-application workflow test covering the full acceptance list.
+receipts update the linked task-step evidence and verification status. A
+successful receipt for the final tool step completes the shared task; if
+additional tool steps remain, the saved run state and completed step are
+available through the existing explicit run-resume path. The central prompt
+requires discovery before choosing a device and forbids treating a queued
+command as completed. Mock coverage now verifies two allowlisted Android apps
+can create separately approved commands whose receipts update distinct steps
+in the same task. This is a protocol/task-lifecycle acceptance, not proof that
+the central planner can autonomously sequence multiple real apps. Automatic
+receipt-triggered continuation of remaining dependent steps and the full
+mocked multi-app acceptance list remain incomplete.
+
+The legacy browser-link `/opened` route now records through the same receipt
+and task-update path as protocol v1. Approval leaves the task partial; only a
+successful open receipt completes the linked task. The regression test covers
+that transition and rejects duplicate decisions/receipts.
 
 ### Phase 6 — Reliability, privacy, and rollout
 
@@ -198,9 +209,11 @@ backup/restore and retention drills in this environment.
 ## Current implementation status
 
 Phases 1 and 2 are implemented. Phase 3 now has an expanded Windows companion
-source implementation; code signing, interactive Windows acceptance, and
-automatic central-task wait/resume remain incomplete. Phase 4 has an Android
-companion source implementation but has not been built or tested on Android.
+source implementation; code signing and interactive Windows acceptance remain
+incomplete. Phase 4 has an Android companion source implementation but has
+not been built or tested on Android. Device receipts complete a task when its
+final tool step is verified; remaining steps require explicit run resume, so
+automatic cross-device task wait/resume remains incomplete.
 Phases 5 and 6 are partially implemented as stated above and are not accepted.
 The browser companion remains restricted to approved public links. Message
 bridge APIs remain separate. Screenshot-image reasoning and automatic

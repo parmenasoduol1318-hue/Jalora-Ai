@@ -482,6 +482,8 @@ def test_mock_threads_and_compose_never_sends(client, auth_headers):
                                   "body": "draft body"})
     assert api_draft.status_code == 200, api_draft.text
     assert api_draft.json()["status"] == "draft"
+    assert api_draft.json()["subject"] == "API draft"
+    assert api_draft.json()["body"] == "draft body"
     assert email_service._MOCK.sent_count(env["user_id"]) == before
 
 

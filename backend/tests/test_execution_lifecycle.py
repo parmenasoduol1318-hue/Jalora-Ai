@@ -23,6 +23,7 @@ from app.services.execution_lifecycle import (
 )
 from app.services.chat_service import (
     _finalize_task,
+    _guard_pending_device_actions,
     _guard_unknown_task_outcomes,
 )
 from app.agents.graph import _is_retryable, _sync_plan
@@ -114,6 +115,59 @@ def test_tool_attempt_is_persisted_before_dispatch_and_reused_after_completion()
     assert replay.cached_raw == raw
     assert replay.action_id == handle.action_id
     assert replay.attempt_number == 1
+
+
+def test_queued_device_command_remains_pending_until_a_receipt():
+    task_id, run_id, step_id = _execution(
+        tool_name="request_remote_android_action",
+        side_effect="external",
+    )
+    handle = begin_tool_attempt(
+        task_id=task_id,
+        run_id=run_id,
+        tool_call_id="device-launch-call",
+        tool_name="request_remote_android_action",
+        arguments={"value": 1},
+        plan_step_index=0,
+        side_effect="external",
+    )
+    raw = json.dumps({
+        "success": True,
+        "message": "Queued on paired device; awaiting approval and receipt.",
+        "data": {
+            "command_id": "remote-command",
+            "protocol_status": "queued",
+        },
+    })
+
+    result = finish_tool_attempt(
+        handle=handle,
+        task_id=task_id,
+        run_id=run_id,
+        raw=raw,
+        tool_name="request_remote_android_action",
+        success=True,
+    )
+
+    assert result is not None
+    assert result.outcome == ActionOutcome.SUBMITTED
+    with SessionLocal() as db:
+        step = db.get(TaskStep, step_id)
+        attempt = db.get(TaskStepAttempt, handle.attempt_id)
+        assert step is not None and attempt is not None
+        assert step.status == "active"
+        assert step.outcome_status == "submitted"
+        assert step.verification_status == "pending"
+        assert attempt.state == "completed"
+        status, reply, recoverable = _guard_pending_device_actions(
+            db,
+            task_id=task_id,
+            status="completed",
+            reply="Queued.",
+        )
+    assert status == "partial"
+    assert "has not confirmed" in reply
+    assert recoverable is True
 
 
 def test_uncertain_side_effect_is_blocked_from_replay():

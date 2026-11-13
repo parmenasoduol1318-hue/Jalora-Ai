@@ -84,6 +84,38 @@ def test_email_draft_uses_polished_language_for_check_in_request():
     assert draft["regards"] == "Regards,"
 
 
+@pytest.mark.parametrize(
+    ("request_text", "expected_body_text"),
+    [
+        (
+            "Email alex@example.test to say I will be late to the meeting",
+            "I will be late to the meeting.",
+        ),
+        (
+            "Please email alex@example.test saying I will be late to the meeting",
+            "I will be late to the meeting.",
+        ),
+        (
+            "Write an email to alex@example.test about tomorrow's meeting",
+            "I'm writing about tomorrow's meeting.",
+        ),
+        (
+            "Could you email Alex that I will be late?",
+            "I will be late.",
+        ),
+    ],
+)
+def test_email_draft_does_not_repeat_instruction_wrapper(
+    request_text, expected_body_text
+):
+    draft = generate_email_draft("alex@example.test", request_text)
+
+    assert draft["valid"] is True
+    assert expected_body_text in draft["body"]
+    assert "email alex@" not in draft["body"].lower()
+    assert "saying" not in draft["body"].lower()
+
+
 def test_email_task_extracts_multiple_to_cc_and_bcc_recipients():
     draft = generate_email_draft(
         "",

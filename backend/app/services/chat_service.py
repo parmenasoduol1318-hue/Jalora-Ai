@@ -120,6 +120,9 @@ def _state_for_resume(state: dict[str, Any]) -> dict[str, Any]:
     resumable["status"] = "running"
     resumable["force_final"] = False
     resumable["recoverable"] = False
+    if not resumable.get("plan"):
+        resumable["plan_recovery"] = False
+        resumable["plan_attempts"] = 0
     return resumable
 
 
@@ -139,13 +142,16 @@ def _tool_names_for_resume(
         for step in plan
         if isinstance(step, dict)
     )
+    user_context = "\n".join(
+        value for value in (task_goal, prior_user_text) if value
+    )
     resume_context = "\n".join(
-        value for value in (task_goal, prior_user_text, plan_text) if value
+        value for value in (user_context, plan_text) if value
     )
     selected = set(
         tool_names_for_intent(
             "coding" if coding else intent,
-            "\n".join(value for value in (task_goal, prior_user_text) if value),
+            user_context,
         )
     )
     direct_action = state.get("direct_action")
@@ -186,24 +192,23 @@ def _tool_names_for_resume(
         )
     pending_tools.discard("send_email")
     pending_tools.discard("send_email_batch")
-    planned_send_step = any(
-        step.get("tool") in {"send_email", "send_email_batch"}
-        and step.get("status") in {"pending", "active"}
-        for step in plan
-    )
-    if (
-        planned_send_step
+    if explicitly_requests_email_send(user_context):
+        pending_tools.add("send_email")
+        if planned_send_count > 1 and not is_public_contact_outreach:
+            pending_tools.add("send_email_batch")
+    elif (
+        planned_send_count > 0
         and is_public_contact_outreach
         and has_multiple_outreach_recipients(resume_context)
-        and explicitly_requests_email_send(resume_context)
     ):
         pending_tools.add("send_email")
-        pending_tools.add("send_email_batch")
     elif planned_send_count > 1 and not is_public_contact_outreach:
         pending_tools.add("send_email")
         pending_tools.add("send_email_batch")
     elif is_public_contact_outreach:
         selected.discard("send_email")
+        selected.discard("send_email_batch")
+    if is_public_contact_outreach:
         selected.discard("send_email_batch")
     selected.update(pending_tools)
     if pending_tools and registry.get("update_plan") is not None:
@@ -326,6 +331,7 @@ def _recover_capability_rejected_sends(
 from sqlalchemy.orm import Session
 
 from app.agents.graph import (
+    _model_outage_message,
     _parse_tool_result,
     build_graph,
     deserialize_state,
@@ -2491,6 +2497,71 @@ async def execute_chat(
                 if fell_back:
                     pass  # continue to success path with final_state
                 else:
+                    if not emitter.of_type("tool_start"):
+                        reply = (
+                            _model_outage_message(
+                                initial_state["messages"], exc
+                            )
+                            + " Your request was saved as a resumable task. "
+                            "After restoring a working AI provider, resume it "
+                            "from the Tasks panel. No task action was completed."
+                        )
+                        resumable_state = dict(initial_state)
+                        resumable_state["messages"] = list(
+                            initial_state["messages"]
+                        )
+                        resumable_state["status"] = "running"
+                        run.status = "partial"
+                        run.error = detail["details"]
+                        run.state_json = serialize_state(resumable_state)
+                        reply_message = AIMessage(
+                            content=reply,
+                            id=str(uuid.uuid4()),
+                        )
+                        _persist_new_messages(
+                            db,
+                            conv.id,
+                            run_id,
+                            [*initial_state["messages"], reply_message],
+                            pre_ids,
+                        )
+                        conv.updated_at = _utcnow()
+                        _finalize_task(
+                            db,
+                            task_id=task_id,
+                            status="partial",
+                            reply=reply,
+                            error=detail["details"],
+                        )
+                        db.commit()
+                        log_activity(
+                            db,
+                            user_id=user_id,
+                            run_id=run_id,
+                            agent="supervisor",
+                            tool="chat_turn",
+                            arguments={
+                                "conversation_id": conv.id,
+                                "model": route.label,
+                                **_model_meta(route),
+                            },
+                            result_summary=reply[:300],
+                            success=False,
+                            duration_ms=t.elapsed_ms,
+                            meta={"intent": intent.intent, **_model_meta(route)},
+                        )
+                        outcome = ChatOutcome(
+                            status="partial",
+                            conversation_id=conv.id,
+                            run_id=run_id,
+                            reply=reply,
+                            model=route.label,
+                            task_id=task_id,
+                            intent=intent.intent,
+                        )
+                        emitter.emit("done", outcome.as_response())
+                        return outcome
+
                     run.status = "failed"
                     run.error = detail["details"]
                     _finalize_task(db, task_id=task_id, status="failed", error=detail["details"])
@@ -2581,6 +2652,11 @@ async def execute_chat(
             status, reply = _guard_unknown_task_outcomes(
                 db, task_id=task_id, status=status, reply=reply
             )
+            status, reply, pending_device_action = _guard_pending_device_actions(
+                db, task_id=task_id, status=status, reply=reply
+            )
+            if pending_device_action:
+                final_state["recoverable"] = True
             if web_answer_unverified and status == "completed":
                 status = "partial"
             if status == "paused_approval":
@@ -2879,6 +2955,14 @@ async def _continue_from_state(
             status=status,
             reply=reply,
         )
+        status, reply, pending_device_action = _guard_pending_device_actions(
+            db,
+            task_id=task.id if task is not None else "",
+            status=status,
+            reply=reply,
+        )
+        if pending_device_action:
+            final_state["recoverable"] = True
         if status == "paused_approval":
             reply = "This action is ready for your review. Nothing has been sent yet."
         if status in ("completed", "partial", "stopped", "error"):
@@ -3895,6 +3979,40 @@ def _guard_unknown_task_outcomes(
         "One or more external actions have an unknown outcome. I cannot "
         "confirm that they succeeded, and they were not automatically retried. "
         "Reconcile the outcome before attempting them again.",
+    )
+
+
+def _guard_pending_device_actions(
+    db,
+    *,
+    task_id: str,
+    status: str,
+    reply: str,
+) -> tuple[str, str, bool]:
+    if status not in {"completed", "partial"} or not task_id:
+        return status, reply, False
+    pending = db.scalar(
+        select(TaskStep.id)
+        .where(
+            TaskStep.task_id == task_id,
+            TaskStep.tool_id.in_(
+                (
+                    "request_remote_android_action",
+                    "request_remote_windows_action",
+                    "request_remote_url",
+                )
+            ),
+            TaskStep.outcome_status == "submitted",
+        )
+        .limit(1)
+    )
+    if pending is None:
+        return status, reply, False
+    return (
+        "partial",
+        "The paired device has not confirmed the requested action yet. "
+        "The task is saved and can be resumed after a device receipt arrives.",
+        True,
     )
 
 

@@ -954,6 +954,30 @@ def test_email_approval_args_are_polished_before_review():
     assert original["body"] == "email to ask him how he is doing"
 
 
+def test_email_approval_normalizes_copied_request_without_rewriting_prose():
+    request_copy = {
+        "to": "alex@example.test",
+        "subject": "Please email Alex that I will be late",
+        "body": "Please email Alex that I will be late",
+    }
+
+    normalized = _normalize_email_action_args("send_email", request_copy)
+    polished = {
+        "to": "alex@example.test",
+        "subject": "I Will Be Late",
+        "body": "I will be late to the meeting.",
+    }
+    ordinary_prose = {
+        "to": "alex@example.test",
+        "subject": "Meeting update",
+        "body": "I will be late to the meeting.",
+    }
+
+    assert normalized["body"] == "Hi Alex,\n\nI will be late."
+    assert _normalize_email_action_args("send_email", polished) == polished
+    assert _normalize_email_action_args("send_email", ordinary_prose) == ordinary_prose
+
+
 def test_plan_normalization_accepts_common_capability_and_dependency_aliases():
     plan = normalize_steps([
         {

@@ -1138,12 +1138,141 @@ def record_protocol_command_receipt(
         )
     except DeviceProtocolError as exc:
         raise ConflictError(str(exc), "DEVICE_COMMAND_PROTOCOL_CONFLICT") from exc
+    task_resume = _update_task_from_device_receipt(
+        db, command=command, status=status, recorded=recorded
+    )
     return {
         "status": status,
         "recorded": recorded,
         "task_id": command.task_id,
         "run_id": command.run_id,
         "task_step_id": command.task_step_id,
+        "task_resume": task_resume,
+    }
+
+
+def _update_task_from_device_receipt(
+    db: Session,
+    *,
+    command: DeviceRemoteCommand,
+    status: str,
+    recorded: bool,
+) -> dict[str, str] | None:
+    if (
+        not recorded
+        or status != "succeeded"
+        or not command.run_id
+        or not command.task_id
+        or not command.task_step_id
+    ):
+        return None
+
+    from langchain_core.messages import ToolMessage
+
+    from app.models.agent import AgentRun
+    from app.models.task import TaskStepAttempt
+    from app.services.chat_service import (
+        _finalize_task,
+        deserialize_state,
+        serialize_state,
+    )
+
+    run = db.get(AgentRun, command.run_id)
+    task_step = db.get(TaskStep, command.task_step_id)
+    if (
+        run is None
+        or run.user_id != command.user_id
+        or run.status != "partial"
+        or not run.state_json
+        or task_step is None
+        or task_step.task_id != command.task_id
+    ):
+        return None
+
+    state = deserialize_state(run.state_json)
+    if task_step.plan_step_id:
+        for step in state.get("plan") or []:
+            if isinstance(step, dict) and step.get("id") == task_step.plan_step_id:
+                step["status"] = "done"
+                break
+    attempt = db.scalar(
+        select(TaskStepAttempt)
+        .where(
+            TaskStepAttempt.task_id == command.task_id,
+            TaskStepAttempt.run_id == command.run_id,
+            TaskStepAttempt.step_id == task_step.id,
+        )
+        .order_by(TaskStepAttempt.attempt_number.desc())
+    )
+    if attempt is not None and attempt.tool_call_id:
+        receipt_result = {
+            "command_id": command.id,
+            "action": command.action,
+            "status": "verified",
+            "evidence": (
+                command.receipt.get("evidence", {})
+                if isinstance(command.receipt, dict)
+                else {}
+            ),
+        }
+        for message in state.get("messages", []):
+            if (
+                isinstance(message, ToolMessage)
+                and message.tool_call_id == attempt.tool_call_id
+            ):
+                message.content = (
+                    "Paired device completed and verified this action. "
+                    f"Receipt: {receipt_result}"
+                )
+                break
+    run.state_json = serialize_state(state)
+    db.commit()
+
+    pending_tool_step = db.scalar(
+        select(TaskStep.id)
+        .where(
+            TaskStep.task_id == command.task_id,
+            TaskStep.tool_id.is_not(None),
+            TaskStep.status.notin_(("done", "skipped")),
+        )
+        .limit(1)
+    )
+    unknown_outcome = db.scalar(
+        select(TaskStep.id)
+        .where(
+            TaskStep.task_id == command.task_id,
+            TaskStep.outcome_status == "outcome_unknown",
+        )
+        .limit(1)
+    )
+    if pending_tool_step is None and unknown_outcome is None:
+        reply = f"The paired device completed and verified '{command.action}'."
+        run.status = "completed"
+        run.error = None
+        run.state_json = None
+        run.updated_at = utcnow()
+        _finalize_task(
+            db,
+            task_id=command.task_id,
+            status="completed",
+            reply=reply,
+        )
+        db.commit()
+        return {
+            "status": "completed",
+            "reply": reply,
+            "task_id": command.task_id,
+            "run_id": run.id,
+        }
+    if unknown_outcome is not None:
+        reply = "A device action still has an unknown outcome. Reconcile it before continuing."
+    else:
+        reply = "The device receipt was verified. Remaining task steps are saved and ready to resume."
+    return {
+        "status": "partial",
+        "reply": reply,
+        "task_id": command.task_id,
+        "run_id": run.id,
     }
 
 
@@ -1264,32 +1393,27 @@ def mark_remote_command_opened(
         raise NotFoundError("Remote command not found for this device.")
     if command.status != "approved":
         raise ConflictError("Approve this remote command before opening its link.")
-    status = "opened" if body.opened else "failed"
-    claimed = db.execute(
-        update(DeviceRemoteCommand)
-        .where(
-            DeviceRemoteCommand.id == command.id,
-            DeviceRemoteCommand.device_id == device.id,
-            DeviceRemoteCommand.status == "approved",
-        )
-        .values(
-            status=status,
-            protocol_status="succeeded" if body.opened else "failed",
-            opened_at=utcnow() if body.opened else None,
-            completed_at=utcnow(),
-            receipt={
-                "status": "succeeded" if body.opened else "failed",
-                "evidence": {"browser_open_receipt": body.opened},
-                "error_code": None if body.opened else "DEVICE_OPEN_FAILED",
-            },
+    try:
+        status, recorded = record_device_receipt(
+            db,
+            command=command,
+            device=device,
+            nonce=command.command_nonce or "",
+            status="succeeded" if body.opened else "failed",
+            evidence={"browser_open_receipt": body.opened},
             error_code=None if body.opened else "DEVICE_OPEN_FAILED",
         )
-        .execution_options(synchronize_session=False)
+    except DeviceProtocolError as exc:
+        raise ConflictError(
+            str(exc), "DEVICE_COMMAND_PROTOCOL_CONFLICT"
+        ) from exc
+    task_resume = _update_task_from_device_receipt(
+        db, command=command, status=status, recorded=recorded
     )
-    if claimed.rowcount != 1:
-        raise ConflictError("This remote command has already been completed.")
-    db.commit()
-    return {"status": status}
+    return {
+        "status": "opened" if status == "succeeded" else "failed",
+        "task_resume": task_resume,
+    }
 
 
 @router.delete("/{device_id}")
