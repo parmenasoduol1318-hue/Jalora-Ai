@@ -921,7 +921,10 @@ def test_current_affairs_does_not_return_model_claim_contradicting_search_eviden
         return ToolResult.ok("Found one current source.", {
             "results": [{
                 "title": "Kenya State House",
-                "url": "https://news.example.test/kenya-president",
+                "url": (
+                    "https://www.president.go.ke/administration/"
+                    "office-of-the-president/"
+                ),
                 "snippet": "William Ruto is the President of Kenya.",
             }],
         })
@@ -951,7 +954,7 @@ def test_current_affairs_does_not_return_model_claim_contradicting_search_eviden
     assert "Daniel Mwai Kipkoele" not in reply
     assert "William Ruto is the President of Kenya." in reply
     assert "retrieved " in reply
-    assert "https://news.example.test/kenya-president" in reply
+    assert "https://www.president.go.ke/administration/" in reply
 
 
 def test_current_affairs_does_not_expose_datetime_tool_as_the_answer(
@@ -962,7 +965,7 @@ def test_current_affairs_does_not_expose_datetime_tool_as_the_answer(
         return ToolResult.ok("Found one current source.", {
             "results": [{
                 "title": "The Official Website of the President of Kenya",
-                "url": "https://president.example.test/",
+                "url": "https://www.president.go.ke/",
                 "snippet": "His Excellency William Samoei Ruto, President of Kenya.",
             }],
         })
@@ -996,7 +999,7 @@ def test_current_affairs_does_not_expose_datetime_tool_as_the_answer(
     reply = response.json()["reply"]
     assert "William Samoei Ruto" in reply
     assert "current UTC time" not in reply.lower()
-    assert "https://president.example.test/" in reply
+    assert "https://www.president.go.ke/" in reply
 
 
 def test_historical_factual_question_uses_retrieved_evidence(
@@ -1341,6 +1344,55 @@ def test_search_fallback_prefers_relevant_opened_source():
     assert "https://news.example.test/pm" in reply
     assert "https://news.example.test/system" not in reply
     assert "could not open" not in reply
+
+
+def test_kenya_president_fallback_only_uses_official_kenyan_presidency_source():
+    from app.services.chat_service import _format_web_search_evidence
+
+    reply = _format_web_search_evidence(
+        "Who is the president of Kenya?",
+        [
+            {
+                "title": "President Donald J. Trump",
+                "url": "https://www.whitehouse.gov/administration/donald-j-trump/",
+                "snippet": "President Donald J. Trump leads the United States.",
+                "source_type": "page",
+            },
+            {
+                "title": "Office of the President",
+                "url": (
+                    "https://www.president.go.ke/administration/"
+                    "office-of-the-president/"
+                ),
+                "snippet": (
+                    "William Samoei Ruto is the President of the Republic "
+                    "of Kenya."
+                ),
+                "source_type": "page",
+            },
+        ],
+    )
+
+    assert "William Samoei Ruto is the President of the Republic of Kenya." in reply
+    assert "president.go.ke" in reply
+    assert "whitehouse.gov" not in reply
+
+
+def test_kenya_president_fallback_rejects_unrelated_results():
+    from app.services.chat_service import _format_web_search_evidence
+
+    reply = _format_web_search_evidence(
+        "Who is the president of Kenya?",
+        [{
+            "title": "President Donald J. Trump",
+            "url": "https://www.whitehouse.gov/",
+            "snippet": "President Donald J. Trump leads the United States.",
+            "source_type": "page",
+        }],
+    )
+
+    assert "did not contain enough evidence from Kenya's official Presidency site" in reply
+    assert "whitehouse.gov" not in reply
 
 
 def test_current_cbr_fallback_extracts_rate_from_latest_official_release():

@@ -437,7 +437,28 @@ def _format_web_search_evidence(query: str, sources: list[dict[str, Any]]) -> st
         source for source in sources
         if source.get("url") and (source.get("snippet") or source.get("text"))
     ]
+    if _is_kenya_president_request(query):
+        from app.services.search_service import is_kenya_president_source
+
+        usable = [
+            source for source in usable
+            if is_kenya_president_source(
+                query,
+                str(source.get("title") or ""),
+                str(source.get("url") or ""),
+                "\n".join((
+                    str(source.get("snippet") or ""),
+                    str(source.get("text") or ""),
+                )),
+            )
+        ]
     if not usable:
+        if _is_kenya_president_request(query):
+            return (
+                f"I searched the web for **{query}**, but the results did not "
+                "contain enough evidence from Kenya's official Presidency site "
+                "to verify the answer."
+            )
         return f"I searched the web for **{query}**, but no usable source details were returned."
 
     stop_words = {"a", "an", "are", "is", "the", "of", "in", "on", "to", "who", "what"}
@@ -650,6 +671,12 @@ def _format_web_search_evidence(query: str, sources: list[dict[str, Any]]) -> st
                 "  The result page opened, but verify the cited source for full context."
             )
     return "\n".join(lines)
+
+
+def _is_kenya_president_request(query: str) -> bool:
+    from app.services.search_service import is_kenya_president_query
+
+    return is_kenya_president_query(query)
 
 
 def _is_current_cbr_request(query: str) -> bool:

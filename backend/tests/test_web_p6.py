@@ -11,6 +11,7 @@ import pytest
 
 from app.agents.prompts import build_system_prompt
 from app.config import get_settings
+from app.errors import ToolResult
 from app.services import browser, page_text, search_service, url_safety
 from app.tools import registry
 from app.tools import web
@@ -73,6 +74,101 @@ def test_cbk_rate_search_adds_official_mpc_query_and_keeps_original_results(
     )
     assert any("General CBK rates page" == item["title"]
                for item in result.data["results"])
+
+
+def test_kenya_president_search_uses_official_source_and_filters_unrelated_results(
+    monkeypatch,
+):
+    observed_queries = []
+
+    async def fake_search(query: str, max_results: int):
+        observed_queries.append(query)
+        if query.startswith("site:president.go.ke"):
+            return [
+                search_service.SearchResult(
+                    title="Office of the President",
+                    url="https://www.president.go.ke/administration/office-of-the-president/",
+                    snippet=(
+                        "William Samoei Ruto is the President of the Republic "
+                        "of Kenya."
+                    ),
+                ),
+            ]
+        return [
+            search_service.SearchResult(
+                title="President Donald J. Trump",
+                url="https://www.whitehouse.gov/administration/donald-j-trump/",
+                snippet="President Donald J. Trump leads the United States.",
+            ),
+        ]
+
+    monkeypatch.setattr(search_service, "search", fake_search)
+    result = asyncio.run(web.search_web("Who is the president of Kenya?"))
+
+    assert result.success is True, result.message
+    assert len(observed_queries) == 2
+    assert observed_queries[0].startswith("site:president.go.ke")
+    assert [item["url"] for item in result.data["results"]] == [
+        "https://www.president.go.ke/administration/office-of-the-president/",
+    ]
+
+
+def test_kenya_president_search_opens_official_source_when_search_is_irrelevant(
+    monkeypatch,
+):
+    async def fake_search(query: str, max_results: int):
+        return [
+            search_service.SearchResult(
+                title="President Donald J. Trump",
+                url="https://www.whitehouse.gov/",
+                snippet="President Donald J. Trump leads the United States.",
+            ),
+        ]
+
+    async def official_open(url: str):
+        assert url == (
+            "https://www.president.go.ke/administration/office-of-the-president/"
+        )
+        return ToolResult.ok("Opened official page.", {
+            "title": "Office of the President",
+            "url": url,
+            "text": (
+                "His Excellency Dr William Samoei Ruto is the President "
+                "of the Republic of Kenya."
+            ),
+        })
+
+    monkeypatch.setattr(search_service, "search", fake_search)
+    monkeypatch.setattr(web, "open_url", official_open)
+    result = asyncio.run(web.search_web("Who is the president of Kenya?"))
+
+    assert result.success is True, result.message
+    assert len(result.data["results"]) == 1
+    assert result.data["results"][0]["url"].startswith(
+        "https://www.president.go.ke/"
+    )
+    assert "William Samoei Ruto" in result.data["results"][0]["snippet"]
+
+
+def test_kenya_president_search_reports_unavailable_official_source(monkeypatch):
+    async def fake_search(query: str, max_results: int):
+        return [
+            search_service.SearchResult(
+                title="President Donald J. Trump",
+                url="https://www.whitehouse.gov/",
+                snippet="President Donald J. Trump leads the United States.",
+            ),
+        ]
+
+    async def failed_official_open(url: str):
+        return ToolResult.fail("HTTP_ERROR", "Official source unavailable.")
+
+    monkeypatch.setattr(search_service, "search", fake_search)
+    monkeypatch.setattr(web, "open_url", failed_official_open)
+    result = asyncio.run(web.search_web("Who is the president of Kenya?"))
+
+    assert result.success is False
+    assert result.error.code == "OFFICIAL_SOURCE_UNAVAILABLE"
 
 
 def test_html_to_text_preserves_document_blocks_and_table_rows():

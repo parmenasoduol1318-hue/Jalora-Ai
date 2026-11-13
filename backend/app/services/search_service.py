@@ -20,6 +20,7 @@ import time
 import weakref
 from dataclasses import dataclass
 from typing import Awaitable, Callable
+from urllib.parse import urlsplit
 
 SEARCH_CACHE_TTL_SECONDS = 60.0
 _SEARCH_CACHE_MAX_ENTRIES = 64
@@ -63,6 +64,34 @@ class SearchError(Exception):
         super().__init__(detail)
         self.code = code
         self.detail = detail
+
+
+def is_kenya_president_query(query: str) -> bool:
+    return bool(
+        re.search(r"\bpresident\b", query, re.I)
+        and re.search(r"\b(?:kenya|kenyan)\b", query, re.I)
+        and not re.search(
+            r"\b(?:was|were|former|historical|previous|past|in\s+20\d{2})\b",
+            query,
+            re.I,
+        )
+    )
+
+
+def is_kenya_president_source(
+    query: str, title: str, url: str, text: str
+) -> bool:
+    """Accept only Kenya's official presidency site for this officeholder query."""
+    if not is_kenya_president_query(query):
+        return True
+    hostname = (urlsplit(url).hostname or "").lower()
+    if hostname not in {"president.go.ke", "www.president.go.ke"}:
+        return False
+    evidence = f"{title}\n{text}".casefold()
+    return (
+        "kenya" in evidence
+        and re.search(r"\bpresiden(?:t|cy)\b", evidence) is not None
+    )
 
 
 # Thread-local DDGS instance for connection/session reuse across searches.

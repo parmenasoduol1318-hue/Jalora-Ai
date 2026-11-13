@@ -7,6 +7,18 @@
     {
       "source": "/api/:path*",
       "destination": "https://jalora-ai.onrender.com/api/:path*"
+    },
+    {
+      "source": "/device-companion",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/device-companion/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ]
 }

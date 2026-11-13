@@ -28,6 +28,9 @@ _MAILTO_EMAIL = re.compile(
 _CBK_RATE_QUERY = re.compile(
     r"\b(?:CBR|Central Bank Rate)\b", re.I
 )
+_KENYA_PRESIDENCY_URL = (
+    "https://www.president.go.ke/administration/office-of-the-president/"
+)
 _logger = logging.getLogger("jalora.web")
 
 
@@ -182,6 +185,12 @@ async def search_web(query: str, max_results: int = 5) -> ToolResult:
     """Search the internet and return ranked results with titles, URLs and snippets. Use for any research or fact-checking request."""
     limit = max(1, min(int(max_results), 20))
     queries = [query]
+    kenya_president_query = search_service.is_kenya_president_query(query)
+    if kenya_president_query:
+        queries.insert(
+            0,
+            'site:president.go.ke "President of Kenya" OR "President of the Republic of Kenya"',
+        )
     if _CBK_RATE_QUERY.search(query) and re.search(
         r"\b(?:Kenya|CBK|Central Bank of Kenya)\b", query, re.I
     ):
@@ -209,7 +218,43 @@ async def search_web(query: str, max_results: int = 5) -> ToolResult:
             failures.append(batch)
             continue
         for result in batch:
+            if not search_service.is_kenya_president_source(
+                query,
+                result.title,
+                result.url,
+                result.snippet,
+            ):
+                continue
             results_by_url.setdefault(result.url, result)
+    if kenya_president_query and not results_by_url:
+        official_page = await open_url(_KENYA_PRESIDENCY_URL)
+        if official_page.success:
+            page_data = official_page.data or {}
+            page_text = str(page_data.get("text") or "").strip()
+            page_title = str(page_data.get("title") or "Office of the President")
+            if search_service.is_kenya_president_source(
+                query,
+                page_title,
+                _KENYA_PRESIDENCY_URL,
+                page_text,
+            ):
+                results_by_url[_KENYA_PRESIDENCY_URL] = (
+                    search_service.SearchResult(
+                        title=page_title,
+                        url=_KENYA_PRESIDENCY_URL,
+                        snippet=page_text[:300],
+                    )
+                )
+        else:
+            return ToolResult.fail(
+                "OFFICIAL_SOURCE_UNAVAILABLE",
+                official_page.error.details if official_page.error else
+                "Kenya's official Presidency page could not be opened.",
+                message=(
+                    "Search did not return relevant Kenya presidency results, "
+                    "and the official source could not be opened."
+                ),
+            )
     if not results_by_url and failures:
         exc = failures[0]
         if isinstance(exc, search_service.SearchError):
