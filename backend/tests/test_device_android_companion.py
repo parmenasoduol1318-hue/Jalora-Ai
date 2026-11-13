@@ -92,9 +92,12 @@ def test_android_notification_only_pairing_accepts_empty_app_manifest(
 
 
 def test_android_companion_uses_shared_manifest_approval_and_receipt_lifecycle(
-    client, auth_headers, fake_router
+    client, auth_headers, fake_router, monkeypatch
 ):
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from types import SimpleNamespace
+
+    from app.services import chat_service
 
     owner_headers = auth_headers("android-companion@test.com")
     paired = _paired_android_device(client, owner_headers)
@@ -291,6 +294,15 @@ def test_android_companion_uses_shared_manifest_approval_and_receipt_lifecycle(
     fake_router.script.append(AIMessage(
         content="The device inspection shows one accessible Continue button."
     ))
+    original_resume_run = chat_service.resume_run
+
+    async def defer_resume(**_kwargs):
+        return SimpleNamespace(
+            status="partial",
+            reply="The receipt is stored; resume will be retried.",
+        )
+
+    monkeypatch.setattr(chat_service, "resume_run", defer_resume)
     receipt = client.post(
         f"/api/devices/protocol/v1/commands/{command['command_id']}/receipt",
         headers=access_headers,
@@ -315,10 +327,38 @@ def test_android_companion_uses_shared_manifest_approval_and_receipt_lifecycle(
     )
     assert receipt.status_code == 200, receipt.text
     assert receipt.json()["status"] == "succeeded"
-    assert receipt.json()["task_resume"]["status"] == "completed", (
-        receipt.json()["task_resume"]
+    assert receipt.json()["recorded"] is True
+    assert receipt.json()["task_resume"]["status"] == "partial"
+
+    monkeypatch.setattr(chat_service, "resume_run", original_resume_run)
+    retry = client.post(
+        f"/api/devices/protocol/v1/commands/{command['command_id']}/receipt",
+        headers=access_headers,
+        json={
+            "nonce": command["nonce"],
+            "status": "succeeded",
+            "evidence": {
+                "operation_result": {
+                    "ok": True,
+                    "status": "inspected",
+                    "control_count": 1,
+                },
+                "accessible_controls": [{
+                    "name": "Continue",
+                    "control_type": "Button",
+                    "automation_id": "continue",
+                    "enabled": True,
+                    "visible": True,
+                }],
+            },
+        },
     )
-    assert receipt.json()["task_resume"]["reply"] == (
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["recorded"] is False
+    assert retry.json()["task_resume"]["status"] == "completed", (
+        retry.json()["task_resume"]
+    )
+    assert retry.json()["task_resume"]["reply"] == (
         "The device inspection shows one accessible Continue button."
     )
     task_detail = client.get(f"/api/tasks/{context.task_id}", headers=owner_headers)
