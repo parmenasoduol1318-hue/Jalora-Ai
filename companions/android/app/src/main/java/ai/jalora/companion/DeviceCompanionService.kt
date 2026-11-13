@@ -243,6 +243,7 @@ class DeviceCompanionService : Service() {
             }
             "android.screen.inspect",
             "android.screen.click",
+            "android.screen.scroll",
             "android.screen.type" -> {
                 val requiredScope = if (operation == "android.screen.inspect") {
                     "android.screen.read"

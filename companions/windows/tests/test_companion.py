@@ -395,6 +395,53 @@ def test_windows_executor_click_requires_and_verifies_exact_accessible_control(
     assert missing[2] == "WINDOWS_CONTROL_NOT_UNIQUE"
 
 
+def test_windows_executor_scroll_requires_observed_accessibility_change(
+    monkeypatch, tmp_path
+):
+    executor, applications, window = _fake_windows(monkeypatch, tmp_path)
+    executor.execute("windows.app.launch", {"app_id": "test-app"}, applications)
+    target = window.controls[0]
+    scrolled = []
+
+    def scroll(*, wheel_dist):
+        scrolled.append(wheel_dist)
+        target.element_info.name = "Scrolled Editor"
+
+    target.wheel_mouse_input = scroll
+
+    result = executor.execute(
+        "windows.screen.scroll",
+        {
+            "app_id": "test-app",
+            "name": "Editor",
+            "automation_id": "text",
+            "direction": "down",
+        },
+        applications,
+    )
+
+    assert result[0] == "succeeded"
+    assert result[1]["operation_result"]["status"] == "scrolled"
+    assert result[1]["operation_result"]["verified"] is True
+    assert scrolled == [1]
+
+    target.element_info.name = "Editor"
+    target.wheel_mouse_input = lambda **_kwargs: None
+    uncertain = executor.execute(
+        "windows.screen.scroll",
+        {
+            "app_id": "test-app",
+            "name": "Editor",
+            "automation_id": "text",
+            "direction": "up",
+        },
+        applications,
+    )
+
+    assert uncertain[0] == "uncertain"
+    assert uncertain[2] == "WINDOWS_SCROLL_UNVERIFIED"
+
+
 def test_windows_executor_types_only_into_allowlisted_edit_control(
     monkeypatch, tmp_path
 ):

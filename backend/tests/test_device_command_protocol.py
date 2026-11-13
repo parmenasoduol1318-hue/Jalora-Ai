@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from time import monotonic
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import jwt
+import pytest
 
 from app.config import get_settings
 from app.context import ToolContext, bind_tool_execution
@@ -14,7 +16,50 @@ from app.models.agent import AgentRun
 from app.models.device import DeviceRemoteCommand
 from app.models.task import Task, TaskStep
 from app.models.user import User, utcnow
+from app.services.device_command_protocol import (
+    DeviceProtocolError,
+    _normalized_command,
+)
 from app.tools.device_tools import request_remote_url
+
+
+@pytest.mark.parametrize("platform", ["windows", "android"])
+def test_native_scroll_requires_scoped_target_and_bounded_direction(platform):
+    device = SimpleNamespace(
+        platform=platform,
+        scopes=[f"{platform}.screen.control", f"{platform}.screen.read"],
+        capability_manifest={
+            "applications": [{
+                "id": "notes",
+                "capabilities": [
+                    "screen.control",
+                    "screen.accessibility.inspect",
+                ],
+            }],
+        },
+    )
+    action = f"{platform}.screen.scroll"
+    arguments = {
+        "app_id": "notes",
+        "name": "Document",
+        "automation_id": "content",
+        "direction": "down",
+    }
+
+    required_scope, normalized = _normalized_command(action, arguments, device)
+
+    assert required_scope == f"{platform}.screen.control"
+    assert normalized == arguments
+    with pytest.raises(DeviceProtocolError, match="direction"):
+        _normalized_command(
+            action,
+            {**arguments, "direction": ["down"]},
+            device,
+        )
+
+    device.scopes.remove(f"{platform}.screen.read")
+    with pytest.raises(DeviceProtocolError, match="screen-read"):
+        _normalized_command(action, arguments, device)
 
 
 def _approved_device(client, owner_headers):

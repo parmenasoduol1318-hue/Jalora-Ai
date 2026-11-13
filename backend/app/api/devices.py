@@ -79,11 +79,13 @@ DEVICE_SCOPE_LABELS = {
         "Read accessibility controls or OCR from an approved Windows app"
     ),
     "windows.screen.control": (
-        "Click approved accessible controls or type into a selected Windows app"
+        "Click, scroll, or type into selected Windows app controls"
     ),
     "android.apps.launch": "Launch only applications selected in the Android companion",
     "android.screen.read": "Read accessibility controls from the foreground approved Android app",
-    "android.screen.control": "Control the foreground approved Android app through accessibility",
+    "android.screen.control": (
+        "Click, scroll, or type into the foreground approved Android app"
+    ),
 }
 
 

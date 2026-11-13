@@ -31,7 +31,7 @@ from .security import (
 _SCOPE_LABELS = {
     "windows.apps.launch": "Launch/close allowlisted apps",
     "windows.screen.read": "Read accessibility controls/OCR (private screen text is sent to Jalora)",
-    "windows.screen.control": "Click accessible controls and enter approved text",
+    "windows.screen.control": "Click, scroll, and enter approved text in accessible controls",
 }
 
 

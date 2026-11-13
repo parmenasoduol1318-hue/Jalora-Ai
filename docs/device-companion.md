@@ -144,9 +144,10 @@ operation and arguments, required scope, expiration, command-scoped nonce,
 idempotency key, expected evidence, and delivery lease. Protocol v1 allows
 `browser.open_url`, bounded Windows operations (`windows.app.launch`,
 `windows.app.close`, `windows.screen.inspect`, `windows.screen.ocr`,
-`windows.screen.click`, `windows.screen.type`, and `windows.screen.key`), and
+`windows.screen.click`, `windows.screen.scroll`, `windows.screen.type`, and
+`windows.screen.key`), and
 bounded Android operations (`android.app.launch`, `android.screen.inspect`,
-`android.screen.click`, and `android.screen.type`). Browser clients poll with
+`android.screen.click`, `android.screen.scroll`, and `android.screen.type`). Browser clients poll with
 the default `client_type=browser`; native clients use `client_type=windows` or
 `client_type=android` and are accepted only for matching paired devices. Raw
 shell commands, arbitrary code, screenshot uploads, and generic coordinate
@@ -159,7 +160,9 @@ permitted by the pairing scopes. Windows executable paths and hashes, and
 Android package names, remain on the device. Command creation and delivery
 both verify that the operation is in the current manifest. Input actions
 require screen-read permission as well as screen control, and are limited to
-one uniquely identified accessible control at a time.
+one uniquely identified accessible control at a time. Scroll requests perform
+one bounded UI scroll and report success only when the accessibility tree
+changes; otherwise their outcome remains uncertain.
 
 Before performing the operation, the target must submit its explicit decision
 to `POST /api/devices/protocol/v1/commands/{command_id}/decision` with the
@@ -203,7 +206,8 @@ The Android client is under `companions/android`. It uses intents for
 user-selected app launch and an owner-enabled Accessibility Service for bounded
 foreground-app inspection and accessible control. Android notification access
 is requested separately and forwards only notifications from selected apps
-when `messages.read` is granted. Secure windows, password controls, hidden
+when `messages.read` is granted. Scroll uses an accessible scrollable control
+and reports success only when the accessibility tree changes. Secure windows, password controls, hidden
 apps, and unsupported app surfaces remain inaccessible. Neither native client
 is signed for production distribution or accepted on a physical device yet.
 Do not treat pairing or a browser token as authorization for arbitrary actions.
@@ -218,10 +222,10 @@ Available scopes:
 | `remote.browser.open_url` | Target approves opening public web links in its browser |
 | `windows.apps.launch` | Launch an app explicitly added to the Windows companion allowlist |
 | `windows.screen.read` | Read accessible controls or OCR text from an approved Windows app |
-| `windows.screen.control` | Click accessible controls or type into an approved app |
+| `windows.screen.control` | Click or scroll accessible controls, or type into an approved app |
 | `android.apps.launch` | Launch an app explicitly selected in the Android companion |
 | `android.screen.read` | Read accessibility controls from a selected foreground Android app |
-| `android.screen.control` | Click unique accessible controls or enter text in non-password fields |
+| `android.screen.control` | Click or scroll unique accessible controls, or enter text in non-password fields |
 
 `messages.send` requires `messages.read`. Each send requires a separate
 user-approved action in Jalora; merely pairing a device never authorizes

@@ -331,6 +331,7 @@ async def _request_remote_native_action(
     automation_id: str = "",
     text: str = "",
     key: str = "Enter",
+    direction: str = "down",
     *,
     platform: Literal["windows", "android"],
 ) -> ToolResult:
@@ -369,6 +370,12 @@ async def _request_remote_native_action(
         arguments: dict[str, str] = {"app_id": app_id}
         if action in {"windows.screen.click", "android.screen.click"}:
             arguments.update({"name": name, "automation_id": automation_id})
+        elif action in {"windows.screen.scroll", "android.screen.scroll"}:
+            arguments.update({
+                "name": name,
+                "automation_id": automation_id,
+                "direction": direction,
+            })
         elif action in {"windows.screen.type", "android.screen.type"}:
             arguments.update({
                 "text": text,
@@ -422,6 +429,7 @@ async def request_remote_windows_action(
         "windows.screen.inspect",
         "windows.screen.ocr",
         "windows.screen.click",
+        "windows.screen.scroll",
         "windows.screen.type",
         "windows.screen.key",
     ],
@@ -432,6 +440,7 @@ async def request_remote_windows_action(
     key: Literal[
         "Enter", "Tab", "Esc", "Backspace", "Space", "Up", "Down", "Left", "Right"
     ] = "Enter",
+    direction: Literal["up", "down"] = "down",
 ) -> ToolResult:
     """Queue a Windows action through Jalora's shared approvals."""
     return await _request_remote_native_action(
@@ -442,6 +451,7 @@ async def request_remote_windows_action(
         automation_id,
         text,
         key,
+        direction,
         platform="windows",
     )
 
@@ -452,12 +462,14 @@ async def request_remote_android_action(
         "android.app.launch",
         "android.screen.inspect",
         "android.screen.click",
+        "android.screen.scroll",
         "android.screen.type",
     ],
     app_id: str,
     name: str = "",
     automation_id: str = "",
     text: str = "",
+    direction: Literal["up", "down"] = "down",
 ) -> ToolResult:
     """Queue an Android action through Jalora's shared approvals."""
     return await _request_remote_native_action(
@@ -467,6 +479,7 @@ async def request_remote_android_action(
         name,
         automation_id,
         text,
+        direction=direction,
         platform="android",
     )
 

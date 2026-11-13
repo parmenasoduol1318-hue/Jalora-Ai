@@ -307,3 +307,68 @@ def test_windows_scope_dependencies_are_enforced(client, auth_headers):
     )
     assert wrong_platform.status_code == 400
     assert wrong_platform.json()["error"]["code"] == "DEVICE_PLATFORM_SCOPE_MISMATCH"
+
+
+def test_windows_scroll_is_queued_for_one_approved_accessible_target(
+    client, auth_headers
+):
+    owner_headers = auth_headers("windows-scroll@test.com")
+    paired = _paired_windows_device(client, owner_headers)
+    device = paired["device"]
+    session = client.post(
+        "/api/devices/protocol/v1/session",
+        headers={"Authorization": f"Bearer {paired['device_token']}"},
+    )
+    assert session.status_code == 200, session.text
+    access_headers = {
+        "Authorization": f"Bearer {session.json()['access_token']}"
+    }
+    manifest = client.put(
+        "/api/devices/protocol/v1/manifest",
+        headers=access_headers,
+        json={
+            "schema_version": 1,
+            "applications": [{
+                "id": "test-notepad",
+                "name": "Test Notepad",
+                "capabilities": [
+                    "screen.accessibility.inspect",
+                    "screen.control",
+                ],
+            }],
+        },
+    )
+    assert manifest.status_code == 200, manifest.text
+    with SessionLocal() as db:
+        user = db.query(User).filter_by(email="windows-scroll@test.com").one()
+        context = ToolContext(
+            user_id=user.id,
+            idempotency_key="windows-scroll-step",
+        )
+
+    with bind_tool_execution(context):
+        queued = asyncio.run(
+            request_remote_windows_action(
+                device["id"],
+                "windows.screen.scroll",
+                "test-notepad",
+                name="Document",
+                automation_id="content",
+                direction="down",
+            )
+        )
+    assert queued.success
+    poll = client.get(
+        "/api/devices/protocol/v1/commands?wait_seconds=0&client_type=windows",
+        headers=access_headers,
+    )
+    assert poll.status_code == 200, poll.text
+    command = poll.json()["commands"][0]
+    assert command["operation"] == "windows.screen.scroll"
+    assert command["required_scope"] == "windows.screen.control"
+    assert command["arguments"] == {
+        "app_id": "test-notepad",
+        "name": "Document",
+        "automation_id": "content",
+        "direction": "down",
+    }

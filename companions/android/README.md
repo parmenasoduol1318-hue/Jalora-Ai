@@ -53,6 +53,9 @@ cannot execute Android application commands.
 The accessibility service inspects only the selected app while that app is the
 foreground package. It reports at most 40 bounded controls from a 300-node
 inspection. Clicks require a unique exact accessible-name or view-ID match.
+Scrolling requires a unique visible, enabled, scrollable accessibility node and
+uses one native forward/backward scroll action; success is reported only when
+the accessibility tree changes.
 Text entry is limited to a unique, visible, enabled, non-password edit control.
 Every remote action has a separate approval notification; the expanded
 notification shows the exact request on an unlocked device. No screen image,

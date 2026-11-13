@@ -33,6 +33,9 @@ a registered executable are not discovered.
   including bounded accessible edit-field values when exposed; password values
   are always redacted.
 - Click one uniquely named or identified enabled accessible control.
+- Scroll one uniquely identified accessible control up or down. The action is
+  reported as verified only when UI Automation observes a tree change;
+  otherwise its outcome is uncertain.
 - Type up to 2,000 characters into one uniquely identified accessible edit
   field after checking it is not a password field; report success only when
   UI Automation confirms the requested text. Field contents are not included

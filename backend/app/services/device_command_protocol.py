@@ -34,11 +34,13 @@ _OPERATION_SCOPES = {
     "windows.screen.inspect": "windows.screen.read",
     "windows.screen.ocr": "windows.screen.read",
     "windows.screen.click": "windows.screen.control",
+    "windows.screen.scroll": "windows.screen.control",
     "windows.screen.type": "windows.screen.control",
     "windows.screen.key": "windows.screen.control",
     "android.app.launch": "android.apps.launch",
     "android.screen.inspect": "android.screen.read",
     "android.screen.click": "android.screen.control",
+    "android.screen.scroll": "android.screen.control",
     "android.screen.type": "android.screen.control",
 }
 _RECEIPT_STATUSES = {"succeeded", "failed", "uncertain"}
@@ -183,20 +185,24 @@ def _normalized_command(
         "windows.screen.inspect": "screen.accessibility.inspect",
         "windows.screen.ocr": "screen.accessibility.inspect",
         "windows.screen.click": "screen.control",
+        "windows.screen.scroll": "screen.control",
         "windows.screen.type": "screen.control",
         "windows.screen.key": "screen.control",
         "android.app.launch": "application.launch",
         "android.screen.inspect": "screen.accessibility.inspect",
         "android.screen.click": "screen.control",
+        "android.screen.scroll": "screen.control",
         "android.screen.type": "screen.control",
     }.get(action)
     if capability is None or capability not in app.get("capabilities", []):
         raise DeviceProtocolError("The requested app operation is not available.")
     if action in {
         "windows.screen.click",
+        "windows.screen.scroll",
         "windows.screen.type",
         "windows.screen.key",
         "android.screen.click",
+        "android.screen.scroll",
         "android.screen.type",
     } and (
         f"{platform}.screen.read" not in (device.scopes or [])
@@ -217,9 +223,19 @@ def _normalized_command(
         if set(arguments) != {"app_id"}:
             raise DeviceProtocolError("The native command has unexpected arguments.")
         return required_scope, {"app_id": app_id}
-    if action in {"windows.screen.click", "android.screen.click"}:
-        if set(arguments) - {"app_id", "name", "automation_id"}:
-            raise DeviceProtocolError("The native click has unexpected arguments.")
+    is_scroll = action in {"windows.screen.scroll", "android.screen.scroll"}
+    if action in {
+        "windows.screen.click",
+        "android.screen.click",
+        "windows.screen.scroll",
+        "android.screen.scroll",
+    }:
+        allowed_arguments = {"app_id", "name", "automation_id"}
+        if is_scroll:
+            allowed_arguments.add("direction")
+        if set(arguments) - allowed_arguments:
+            error = "scroll" if is_scroll else "click"
+            raise DeviceProtocolError(f"The native {error} has unexpected arguments.")
         name = arguments.get("name", "")
         automation_id = arguments.get("automation_id", "")
         if (
@@ -229,12 +245,22 @@ def _normalized_command(
             or len(automation_id) > 200
             or not (name.strip() or automation_id.strip())
         ):
-            raise DeviceProtocolError("The native click requires a control name or ID.")
-        return required_scope, {
+            raise DeviceProtocolError(
+                "The native control action requires a control name or ID."
+            )
+        safe_arguments = {
             "app_id": app_id,
             "name": name.strip(),
             "automation_id": automation_id.strip(),
         }
+        if is_scroll:
+            direction = arguments.get("direction")
+            if not isinstance(direction, str) or direction not in {"up", "down"}:
+                raise DeviceProtocolError(
+                    "The native scroll direction must be 'up' or 'down'."
+                )
+            safe_arguments["direction"] = direction
+        return required_scope, safe_arguments
     if action in {"windows.screen.type", "android.screen.type"}:
         if set(arguments) - {"app_id", "text", "name", "automation_id"}:
             raise DeviceProtocolError("The native typing command has unexpected arguments.")
@@ -432,6 +458,7 @@ def claim_device_commands(
             "windows.screen.inspect",
             "windows.screen.ocr",
             "windows.screen.click",
+            "windows.screen.scroll",
             "windows.screen.type",
             "windows.screen.key",
         )
@@ -440,6 +467,7 @@ def claim_device_commands(
             "android.app.launch",
             "android.screen.inspect",
             "android.screen.click",
+            "android.screen.scroll",
             "android.screen.type",
         )
     else:

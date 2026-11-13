@@ -44,6 +44,7 @@ class JaloraAccessibilityService : AccessibilityService() {
             when (operation) {
                 "android.screen.inspect" -> inspect(root, app.optString("name"))
                 "android.screen.click" -> click(root, arguments)
+                "android.screen.scroll" -> scroll(root, arguments)
                 "android.screen.type" -> type(root, arguments)
                 else -> ActionResult.failed("ANDROID_OPERATION_UNSUPPORTED", "This Android operation is not supported.")
             }
@@ -151,6 +152,46 @@ class JaloraAccessibilityService : AccessibilityService() {
             )
         }
         return ActionResult.succeeded("text_entered", verified = verified)
+    }
+
+    private fun scroll(root: AccessibilityNodeInfo, arguments: JSONObject): ActionResult {
+        val target = uniqueNode(root, arguments)
+            ?: return ActionResult.failed("ANDROID_CONTROL_NOT_UNIQUE", "The target must match exactly one accessible control.")
+        if (!target.isEnabled || !target.isVisibleToUser || !target.isScrollable) {
+            if (target !== root) target.recycle()
+            return ActionResult.failed("ANDROID_SCROLL_TARGET_UNSUPPORTED", "The selected control is disabled, hidden, or not scrollable.")
+        }
+        val direction = arguments.optString("direction")
+        val scrollAction = when (direction) {
+            "down" -> AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+            "up" -> AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            else -> {
+                if (target !== root) target.recycle()
+                return ActionResult.failed("ANDROID_SCROLL_DIRECTION_INVALID", "The scroll direction must be up or down.")
+            }
+        }
+        val before = signature(root)
+        val accepted = target.performAction(scrollAction)
+        if (target !== root) target.recycle()
+        if (!accepted) {
+            return ActionResult.failed("ANDROID_SCROLL_FAILED", "Android did not accept the accessibility scroll.")
+        }
+        Thread.sleep(250)
+        val afterRoot = rootInActiveWindow
+            ?: return ActionResult.uncertain("ANDROID_SCROLL_UNVERIFIED", "The scroll was accepted, but no active screen is available.")
+        val after = try {
+            if (afterRoot.packageName != root.packageName) {
+                return ActionResult.uncertain("ANDROID_FOREGROUND_APP_CHANGED", "The foreground app changed; the scroll result is uncertain.")
+            }
+            signature(afterRoot)
+        } finally {
+            afterRoot.recycle()
+        }
+        return if (before == after) {
+            ActionResult.uncertain("ANDROID_SCROLL_UNVERIFIED", "The scroll was accepted, but no accessibility state change was observed.")
+        } else {
+            ActionResult.succeeded("scrolled", verified = true)
+        }
     }
 
     private fun uniqueNode(root: AccessibilityNodeInfo, arguments: JSONObject): AccessibilityNodeInfo? {

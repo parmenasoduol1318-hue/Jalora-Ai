@@ -431,6 +431,40 @@ class WindowsExecutor:
                 "status": "clicked",
                 "verified": True,
             }
+        if operation == "windows.screen.scroll":
+            control = self._find_control(window, arguments)
+            direction = arguments.get("direction")
+            if not isinstance(direction, str) or direction not in {"up", "down"}:
+                raise WindowsActionError(
+                    "WINDOWS_SCROLL_DIRECTION_INVALID",
+                    "The scroll direction must be up or down.",
+                )
+            self._focus(session, window)
+            before = self._tree_signature(window)
+            try:
+                control.wheel_mouse_input(
+                    wheel_dist=1 if direction == "down" else -1
+                )
+                time.sleep(0.25)
+                after = self._tree_signature(window)
+            except _AUTOMATION_ERRORS as exc:
+                raise WindowsActionError(
+                    "WINDOWS_SCROLL_FAILED",
+                    f"Windows could not scroll the selected accessible control: {exc}",
+                    uncertain=True,
+                ) from exc
+            if before == after:
+                raise WindowsActionError(
+                    "WINDOWS_SCROLL_UNVERIFIED",
+                    "The scroll was attempted, but no accessibility change was observed.",
+                    uncertain=True,
+                )
+            return {
+                "app_name": entry["name"],
+                "status": "scrolled",
+                "direction": direction,
+                "verified": True,
+            }
         if operation == "windows.screen.type":
             control = self._find_control(window, arguments)
             if str(control.element_info.control_type) not in {"Edit", "ComboBox", "Document"}:

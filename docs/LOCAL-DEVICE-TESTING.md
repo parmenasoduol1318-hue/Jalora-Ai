@@ -101,6 +101,12 @@ scoped Accessibility Service operations, and a separate notification listener
 gated by `messages.read`. Notification-only Android pairings can connect without
 application-control scopes. Device receipts are linked back to task-step
 evidence. The Android project has not been built in this environment.
+Both native companions now accept one target-scoped up/down scroll action per
+approved command under their existing screen-control and screen-read grants.
+They report success only when the accessibility tree changes; otherwise the
+result is uncertain. Protocol tests cover scope and direction validation for
+both platforms; Windows executor tests cover accessibility-change verification
+and uncertain outcomes. Android source has not been built or device-tested.
 
 Windows automated tests use mocked API responses and do not send real external
 actions. The remaining Windows acceptance requires a signed distribution,
