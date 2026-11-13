@@ -11,6 +11,7 @@ This file is the master reference for future JALORA implementation. Work through
 
 Supporting documents remain useful for detailed requirements, but they do not override the master sequence:
 
+- [Capability gap audit and implementation plan (13 November 2026)](../reports/JALORA_CHATGPT_GAP_AUDIT_AND_IMPLEMENTATION_PLAN_2026-11-13.md) cross-references the user's supplied capability benchmark to current source, evidence boundaries, and this roadmap.
 - [Capability and market-readiness assessment](./jalora-capability-and-market-readiness.md) is the baseline capability inventory and product assessment.
 - [Capability and agentic architecture audit](./jalora-capability-audit.md) records detailed source findings, historical implementation evidence, and known gaps.
 - [Full-device automation plan](./full-device-automation-plan.md) is the detailed product/platform subplan for consent-based device automation; it is not evidence that native companions exist.

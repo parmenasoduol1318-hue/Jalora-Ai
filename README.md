@@ -16,7 +16,7 @@ the production build from `frontend-react/dist`; use Vite for local frontend wor
 | 3 | Migrations, observability, task history, approvals, and provider integrations | Partially implemented; provider behavior depends on configured services |
 | 4 | Multimodal input and media tools | Partial; engines depend on local packages or configured providers |
 | 5 | Communications, documents, browser, calendar, and device capabilities | Partial; individual tools and APIs exist, but capability coverage and shared execution vary |
-| 6 | Native remote Windows/Android companions and broad app automation | Not implemented; browser pairing is not remote desktop access |
+| 6 | Native Windows/Android companions and broad app automation | Companion source and scoped protocol are implemented; signed distribution and physical-device acceptance remain blocked. Pairing is not unrestricted device access. |
 
 Do not rely on older test counts or pass claims; run the commands below to
 establish current results.
