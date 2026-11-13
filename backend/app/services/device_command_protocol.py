@@ -750,7 +750,13 @@ def _normalize_receipt(
             raise DeviceProtocolError("The accessible controls are invalid.")
         for control in controls:
             if set(control) - {
-                "name", "control_type", "automation_id", "enabled", "visible"
+                "name",
+                "control_type",
+                "automation_id",
+                "enabled",
+                "visible",
+                "value",
+                "value_status",
             }:
                 raise DeviceProtocolError("An accessible control has unsupported fields.")
             if any(
@@ -768,6 +774,17 @@ def _normalize_receipt(
                 for key in ("enabled", "visible")
             ):
                 raise DeviceProtocolError("An accessible control flag is invalid.")
+            if "value" in control and (
+                not isinstance(control["value"], str)
+                or len(control["value"]) > 500
+            ):
+                raise DeviceProtocolError("An accessible control value is invalid.")
+            if "value_status" in control and control["value_status"] not in {
+                "available",
+                "redacted_password",
+                "unavailable",
+            }:
+                raise DeviceProtocolError("An accessible control value status is invalid.")
     expected = set(command.expected_evidence or [])
     for key in ("operation_result", "accessible_controls", "screen_ocr_text"):
         if key in evidence and key not in expected:

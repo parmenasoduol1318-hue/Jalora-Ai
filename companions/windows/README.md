@@ -29,7 +29,9 @@ a registered executable are not discovered.
 ## Supported operations
 
 - Launch an app explicitly added to the local allowlist (no shell or arguments).
-- Read up to 40 accessible controls from an app launched by this companion.
+- Read up to 40 accessible controls from an app launched by this companion,
+  including bounded accessible edit-field values when exposed; password values
+  are always redacted.
 - Click one uniquely named or identified enabled accessible control.
 - Type up to 2,000 characters into one uniquely identified accessible edit
   field after checking it is not a password field; report success only when

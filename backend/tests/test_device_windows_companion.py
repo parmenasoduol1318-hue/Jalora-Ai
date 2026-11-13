@@ -180,6 +180,8 @@ def test_windows_manifest_and_remote_action_keep_both_approval_gates(
                     "automation_id": "text",
                     "enabled": True,
                     "visible": True,
+                    "value": "Authorized visible text",
+                    "value_status": "available",
                 }],
             },
         },
@@ -191,6 +193,9 @@ def test_windows_manifest_and_remote_action_keep_both_approval_gates(
     assert history.status_code == 200, history.text
     saved = next(row for row in history.json() if row["id"] == command["command_id"])
     assert saved["receipt"]["evidence"]["accessible_controls"][0]["name"] == "Editor"
+    assert saved["receipt"]["evidence"]["accessible_controls"][0]["value"] == (
+        "Authorized visible text"
+    )
 
     with bind_tool_execution(
         ToolContext(user_id=context.user_id, idempotency_key="windows-ocr-step")

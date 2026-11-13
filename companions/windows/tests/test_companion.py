@@ -293,7 +293,11 @@ def assert_single_exe(command, expected_path, options):
 def test_windows_executor_launches_only_allowlisted_exe_and_inspects_uia(
     monkeypatch, tmp_path
 ):
-    executor, applications, _window = _fake_windows(monkeypatch, tmp_path)
+    executor, applications, window = _fake_windows(monkeypatch, tmp_path)
+    window.controls[0].value = "Visible draft content"
+    window.controls[1].element_info.control_type = "Edit"
+    window.controls[1].password = True
+    window.controls[1].value = "must never be exposed"
 
     launch = executor.execute(
         "windows.app.launch",
@@ -311,6 +315,9 @@ def test_windows_executor_launches_only_allowlisted_exe_and_inspects_uia(
     assert inspect[0] == "succeeded"
     assert inspect[1]["operation_result"]["control_count"] == 2
     assert inspect[1]["accessible_controls"][0]["automation_id"] == "text"
+    assert inspect[1]["accessible_controls"][0]["value"] == "Visible draft content"
+    assert inspect[1]["accessible_controls"][1]["value_status"] == "redacted_password"
+    assert "must never be exposed" not in str(inspect[1])
 
 
 def test_windows_ocr_is_foreground_scoped_and_returns_text_only(

@@ -344,13 +344,31 @@ class WindowsExecutor:
                 descendants = window.descendants()[:300]
                 for control in descendants[:40]:
                     info = control.element_info
-                    controls.append({
+                    control_data = {
                         "name": str(info.name or "")[:100],
                         "control_type": str(info.control_type or "")[:80],
                         "automation_id": str(info.automation_id or "")[:100],
                         "enabled": bool(info.enabled),
                         "visible": bool(info.visible),
-                    })
+                    }
+                    if control_data["control_type"] in {
+                        "Edit",
+                        "ComboBox",
+                        "Document",
+                    }:
+                        try:
+                            if control.is_password():
+                                control_data["value_status"] = "redacted_password"
+                            else:
+                                value = control.get_value()
+                                if isinstance(value, str):
+                                    control_data["value"] = value[:500]
+                                    control_data["value_status"] = "available"
+                                else:
+                                    control_data["value_status"] = "unavailable"
+                        except _AUTOMATION_ERRORS:
+                            control_data["value_status"] = "unavailable"
+                    controls.append(control_data)
             except _AUTOMATION_ERRORS as exc:
                 raise WindowsActionError(
                     "WINDOWS_ACCESSIBILITY_FAILED",
