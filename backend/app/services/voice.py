@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -305,7 +306,14 @@ async def place_call(
     else:
         current = _make_script(purpose, questions)
 
-    provider = provider_override or _provider()
+    provider = (provider_override or _provider()).strip().lower()
+    if provider not in ("auto", "mock", "twilio", "telnyx"):
+        raise comms_service.CommsError(
+            "PROVIDER_NOT_CONFIGURED",
+            f"Unknown call provider '{provider}'. Choose auto, mock, twilio, or telnyx.",
+        )
+    if provider == "auto":
+        provider = _provider()
 
     stored_purpose = purpose or "a phone call"
     if mode == "live" and questions:
@@ -402,27 +410,69 @@ def list_calls(user_id: str, *, task_id: str | None = None,
 async def hangup(user_id: str, call_id: str) -> dict[str, Any]:
     with SessionLocal() as db:
         call = get_call(db, call_id, user_id)
-        if call.status in ("completed", "failed", "cancelled", "no_answer"):
+        if call.status in (
+            "completed", "failed", "cancelled", "no_answer",
+            "cancellation_requested", "cancellation_unknown",
+        ):
             return call_view(call)
-        if call.provider == "telnyx" and call.sid:
-            settings = get_settings()
-            try:
-                if settings.telnyx_account_sid:
-                    await comms_service._telnyx_request(
-                        f"texml/Accounts/{settings.telnyx_account_sid}/Calls/{call.sid}",
-                        json={"Status": "canceled"},
+        try:
+            if call.provider == "telnyx" and call.sid:
+                settings = get_settings()
+                if not settings.telnyx_account_sid:
+                    raise comms_service.CommsError(
+                        "PROVIDER_NOT_CONFIGURED",
+                        "The Telnyx account is unavailable to confirm call cancellation.",
                     )
-            except comms_service.CommsError:
-                pass  # already ended upstream — proceed to mark locally
-        elif call.provider == "twilio" and call.sid:
-            try:
-                await comms_service._twilio_request(f"Calls/{call.sid}", {
-                    "Status": "canceled",
-                })
-            except comms_service.CommsError:
-                pass  # already ended upstream — proceed to mark locally
-        summary = _summarize(call)
-        finalize(db, call, "cancelled", summary=summary)
+                response = await comms_service._telnyx_request(
+                    f"texml/Accounts/{settings.telnyx_account_sid}/Calls/{call.sid}",
+                    json={"Status": "canceled"},
+                )
+                response_data = response.get("data")
+                provider_status = str(
+                    response.get("status")
+                    or (
+                        response_data.get("status")
+                        if isinstance(response_data, dict)
+                        else ""
+                    )
+                    or ""
+                ).casefold()
+            elif call.provider == "twilio" and call.sid:
+                response = await comms_service._twilio_request(
+                    f"Calls/{call.sid}", {"Status": "canceled"},
+                )
+                provider_status = str(response.get("status") or "").casefold()
+            else:
+                provider_status = "canceled"
+        except comms_service.CommsError as exc:
+            call.status = "cancellation_unknown"
+            call.updated_at = utcnow()
+            db.commit()
+            return {
+                **call_view(call),
+                "cancellation_error": exc.code,
+            }
+        except (httpx.HTTPError, ValueError):
+            call.status = "cancellation_unknown"
+            call.updated_at = utcnow()
+            db.commit()
+            return {
+                **call_view(call),
+                "cancellation_error": "PROVIDER_RESPONSE_UNKNOWN",
+            }
+
+        if provider_status in {"canceled", "cancelled"}:
+            summary = _summarize(call)
+            return call_view(finalize(db, call, "cancelled", summary=summary))
+
+        call.status = "cancellation_requested"
+        call.updated_at = utcnow()
+        db.commit()
+        emit("call", {
+            "call_id": call.id, "status": call.status,
+            "to_phone": call.to_phone, "provider": call.provider,
+            "task_id": call.task_id, "run_id": call.run_id,
+        })
         return call_view(call)
 
 

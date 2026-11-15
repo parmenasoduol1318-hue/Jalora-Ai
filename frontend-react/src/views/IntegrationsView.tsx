@@ -293,7 +293,12 @@ export function IntegrationsView({
   };
 
   const providerLabel = (name: string) => {
-    const key = `provider${name.charAt(0).toUpperCase()}${name.slice(1)}`;
+    const key = ({
+      google_docs: "providerGoogleDocs",
+      google_sheets: "providerGoogleSheets",
+      google_slides: "providerGoogleSlides",
+    } as Record<string, string>)[name]
+      ?? `provider${name.charAt(0).toUpperCase()}${name.slice(1)}`;
     const val = t(key);
     // If the translator returns the raw key (no translation), use a readable fallback
     return val === key ? name.charAt(0).toUpperCase() + name.slice(1) : val;

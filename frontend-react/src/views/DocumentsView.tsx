@@ -2,6 +2,24 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import type { DocItem } from "../lib/types";
 
+type TabularAnalysis = {
+  format: string;
+  privacy: string;
+  sheets: Array<{
+    name: string;
+    rows: number;
+    columns: Array<{
+      name: string;
+      numeric_count: number;
+      missing_count: number;
+      non_numeric_count: number;
+      min: number | null;
+      max: number | null;
+      mean: number | null;
+    }>;
+  }>;
+};
+
 export function DocumentsView({
   t, onToast,
 }: {
@@ -17,6 +35,8 @@ export function DocumentsView({
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<DocItem[] | null>(null);
+  const [analysis, setAnalysis] = useState<{ id: string; data: TabularAnalysis } | null>(null);
+  const [analyzing, setAnalyzing] = useState<string | null>(null);
 
   const searchDocs = async (q: string) => {
     setQuery(q);
@@ -86,6 +106,22 @@ export function DocumentsView({
       onToast((err as Error).message, true);
     } finally {
       setAnswering(false);
+    }
+  };
+
+  const analyze = async (doc: DocItem) => {
+    if (analyzing) return;
+    setAnalyzing(doc.id);
+    try {
+      const data = await api<TabularAnalysis>(
+        `/api/documents/${doc.id}/analyze`,
+        { method: "POST" },
+      );
+      setAnalysis({ id: doc.id, data });
+    } catch (err) {
+      onToast((err as Error).message, true);
+    } finally {
+      setAnalyzing(null);
     }
   };
 
@@ -181,6 +217,15 @@ export function DocumentsView({
                   )}
                 </div>
                 <div className="row gap">
+                  {/\.(csv|xlsx)$/i.test(d.filename) && (
+                    <button
+                      className="btn small"
+                      disabled={d.status !== "ready" || analyzing !== null}
+                      onClick={() => analyze(d)}
+                    >
+                      {analyzing === d.id ? t("searching") : t("analyzeData")}
+                    </button>
+                  )}
                   <button
                     className="btn small"
                     disabled={d.status !== "ready"}
@@ -211,6 +256,41 @@ export function DocumentsView({
                   </button>
                 </div>
               </div>
+              {analysis?.id === d.id && (
+                <div className="qa-panel">
+                  <div className="qa-title">{t("dataAnalysisTitle")} · {analysis.data.format.toUpperCase()}</div>
+                  <p className="meta">{t("analysisPrivacy")}</p>
+                  {analysis.data.sheets.map((sheet) => (
+                    <div key={sheet.name} style={{ overflowX: "auto", marginTop: 10 }}>
+                      <strong>{sheet.name} · {sheet.rows} {t("rowsUnit")}</strong>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>{t("columnLabel")}</th>
+                            <th>{t("numericCount")}</th>
+                            <th>{t("missingCount")}</th>
+                            <th>{t("minimum")}</th>
+                            <th>{t("maximum")}</th>
+                            <th>{t("mean")}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sheet.columns.map((column) => (
+                            <tr key={column.name}>
+                              <td>{column.name}</td>
+                              <td>{column.numeric_count}</td>
+                              <td>{column.missing_count + column.non_numeric_count}</td>
+                              <td>{column.min ?? "—"}</td>
+                              <td>{column.max ?? "—"}</td>
+                              <td>{column.mean ?? "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ))}
+                </div>
+              )}
               {asking === d.id && (
                 <div className="qa-panel">
                   <div className="qa-title">{t("askAboutLabel")} “{d.filename}”</div>

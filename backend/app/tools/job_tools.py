@@ -19,6 +19,7 @@ Tools:
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
 from app.context import get_tool_context
@@ -948,6 +949,9 @@ async def send_application(
         body = draft.body or f"I am applying for the position of {job.title} at {job.company}. Please find my CV attached."
         if draft.cv_content:
             body = f"{body}\n\n---CV--\n{draft.cv_content}"
+        job_id = job.id
+        job_title = job.title
+        job_company = job.company
 
     # Use the email tool to send
     from app.tools import email_tools
@@ -961,36 +965,47 @@ async def send_application(
     if result.success:
         # Mark draft as sent and create application record
         with SessionLocal() as db:
-            draft.status = "sent"
-            db.commit()
+            persisted_draft = db.query(ApplicationDraft).filter(
+                ApplicationDraft.id == draft_id,
+                ApplicationDraft.user_id == user_id,
+            ).first()
+            persisted_job = db.query(JobPosting).filter(
+                JobPosting.id == job_id,
+                JobPosting.user_id == user_id,
+            ).first()
+            if persisted_draft is not None:
+                persisted_draft.status = "sent"
 
-            # Create application record
-            app = JobApplication(
-                user_id=user_id,
-                job_posting_id=job.id,
-                company=job.company,
-                position=job.title,
-                resume_version="generated",
-                cover_letter=draft.body,
-                email_sent_to=recipient_email,
-                email_message_id=result.data.get("message_id", ""),
-            )
-            db.add(app)
+            if persisted_job is not None:
+                app = JobApplication(
+                    user_id=user_id,
+                    job_posting_id=job_id,
+                    company=job_company,
+                    position=job_title,
+                    resume_version="generated",
+                    cover_letter=body,
+                    email_sent_to=recipient_email,
+                    email_message_id=result.data.get("message_id", ""),
+                )
+                db.add(app)
+                persisted_job.applied = True
+                persisted_job.applied_at = persisted_job.applied_at or (
+                    datetime.now(timezone.utc)
+                )
             db.commit()
-
-            # Mark job as applied
-            job.applied = True
-            job.applied_at = job.applied_at or __import__('datetime').datetime.now(__import__('datetime').timezone.utc)
-            db.commit()
+            application_id = app.id if persisted_job is not None else None
 
         return ToolResult.ok(
             f"Application sent to {recipient_email}.",
             {
-                "application_id": app.id,
-                "job_id": job.id,
-                "company": job.company,
-                "position": job.title,
+                "application_id": application_id,
+                "job_id": job_id,
+                "company": job_company,
+                "position": job_title,
                 "email_sent_to": recipient_email,
+                "tracking_status": "recorded" if (
+                    persisted_draft is not None and persisted_job is not None
+                ) else "partially_recorded",
             }
         )
 

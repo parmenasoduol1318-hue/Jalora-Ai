@@ -155,7 +155,8 @@ export function DashboardView({ t, ramRoute }: Props) {
               <div className="dc-content">
                 {providerCards
                   .filter((c) => [
-                    "gmail", "calendar", "drive", "telnyx", "twilio", "search", "ollama",
+                    "gmail", "calendar", "drive", "google_docs", "google_sheets",
+                    "google_slides", "telnyx", "twilio", "search", "ollama",
                   ].includes(c.name))
                   .map((c) => {
                     const status = c.connected ? "connected" : "not configured";

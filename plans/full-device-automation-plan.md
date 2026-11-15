@@ -1404,6 +1404,15 @@ real-device acceptance. “Tests exist” means relevant test files are present;
 it does not mean they passed on the moved machine. Re-run Phase 0 before
 upgrading any item to **verified**.
 
+This table is a historical baseline, not the current implementation ledger.
+The later [master roadmap Stage 12 status](./JALORA-MASTER-IMPLEMENTATION-ROADMAP.md)
+records the Windows and Android companion source clients and scoped protocol
+work added after this snapshot; native signing/builds and physical-device
+acceptance remain blocked. The master roadmap also records the 2026-11-16
+authenticated isolated-localhost chat and project-context acceptance. Do not
+upgrade this historical matrix without new evidence for the specific device
+capability.
+
 - **Implemented, test evidence present:** implementation and related tests are
   in the tree; current pass status remains unverified here.
 - **Implemented and verified:** requires a passing run or observed end-to-end

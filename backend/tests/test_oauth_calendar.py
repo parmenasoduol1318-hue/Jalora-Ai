@@ -74,6 +74,9 @@ def test_registry_marks_oauth_providers(client, auth_headers):
     # "Add credentials to connect" rather than a working Connect.
     assert cards["calendar"]["configured"] is False
     assert cards["slack"]["configured"] is False
+    assert {
+        "google_docs", "google_sheets", "google_slides",
+    } <= cards.keys()
 
 
 def test_google_oauth_providers_share_gmail_client_configuration(
@@ -89,6 +92,34 @@ def test_google_oauth_providers_share_gmail_client_configuration(
     assert cards["gmail"]["configured"] is True
     assert cards["calendar"]["configured"] is True
     assert cards["drive"]["configured"] is True
+    assert cards["google_docs"]["configured"] is True
+    assert cards["google_sheets"]["configured"] is True
+    assert cards["google_slides"]["configured"] is True
+
+
+def test_google_connector_manifests_are_scoped_and_secret_free(client, auth_headers):
+    response = client.get(
+        "/api/integrations/providers", headers=auth_headers(),
+    )
+    assert response.status_code == 200, response.text
+    cards = {card["name"]: card for card in response.json()["providers"]}
+
+    expected_scopes = {
+        "drive": ["https://www.googleapis.com/auth/drive.readonly"],
+        "google_docs": ["https://www.googleapis.com/auth/documents"],
+        "google_sheets": ["https://www.googleapis.com/auth/spreadsheets"],
+        "google_slides": ["https://www.googleapis.com/auth/presentations"],
+    }
+    for provider, scopes in expected_scopes.items():
+        manifest = cards[provider]["connector_manifest"]
+        assert manifest["authentication"] == "user-granted OAuth 2.0"
+        assert manifest["scopes"] == scopes
+        assert manifest["capabilities"]
+        assert manifest["provenance"]
+        assert manifest["verification"]
+        assert not {
+            "access_token", "refresh_token", "client_secret",
+        } & manifest.keys()
 
 
 def test_health_reports_google_oauth_readiness_and_callback(
@@ -113,6 +144,9 @@ def test_health_reports_google_oauth_readiness_and_callback(
     [
         ("calendar", "calendar.readonly"),
         ("drive", "drive.readonly"),
+        ("google_docs", "documents"),
+        ("google_sheets", "spreadsheets"),
+        ("google_slides", "presentations"),
     ],
 )
 def test_google_oauth_uses_render_callback_and_shared_credentials(
@@ -161,7 +195,10 @@ def test_oauth_start_returns_authorization_url(client, auth_headers, oauth_setti
         assert "oauth_state_hash" not in res.text
 
 
-@pytest.mark.parametrize("provider", ["calendar", "drive"])
+@pytest.mark.parametrize(
+    "provider",
+    ["calendar", "drive", "google_docs", "google_sheets", "google_slides"],
+)
 def test_oauth_callback_stores_encrypted_tokens(
         client, auth_headers, oauth_settings, monkeypatch, provider):
     oauth_settings(JALORA_GMAIL_CLIENT_ID="cid_test",

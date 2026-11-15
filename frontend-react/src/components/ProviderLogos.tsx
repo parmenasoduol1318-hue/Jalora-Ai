@@ -102,6 +102,23 @@ const logos: Record<string, IconFn> = {
       <path d="M13.02 15.46c1.78-.28 3.17-1.66 3.56-3.35h-7.16c-.54 0-1.07-.1-1.55-.28.01.03.03.05.03.08 0 2.78 1.85 5.11 4.37 5.9Z" />
     </svg>
   ),
+  google_docs: (p) => (
+    <svg viewBox="0 0 24 24" fill="currentColor" {...p}>
+      <path d="M6 2h8l5 5v15H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm7 1v5h5" />
+      <path d="M8 12h8v1.5H8zm0 3h8v1.5H8zm0 3h6v1.5H8z" />
+    </svg>
+  ),
+  google_sheets: (p) => (
+    <svg viewBox="0 0 24 24" fill="currentColor" {...p}>
+      <path d="M6 2h8l5 5v15H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm7 1v5h5M7 11h10v8H7zm1.5 1.5v5h7v-5z" />
+      <path d="M11 12h1.5v5H11zm-4 2h10v1.5H7z" />
+    </svg>
+  ),
+  google_slides: (p) => (
+    <svg viewBox="0 0 24 24" fill="currentColor" {...p}>
+      <path d="M6 2h8l5 5v15H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm7 1v5h5M7 11h10v7H7zm1.5 1.5v4h7v-4z" />
+    </svg>
+  ),
   groq: (p) => (
     <svg viewBox="0 0 24 24" fill="currentColor" {...p}>
       <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2Zm5 10h-2.05c-.64 0-1.05-.56-1-1.2V8a1 1 0 1 0-2 0v2.75c0 .41-.12.8-.35 1.12l-.54.8a3.5 3.5 0 0 0 4.7 1.38l2.12-1.42a.75.75 0 0 0-.92-1.08l-.3.27Z" />

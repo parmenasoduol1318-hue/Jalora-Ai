@@ -104,6 +104,15 @@ OAUTH_SERVICES: dict[str, tuple[str, tuple[str, ...]]] = {
         "https://www.googleapis.com/auth/calendar.events",
     )),
     "drive": ("google", ("https://www.googleapis.com/auth/drive.readonly",)),
+    "google_docs": (
+        "google", ("https://www.googleapis.com/auth/documents",)
+    ),
+    "google_sheets": (
+        "google", ("https://www.googleapis.com/auth/spreadsheets",)
+    ),
+    "google_slides": (
+        "google", ("https://www.googleapis.com/auth/presentations",)
+    ),
     "slack": ("slack", ("channels:read", "chat:write", "users:read")),
     "github": ("github", ("read:user", "repo")),
     "notion": ("notion", ()),
@@ -114,6 +123,8 @@ OAUTH_SERVICES: dict[str, tuple[str, tuple[str, ...]]] = {
 
 _DISPLAY_NAMES = {
     "gmail": "Gmail", "calendar": "Google Calendar", "drive": "Google Drive",
+    "google_docs": "Google Docs", "google_sheets": "Google Sheets",
+    "google_slides": "Google Slides",
     "slack": "Slack", "github": "GitHub", "notion": "Notion",
     "spotify": "Spotify", "dropbox": "Dropbox", "stripe": "Stripe",
 }
@@ -132,6 +143,9 @@ def _credentials(provider: str, settings: Settings) -> tuple[str, str]:
         "gmail": (settings.gmail_client_id, settings.gmail_client_secret),
         "calendar": (settings.gmail_client_id, settings.gmail_client_secret),
         "drive": (settings.gmail_client_id, settings.gmail_client_secret),
+        "google_docs": (settings.gmail_client_id, settings.gmail_client_secret),
+        "google_sheets": (settings.gmail_client_id, settings.gmail_client_secret),
+        "google_slides": (settings.gmail_client_id, settings.gmail_client_secret),
         "slack": (settings.slack_client_id, settings.slack_client_secret),
         "github": (settings.github_client_id, settings.github_client_secret),
         "notion": (settings.notion_client_id, settings.notion_client_secret),
@@ -141,6 +155,12 @@ def _credentials(provider: str, settings: Settings) -> tuple[str, str]:
     }
     cid, secret = table.get(provider, (None, None))
     return (cid or "", secret or "")
+
+
+def _credential_env_provider(provider: str) -> str:
+    if OAUTH_SERVICES.get(provider, (None, ()))[0] == "google":
+        return "GMAIL"
+    return provider.upper()
 
 
 def is_configured(provider: str, settings: Settings | None = None) -> bool:
@@ -167,8 +187,9 @@ def authorization_url(provider: str, state: str,
         raise OAuthError(
             "PROVIDER_NOT_CONFIGURED",
             f"{display_name(provider)} OAuth is not configured. Set "
-            f"JALORA_{provider.upper()}_CLIENT_ID and "
-            f"JALORA_{provider.upper()}_CLIENT_SECRET in the environment.",
+            f"JALORA_{_credential_env_provider(provider)}_CLIENT_ID and "
+            f"JALORA_{_credential_env_provider(provider)}_CLIENT_SECRET "
+            "in the environment.",
         )
     service, scopes = OAUTH_SERVICES[provider]
     endpoints = _SERVICES[service]
@@ -193,8 +214,8 @@ async def _token_request(provider: str, data: dict, *,
         raise OAuthError(
             "PROVIDER_NOT_CONFIGURED",
             f"{display_name(provider)} OAuth is not configured (set "
-            f"JALORA_{provider.upper()}_CLIENT_ID and "
-            f"JALORA_{provider.upper()}_CLIENT_SECRET).",
+            f"JALORA_{_credential_env_provider(provider)}_CLIENT_ID and "
+            f"JALORA_{_credential_env_provider(provider)}_CLIENT_SECRET).",
         )
     service, _ = OAUTH_SERVICES[provider]
     endpoints = _SERVICES[service]

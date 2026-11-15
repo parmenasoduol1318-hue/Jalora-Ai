@@ -1,10 +1,10 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { api, clearToken, getToken, ApiError, transcribeAudio, uploadDocument, uploadEmailAttachment, uploadMedia, mediaUrl } from "../lib/api";
+import { api, clearToken, getToken, ApiError, listIdeaProjects, transcribeAudio, uploadDocument, uploadEmailAttachment, uploadMedia, mediaUrl } from "../lib/api";
 import { errorMessage, friendlyError } from "../lib/errors";
 import { resolveTimeZone } from "../lib/timezone";
 import { toolDetailText } from "../lib/toolDetail";
 import type {
-  ApprovalInfo, AppSettings, Artifact, BrowserStatus, ChatMessage, ChatResponse,
+  ApprovalInfo, AppSettings, Artifact, BrowserStatus, ChatMessage, ChatResponse, IdeaProject,
   CallResult, CitationRef, DiagramRef, OllamaRouteEvent, PlanStep, SourceRef, User, VoiceSettings,
 } from "../lib/types";
 import {
@@ -315,6 +315,8 @@ export function ChatView({
   const [showWorking, setShowWorking] = useState<boolean>(
     () => localStorage.getItem("jalora_show_working") !== "false",
   );
+  const [ideaProjects, setIdeaProjects] = useState<IdeaProject[]>([]);
+  const [ideaProjectId, setIdeaProjectId] = useState("");
   const [approval, setApproval] = useState<ApprovalInfo | null>(null);
   const [approvalDraft, setApprovalDraft] = useState<Record<string, unknown> | null>(null);
   const [approvalDraftSaving, setApprovalDraftSaving] = useState(false);
@@ -552,6 +554,27 @@ export function ChatView({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    listIdeaProjects().then((items) => {
+      if (!cancelled) setIdeaProjects(items);
+    }).catch((error: unknown) => {
+      if (!cancelled) onToast(errorMessage(error, t), true);
+    });
+    return () => { cancelled = true; };
+  }, [onToast, t]);
+
+  useEffect(() => {
+    if (!active?.id) {
+      setIdeaProjectId("");
+      return;
+    }
+    const linked = ideaProjects.find((project) =>
+      project.conversation_ids.includes(active.id),
+    );
+    setIdeaProjectId(linked?.id || "");
+  }, [active?.id, ideaProjects]);
+
+  useEffect(() => {
     voiceRef.current = voice;
   });
 
@@ -700,7 +723,7 @@ export function ChatView({
       setMessages((prev) => prev.map((m, i) => (i === idx ? { ...m, ...changes } : m)));
     };
 
-    const directEmail = media_ids.length || document_ids.length
+    const directEmail = ideaProjectId || media_ids.length || document_ids.length
       ? false
       : isDirectEmailRequest(finalText);
     if (directEmail) {
@@ -749,6 +772,7 @@ export function ChatView({
         body: JSON.stringify({
           message: finalText,
           conversation_id: active?.id ?? convIdRef.current ?? null,
+          idea_project_id: ideaProjectId || null,
           stream: true,
           media_ids,
           document_ids,
@@ -792,6 +816,18 @@ export function ChatView({
             const conv = event.conversation_id as string | undefined;
             if (conv && !active?.id) {
               convIdRef.current = conv;
+              if (ideaProjectId) {
+                setIdeaProjects((current) => current.map((project) =>
+                  project.id === ideaProjectId
+                    ? {
+                      ...project,
+                      conversation_ids: project.conversation_ids.includes(conv)
+                        ? project.conversation_ids
+                        : [...project.conversation_ids, conv],
+                    }
+                    : project,
+                ));
+              }
               /* Notify parent so the sidebar shows the new conversation. App.tsx
                  uses a separate chatKey for the ChatView key, so this state
                  update does NOT cause a remount mid-stream. */
@@ -1724,6 +1760,21 @@ export function ChatView({
       </div>
 
       <div className="composer-wrap">
+        {ideaProjects.length > 0 && (
+          <label className="idea-context-select">
+            <span>{t("ideaChatContext")}</span>
+            <select
+              value={ideaProjectId}
+              disabled={busy}
+              onChange={(event) => setIdeaProjectId(event.target.value)}
+            >
+              <option value="">{t("ideaNoChatProject")}</option>
+              {ideaProjects.map((project) => (
+                <option key={project.id} value={project.id}>{project.title}</option>
+              ))}
+            </select>
+          </label>
+        )}
         {browserStatus?.session_open && (
           <div className="browser-strip">
             <span className="browser-dot" />

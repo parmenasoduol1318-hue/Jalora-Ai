@@ -22,6 +22,11 @@ from app.services.extractors import (
     extract_xlsx,
     sniff_mime,
 )
+from app.services.tabular_analysis import (
+    MAX_INPUT_BYTES as MAX_TABULAR_INPUT_BYTES,
+    TabularAnalysisError,
+    analyze_tabular_data,
+)
 
 logger = logging.getLogger("jalora.documents")
 
@@ -39,6 +44,7 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 MAX_BYTES_BY_EXTENSION: dict[str, int] = {
     ".pdf": 60 * 1024 * 1024,
 }
+MAX_EXTRACTED_TEXT_CHARS = 4 * 1024 * 1024
 
 # Honest, specific messages for unsupported formats.
 EXTENSION_ADVICE = {
@@ -204,6 +210,11 @@ async def _process_stored_document(
         doc.progress = 40
         db.commit()
         text, pages = extract_text(path, ext)
+        if len(text) > MAX_EXTRACTED_TEXT_CHARS:
+            raise BadRequestError(
+                "Extracted document text exceeds the 4 MiB processing limit.",
+                "EXTRACTED_TEXT_TOO_LARGE",
+            )
         doc.progress = 75
         db.commit()
         pieces = chunk_text(text)
@@ -222,6 +233,7 @@ async def _process_stored_document(
         db.commit()
         db.refresh(doc)
         return doc
+
     except Exception as exc:  # noqa: BLE001 - mark failure honestly on the document
         db.rollback()
         doc = db.get(Document, doc.id)
@@ -231,6 +243,42 @@ async def _process_stored_document(
         db.refresh(doc)
         logger.warning("document %s failed: %s", doc.filename, exc)
         return doc
+
+
+def analyze_tabular_document(
+    db: Session, *, user_id: str, document_id: str,
+) -> dict:
+    """Analyze an owned, ready CSV/XLSX upload without executing cell content."""
+    doc = db.get(Document, document_id)
+    if doc is None or doc.user_id != user_id:
+        raise NotFoundError("Document not found.")
+    if doc.status != "ready":
+        raise BadRequestError(
+            "The document must finish processing before it can be analyzed.",
+            "DOCUMENT_NOT_READY",
+        )
+    ext = validate_upload(doc.filename)
+    if ext not in {".csv", ".xlsx"}:
+        raise BadRequestError(
+            "Deterministic data analysis currently supports CSV and XLSX only.",
+            "UNSUPPORTED_ANALYSIS_FORMAT",
+        )
+    path = get_settings().upload_dir / f"{doc.id}{ext}"
+    if not path.is_file():
+        raise NotFoundError("The stored document is unavailable.")
+    with path.open("rb") as source:
+        content = source.read(MAX_TABULAR_INPUT_BYTES + 1)
+    try:
+        result = analyze_tabular_data(content, doc.filename)
+    except TabularAnalysisError as exc:
+        raise BadRequestError(exc.message, exc.code) from exc
+    return {
+        "document_id": doc.id,
+        "filename": doc.filename,
+        "provider": "local_deterministic",
+        "privacy": "cell values are not returned; no model, code execution, or network access is used",
+        **result,
+    }
 
 
 async def search_files(*, user_id: str, query: str, k: int = 5) -> list[dict]:

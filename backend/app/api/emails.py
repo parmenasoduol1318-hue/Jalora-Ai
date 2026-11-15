@@ -1,8 +1,8 @@
 """Email UX API: search/read/threads/compose/send + auto-reply rules (§34-38).
 
-`send` always creates a standalone Approval row (run_id="") and requires an
-explicit review through `/api/emails/send/{id}/approve|reject`, regardless of
-autonomy settings.
+`send` creates a task-scoped approval through the shared executor and requires
+an explicit review, regardless of autonomy settings. Older standalone approval
+rows remain supported for compatibility.
 
 Additional endpoint `/api/emails/task` creates a reviewable email draft from
 natural-language requests without relying on the general chat model.
@@ -479,7 +479,7 @@ def _claim_pending_send(db: Session, approval_id: str, user: User) -> Approval:
 def edit_send(approval_id: str, body: EmailCompose,
               user: User = Depends(get_current_user),
               db: Session = Depends(get_db)):
-    """Update a standalone email approval with the exact reviewed draft."""
+    """Update a pending email approval with the exact reviewed draft."""
     row = _owned_pending_send(db, approval_id, user)
     if row.run_id and row.task_id:
         from app.services.chat_service import update_pending_approval

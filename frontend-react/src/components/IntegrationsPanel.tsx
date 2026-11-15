@@ -11,7 +11,10 @@ interface Props {
 /* Right-sidebar integrations card. Reads the SAME source as the Integrations
    page (the /api/integrations/providers registry) so the two can never show
    conflicting status for calendar/search/telnyx/twilio/etc. */
-const SHOW = ["gmail", "calendar", "drive", "telnyx", "twilio", "search", "ollama"];
+const SHOW = [
+  "gmail", "calendar", "drive", "google_docs", "google_sheets", "google_slides",
+  "telnyx", "twilio", "search", "ollama",
+];
 
 export function IntegrationsPanel({ t, className }: Props) {
   const [cards, setCards] = useState<Record<string, ProviderCard>>({});

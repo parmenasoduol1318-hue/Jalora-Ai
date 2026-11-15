@@ -16,6 +16,7 @@ from app.api import (
     files,
     integrations,
     idea_projects,
+    jobs,
     media,
     memory,
     notifications,
@@ -49,6 +50,7 @@ api_router.include_router(integrations.router)
 api_router.include_router(devices.router)
 api_router.include_router(emails.router)
 api_router.include_router(calls.router)
+api_router.include_router(jobs.router)
 api_router.include_router(schedules.router)
 api_router.include_router(notifications.router)
 api_router.include_router(people.router)

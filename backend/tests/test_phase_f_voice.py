@@ -110,7 +110,7 @@ def test_make_call_invalid_phone_is_structured_failure(client, auth_headers):
 # --------------------------------------------------------------------------- #
 # REST surface (auth)                                                         #
 # --------------------------------------------------------------------------- #
-def test_rest_create_and_list_call(client, auth_headers):
+def test_rest_create_and_list_call(client, auth_headers, fake_router):
     headers = auth_headers()
     not_confirmed = client.post("/api/calls", headers=headers, json={
         "phone_number": "+254733000123",
@@ -125,12 +125,24 @@ def test_rest_create_and_list_call(client, auth_headers):
         "confirm": True,
     })
     assert resp.status_code == 201, resp.text
-    data = resp.json()
+    pending = resp.json()
+    assert pending["status"] == "paused_approval"
+    assert pending["approval"]["task_id"] == pending["task_id"]
+    assert client.get("/api/calls", headers=headers).json() == []
+
+    approved = client.post(
+        f"/api/approvals/{pending['approval']['id']}/approve",
+        headers=headers,
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "completed"
+    listing = client.get("/api/calls", headers=headers).json()
+    assert len(listing) == 1
+    data = listing[0]
     assert data["status"] == "completed"
     assert data["mock"] is True
     assert "Person's response:" in (data["summary"] or "")
 
-    listing = client.get("/api/calls", headers=headers).json()
     assert [c["id"] for c in listing] == [data["id"]]
 
     detail = client.get(f"/api/calls/{data['id']}", headers=headers).json()
@@ -144,18 +156,65 @@ def test_rest_create_and_list_call(client, auth_headers):
     assert got.status_code == 404
 
 
-def test_rest_hangup_and_unknown_call(client, auth_headers):
+def test_rest_hangup_and_unknown_call(client, auth_headers, fake_router):
     headers = auth_headers()
     resp = client.post("/api/calls", headers=headers, json={
         "phone_number": "+254733000999", "purpose": "weather alert",
         "confirm": True,
     })
-    call_id = resp.json()["id"]
+    pending = resp.json()
+    assert pending["status"] == "paused_approval"
+    approved = client.post(
+        f"/api/approvals/{pending['approval']['id']}/approve",
+        headers=headers,
+    )
+    assert approved.status_code == 200, approved.text
+    call_id = client.get("/api/calls", headers=headers).json()[0]["id"]
     # mock call is already completed; hangup is a safe no-op returning the view
     hung = client.post(f"/api/calls/{call_id}/hangup", headers=headers)
     assert hung.status_code == 200
     assert hung.json()["id"] == call_id
     assert client.get("/api/calls/nope", headers=headers).status_code == 404
+
+
+def test_real_call_hangup_timeout_is_unknown_and_not_replayed(
+    client, auth_headers, monkeypatch,
+):
+    headers = auth_headers("hangup-unknown@test.com")
+    with SessionLocal() as db:
+        user = db.scalar(select(User).where(User.email == "hangup-unknown@test.com"))
+        assert user is not None
+        call = Call(
+            user_id=user.id,
+            provider="twilio",
+            sid="CA123",
+            kind="outbound",
+            mode="script",
+            purpose="cancellation uncertainty test",
+            status="in_progress",
+            answers={},
+            transcript=[],
+        )
+        db.add(call)
+        db.commit()
+        call_id = call.id
+
+    requests = []
+
+    async def timeout(*args, **kwargs):
+        requests.append((args, kwargs))
+        raise comms_service.CommsError("PROVIDER_TIMEOUT", "request timed out")
+
+    monkeypatch.setattr(comms_service, "_twilio_request", timeout)
+    first = client.post(f"/api/calls/{call_id}/hangup", headers=headers)
+    assert first.status_code == 200
+    assert first.json()["status"] == "cancellation_unknown"
+    assert first.json()["cancellation_error"] == "PROVIDER_TIMEOUT"
+
+    second = client.post(f"/api/calls/{call_id}/hangup", headers=headers)
+    assert second.status_code == 200
+    assert second.json()["status"] == "cancellation_unknown"
+    assert len(requests) == 1
 
 
 def test_real_call_status_requires_valid_provider_signature(

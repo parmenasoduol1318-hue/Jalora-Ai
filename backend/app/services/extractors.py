@@ -12,8 +12,15 @@ document row records verbatim.
 """
 from __future__ import annotations
 
+import time
 import zipfile
 from pathlib import Path
+
+from app.services.tabular_analysis import (
+    MAX_PROCESSING_SECONDS,
+    TabularAnalysisError,
+    iter_bounded_xlsx_rows,
+)
 
 _OPTIONAL_DEPS: dict[str, str] = {
     ".docx": "DOCX support requires the optional 'python-docx' package.",
@@ -21,6 +28,10 @@ _OPTIONAL_DEPS: dict[str, str] = {
     ".pptx": "PPTX support requires the optional 'python-pptx' package.",
     ".pdf": "PDF support requires the optional 'pypdf' package.",
 }
+MAX_PDF_PAGES = 200
+MAX_OCR_PAGES = 20
+MAX_OCR_SECONDS = 120.0
+OCR_PAGE_TIMEOUT_SECONDS = 10.0
 
 
 # --------------------------------------------------------------------------- #
@@ -50,20 +61,43 @@ def extract_docx(path: Path) -> str:
 
 
 def extract_xlsx(path: Path) -> str:
-    try:
-        import openpyxl
-    except ImportError:
-        _require(".xlsx")
-    workbook = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+    max_bytes = 25 * 1024 * 1024
+    if path.stat().st_size > max_bytes:
+        raise TabularAnalysisError(
+            "FILE_TOO_LARGE", "The workbook exceeds the document size limit."
+        )
+    with path.open("rb") as source:
+        content = source.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise TabularAnalysisError(
+            "FILE_TOO_LARGE", "The workbook exceeds the document size limit."
+        )
+
     lines: list[str] = []
-    for name in workbook.sheetnames:
-        sheet = workbook[name]
-        rows: list[str] = []
-        for row in sheet.iter_rows(values_only=True):
-            values = ["" if cell is None else str(cell).strip() for cell in row]
-            if any(values):
-                rows.append(" | ".join(values))
-        lines.append(f"Sheet '{name}' ({len(rows)} rows)")
+    current_name: str | None = None
+    rows: list[str] = []
+    output_chars = 0
+    deadline = time.monotonic() + MAX_PROCESSING_SECONDS
+    for name, _row_number, row in iter_bounded_xlsx_rows(
+        content, deadline, max_input_bytes=max_bytes
+    ):
+        if name != current_name:
+            if current_name is not None:
+                lines.append(f"Sheet '{current_name}' ({len(rows)} rows)")
+                lines.extend(rows)
+            current_name = name
+            rows = []
+        values = ["" if cell is None else str(cell).strip() for cell in row]
+        if any(values):
+            line = " | ".join(values)
+            output_chars += len(line) + 1
+            if output_chars > 4 * 1024 * 1024:
+                raise TabularAnalysisError(
+                    "TEXT_LIMIT", "Extracted workbook text exceeds the size limit."
+                )
+            rows.append(line)
+    if current_name is not None:
+        lines.append(f"Sheet '{current_name}' ({len(rows)} rows)")
         lines.extend(rows)
     return "\n".join(lines)
 
@@ -97,13 +131,26 @@ def extract_pdf(path: Path) -> tuple[str, int]:
     except ImportError:
         _require(".pdf")
     reader = PdfReader(str(path))
+    page_count = len(reader.pages)
+    if page_count > MAX_PDF_PAGES:
+        raise RuntimeError(
+            f"PDF exceeds the {MAX_PDF_PAGES}-page processing limit."
+        )
     pages: list[str] = []
-    for page in reader.pages:
+    ocr_count = 0
+    ocr_deadline = time.monotonic() + MAX_OCR_SECONDS
+    for index, page in enumerate(reader.pages):
         text = (page.extract_text() or "").strip()
         if len(text) < 40:
-            text = _ocr_page(path, reader.pages.index(page), text)
+            if ocr_count >= MAX_OCR_PAGES:
+                text = text or "[scanned page - OCR page limit reached]"
+            elif time.monotonic() >= ocr_deadline:
+                text = text or "[scanned page - OCR time limit reached]"
+            else:
+                ocr_count += 1
+                text = _ocr_page(path, index, text)
         pages.append(text)
-    return "\n\n".join(pages), len(reader.pages)
+    return "\n\n".join(pages), page_count
 
 
 def _ocr_page(path: Path, index: int, embedded: str) -> str:
@@ -116,13 +163,20 @@ def _ocr_page(path: Path, index: int, embedded: str) -> str:
     except ImportError:
         return embedded or "[scanned page - OCR requires 'pdf2image' + poppler]"
     try:
-        images = convert_from_path(str(path), first_page=index + 1, last_page=index + 1)
+        images = convert_from_path(
+            str(path),
+            first_page=index + 1,
+            last_page=index + 1,
+            timeout=OCR_PAGE_TIMEOUT_SECONDS,
+        )
         if not images:
             return embedded
-        text = ocr.image_to_string(images[0]).strip()
+        text = ocr.image_to_string(
+            images[0], timeout=OCR_PAGE_TIMEOUT_SECONDS,
+        ).strip()
         return text or embedded or "[scanned page - OCR found nothing]"
-    except Exception:  # noqa: BLE001 - OCR must never break ingestion
-        return embedded or "[scanned page - OCR unavailable]"
+    except Exception as exc:  # OCR errors are preserved as a page-level notice.
+        return embedded or f"[scanned page - OCR failed: {type(exc).__name__}]"
 
 
 def _tesseract():

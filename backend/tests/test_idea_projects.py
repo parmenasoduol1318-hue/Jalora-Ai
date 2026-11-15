@@ -4,6 +4,7 @@ from sqlalchemy import select
 
 from app.database.session import SessionLocal
 from app.models.conversation import Conversation
+from app.models.idea_project import IdeaProject
 from app.models.task import Task
 
 
@@ -126,6 +127,84 @@ def test_idea_projects_are_owner_scoped_and_links_must_be_owned(client):
         headers=owner_headers,
         json={"title": "Invalid link", "task_ids": [task_id, "not-owned"]},
     ).status_code == 400
+
+
+def test_conversation_can_only_belong_to_one_idea_project(client):
+    headers = _register(client, "idea-single-project@test.com")
+    conversation = client.post(
+        "/api/conversations", headers=headers, json={"title": "Project chat"}
+    ).json()
+    first = client.post(
+        "/api/idea-projects",
+        headers=headers,
+        json={
+            "title": "First project",
+            "conversation_ids": [conversation["id"]],
+        },
+    )
+    assert first.status_code == 201, first.text
+
+    second = client.post(
+        "/api/idea-projects",
+        headers=headers,
+        json={
+            "title": "Second project",
+            "conversation_ids": [conversation["id"]],
+        },
+    )
+    assert second.status_code == 400
+    assert "only one" in second.json()["error"]["details"].lower()
+
+
+def test_chat_rejects_an_idea_project_owned_by_another_user(client):
+    owner_headers = _register(client, "idea-context-owner@test.com")
+    other_headers = _register(client, "idea-context-other@test.com")
+    project = client.post(
+        "/api/idea-projects",
+        headers=owner_headers,
+        json={"title": "Private project"},
+    ).json()
+
+    response = client.post(
+        "/api/chat",
+        headers=other_headers,
+        json={
+            "message": "Continue my project",
+            "idea_project_id": project["id"],
+        },
+    )
+    assert response.status_code == 404, response.text
+
+
+def test_project_chat_task_is_linked_to_project(client):
+    from app.services.chat_service import _create_task_run
+
+    headers = _register(client, "idea-task-link@test.com")
+    conversation = client.post(
+        "/api/conversations", headers=headers, json={"title": "Project work"}
+    ).json()
+    project_response = client.post(
+        "/api/idea-projects",
+        headers=headers,
+        json={"title": "Long-running project"},
+    )
+    project_id = project_response.json()["id"]
+    user_id = client.get("/api/auth/me", headers=headers).json()["id"]
+
+    with SessionLocal() as db:
+        task, _run = _create_task_run(
+            db,
+            user_id=user_id,
+            conversation_id=conversation["id"],
+            goal="Continue the project",
+            model="test",
+            idea_project_id=project_id,
+        )
+        task_id = task.id
+        project = db.get(IdeaProject, project_id)
+        assert project is not None
+        assert project.task_ids == [task_id]
+        assert task.trigger_data["idea_project_id"] == project_id
 
 
 def test_idea_project_requires_nonblank_title_and_authentication(client):

@@ -122,26 +122,41 @@ export default function App() {
     })();
   }, []);
 
-  // Backend reachability probe: surface a banner + toast when the API is
-  // down (e.g. dev server not started or a port-8000 conflict). One-shot on mount.
+  // Keep the status in sync when the backend starts or recovers after this view mounts.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    let outageReported = false;
+    const probe = async () => {
       try {
         const r = await fetch("/api/health", { cache: "no-store" });
-        if (!r.ok && !cancelled) {
+        if (cancelled) return;
+        if (r.ok) {
+          setBackendDown(false);
+          outageReported = false;
+        } else {
           setBackendDown(true);
-          toast("Backend unreachable — start the dev server and refresh.", true);
+          if (!outageReported) {
+            toast("Backend unreachable — start the dev server and refresh.", true);
+            outageReported = true;
+          }
         }
       } catch {
         if (!cancelled) {
           setBackendDown(true);
-          toast("Backend unreachable — start the dev server and refresh.", true);
+          if (!outageReported) {
+            toast("Backend unreachable — start the dev server and refresh.", true);
+            outageReported = true;
+          }
         }
       }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+    };
+    void probe();
+    const timer = window.setInterval(() => { void probe(); }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [toast]);
 
   // OAuth callbacks redirect back to the SPA with a status query param. Handle
   // them globally so the toast fires and the relevant view opens regardless of

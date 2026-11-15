@@ -129,6 +129,7 @@ class MessageOut(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=32000)
     conversation_id: str | None = None
+    idea_project_id: str | None = Field(default=None, min_length=1, max_length=32)
     stream: bool = False
     model_provider: str | None = None
     model_name: str | None = None

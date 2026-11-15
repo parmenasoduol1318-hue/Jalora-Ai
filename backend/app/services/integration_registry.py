@@ -39,7 +39,8 @@ LOGO_FOR_PROVIDER = {
     "ollama": "ollama", "db": "database", "redis": "redis",
     "slack": "slack", "github": "github", "notion": "notion",
     "spotify": "spotify", "trello": "trello", "dropbox": "dropbox",
-    "nvidia": "nvidia",
+    "nvidia": "nvidia", "google_docs": "docs", "google_sheets": "sheets",
+    "google_slides": "slides",
 }
 
 SECRET_KEY_RE = (
@@ -72,6 +73,25 @@ def _db_backend(url: str) -> str:
     return "other"
 
 
+def _oauth_connector_manifest(
+    provider: str,
+    *,
+    capabilities: list[str],
+    provenance: str,
+    verification: str,
+) -> dict:
+    scopes = list(oauth_service.OAUTH_SERVICES[provider][1])
+    return {
+        "authentication": "user-granted OAuth 2.0",
+        "capabilities": capabilities,
+        "scopes": scopes,
+        "sensitivity": "user data; owner-scoped and token encrypted at rest",
+        "rate_limits": "Provider quotas apply; reads may be retried, writes are not blindly retried.",
+        "provenance": provenance,
+        "verification": verification,
+    }
+
+
 def provider_registry(db: Session, user_id: str,
                       settings: Settings | None = None) -> list[dict]:
     settings = settings or get_settings()
@@ -91,6 +111,12 @@ def provider_registry(db: Session, user_id: str,
             "keyless": False, "connectable": True,
             "logo": LOGO_FOR_PROVIDER["gmail"],
             "description": "Gmail send/read via OAuth2.",
+            "connector_manifest": _oauth_connector_manifest(
+                "gmail",
+                capabilities=["search", "read", "send"],
+                provenance="Gmail API message and thread IDs",
+                verification="Provider message receipt and subsequent mailbox lookup",
+            ),
         },
         {
             "name": "calendar", "area": "calendar", "kind": "oauth",
@@ -101,6 +127,12 @@ def provider_registry(db: Session, user_id: str,
             "keyless": False, "connectable": True,
             "logo": LOGO_FOR_PROVIDER["calendar"],
             "description": "Google Calendar OAuth2 (built-in mock until connected).",
+            "connector_manifest": _oauth_connector_manifest(
+                "calendar",
+                capabilities=["search", "read", "create", "update", "delete"],
+                provenance="Google Calendar event IDs and API responses",
+                verification="Read event by provider ID after each write",
+            ),
         },
         {
             "name": "drive", "area": "drive", "kind": "oauth",
@@ -111,6 +143,12 @@ def provider_registry(db: Session, user_id: str,
             "keyless": False, "connectable": True,
             "logo": LOGO_FOR_PROVIDER["drive"],
             "description": "Google Drive OAuth2 (built-in mock until connected).",
+            "connector_manifest": _oauth_connector_manifest(
+                "drive",
+                capabilities=["search", "read"],
+                provenance="Google Drive file IDs, metadata, and API responses",
+                verification="Fetch file metadata/content by provider ID",
+            ),
         },
         {
             "name": "contacts", "area": "contacts", "kind": "local",
@@ -201,6 +239,9 @@ def provider_registry(db: Session, user_id: str,
         *_oauth_card("slack", "comms", "Slack", rows, settings),
         *_oauth_card("github", "code", "GitHub", rows, settings),
         *_oauth_card("notion", "docs", "Notion", rows, settings),
+        *_oauth_card("google_docs", "docs", "Google Docs", rows, settings),
+        *_oauth_card("google_sheets", "sheets", "Google Sheets", rows, settings),
+        *_oauth_card("google_slides", "slides", "Google Slides", rows, settings),
         *_oauth_card("spotify", "media", "Spotify", rows, settings),
         *_oauth_card("dropbox", "files", "Dropbox", rows, settings),
         {
@@ -225,6 +266,16 @@ def _oauth_card(name: str, area: str, title: str,
         "keyless": False, "connectable": True,
         "logo": LOGO_FOR_PROVIDER.get(name, name),
         "description": f"{title} OAuth2 (mock-first until connected).",
+        "connector_manifest": _oauth_connector_manifest(
+            name,
+            capabilities={
+                "google_docs": ["create", "read", "edit"],
+                "google_sheets": ["create", "read", "edit"],
+                "google_slides": ["create", "read", "edit"],
+            }.get(name, ["provider-specific"]),
+            provenance=f"{title} provider IDs and API responses",
+            verification="Read the created or changed resource by provider ID",
+        ),
     }]
 
 

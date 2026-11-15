@@ -177,6 +177,23 @@ def test_task_query_discovers_only_relevant_capabilities():
     assert "send_payment" not in names
 
 
+def test_generic_exact_reply_does_not_discover_device_message_reply():
+    routing = route_request(
+        "Reply with exactly: Local Jalora shared-localhost chat passed."
+    )
+
+    assert "device_message_reply" not in routing.signals
+    assert "queue_device_reply" not in (routing.tool_names or [])
+    assert "request_user_input" not in (routing.tool_names or [])
+
+
+def test_explicit_paired_device_message_reply_discovers_device_reply_tool():
+    routing = route_request("Reply to the notification on my paired Android phone.")
+
+    assert "device_message_reply" in routing.signals
+    assert "queue_device_reply" in (routing.tool_names or [])
+
+
 @pytest.mark.parametrize("prompt", ["open youtube", "Please open YouTube.", "launch youtube.com"])
 def test_exact_youtube_launch_uses_deterministic_browser_tool(prompt):
     routing = route_request(prompt)
@@ -513,7 +530,27 @@ def test_single_step_research_keeps_focused_tool_routing():
     r = route_request("Research solar power in Kenya")
     assert r.intent == "research"
     assert r.tool_names is not None
+    assert "deep_research" in r.tool_names
+    assert "search_web" in r.tool_names
     assert "multi_step" not in r.signals
+    hinted = route_request(
+        "Research solar power in Kenya", intent_override="task",
+    )
+    assert "deep_research" in (hinted.tool_names or [])
+
+
+def test_tabular_analysis_and_workspace_tools_are_discoverable_and_gated():
+    analysis = route_request(
+        "Analyze the uploaded CSV file and calculate summary statistics"
+    )
+    assert "analyze_tabular_document_tool" in (analysis.tool_names or [])
+
+    google_doc = route_request("Create a Google Doc titled Project Brief")
+    assert "create_google_doc" in (google_doc.tool_names or [])
+    spec = real_registry.get("create_google_doc")
+    assert spec is not None
+    assert spec.permission == PermissionLevel.CONFIRM
+    assert spec.side_effect == "external"
 
 
 def test_tool_routing_cannot_be_disabled_into_full_registry():

@@ -822,6 +822,7 @@ registry.register(
     category="device_control",
     tags=["device", "messages", "send", "external"],
     side_effect="external",
+    required_signals=["device_message_reply"],
 )
 registry.register(
     assist_device_message,

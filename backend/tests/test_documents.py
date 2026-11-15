@@ -66,6 +66,62 @@ def test_unsupported_format_reports_honestly(client):
     assert resp.json()["error"]["code"] == "UNSUPPORTED_FORMAT"
 
 
+def test_pdf_upload_uses_configured_pdf_size_limit(client, monkeypatch):
+    from app.services import document_service
+
+    monkeypatch.setitem(document_service.MAX_BYTES_BY_EXTENSION, ".pdf", 4)
+    headers = _headers(client, "pdf-size@test.com")
+    resp = client.post("/api/documents", headers=headers, files={
+        "file": ("large.pdf", io.BytesIO(b"12345"), "application/pdf"),
+    })
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "FILE_TOO_LARGE"
+    assert "4 bytes upload limit" in resp.json()["error"]["details"]
+
+
+def test_tabular_document_analysis_is_deterministic_and_owner_scoped(
+    client, fake_router,
+):
+    headers = _headers(client, "csv-analysis-owner@test.com")
+    other_headers = _headers(client, "csv-analysis-other@test.com")
+    upload = client.post("/api/documents", headers=headers, files={
+        "file": ("totals.csv", io.BytesIO(b"amount,note\n2,first\n4,second\n"),
+                 "text/csv"),
+    })
+    assert upload.status_code == 201, upload.text
+    document_id = upload.json()["id"]
+
+    result = client.post(
+        f"/api/documents/{document_id}/analyze", headers=headers,
+    )
+    assert result.status_code == 200, result.text
+    data = result.json()
+    assert data["format"] == "csv"
+    assert data["provider"] == "local_deterministic"
+    amount = data["sheets"][0]["columns"][0]
+    assert amount["mean"] == 3.0
+    assert "first" not in result.text
+    assert "second" not in result.text
+
+    denied = client.post(
+        f"/api/documents/{document_id}/analyze", headers=other_headers,
+    )
+    assert denied.status_code == 404
+
+
+def test_tabular_analysis_rejects_non_tabular_document(client, fake_router):
+    headers = _headers(client, "text-analysis@test.com")
+    upload = client.post("/api/documents", headers=headers, files={
+        "file": ("notes.txt", io.BytesIO(b"plain text"), "text/plain"),
+    })
+    assert upload.status_code == 201, upload.text
+    response = client.post(
+        f"/api/documents/{upload.json()['id']}/analyze", headers=headers,
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "UNSUPPORTED_ANALYSIS_FORMAT"
+
+
 def test_query_unknown_document_404(client):
     headers = _headers(client, "doc3@test.com")
     resp = client.post("/api/documents/deadbeef/query", json={"question": "x"},

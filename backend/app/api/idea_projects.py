@@ -80,6 +80,7 @@ def _validate_links(
     owner_id: str,
     task_ids: list[str] | None,
     conversation_ids: list[str] | None,
+    project_id: str | None = None,
 ) -> None:
     if task_ids is not None:
         if any(len(item) > 32 for item in task_ids):
@@ -107,6 +108,22 @@ def _validate_links(
         ) if conversation_ids else set()
         if owned_conversations != set(conversation_ids):
             raise BadRequestError("Related conversations must belong to this account.")
+        if conversation_ids:
+            project_stmt = select(IdeaProject).where(
+                IdeaProject.owner_id == owner_id
+            )
+            if project_id:
+                project_stmt = project_stmt.where(IdeaProject.id != project_id)
+            other_projects = db.scalars(project_stmt).all()
+            linked_elsewhere = {
+                conversation_id
+                for project in other_projects
+                for conversation_id in (project.conversation_ids or [])
+            }
+            if linked_elsewhere.intersection(conversation_ids):
+                raise BadRequestError(
+                    "A conversation can be linked to only one idea project."
+                )
 
 
 @router.get("")
@@ -169,6 +186,7 @@ def update_project(
         user.id,
         values.get("task_ids"),
         values.get("conversation_ids"),
+        project.id,
     )
     for key, value in values.items():
         setattr(project, key, value)

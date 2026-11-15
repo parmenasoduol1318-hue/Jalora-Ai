@@ -8,7 +8,7 @@ transcript/DTMF events.
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import Response
@@ -16,14 +16,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, get_db
+from app.api.deps import get_current_user, get_db, get_router
 from app.config import get_settings
 from app.database.session import SessionLocal
-from app.errors import BadRequestError
+from app.errors import BadRequestError, JaloraError
 from app.events import emit
 from app.models.call import Call
 from app.models.user import User
 from app.services import comms as comms_service
+from app.services.model_router import ModelRouter
 from app.services import voice, voice_telnyx, voice_twilio
 
 router = APIRouter(prefix="/api/calls", tags=["calls"])
@@ -34,35 +35,52 @@ class CallCreate(BaseModel):
     purpose: str = Field(..., min_length=1, max_length=2000)
     confirm: bool = False
     questions: Optional[list[str]] = None
-    task_id: Optional[str] = None
-    run_id: Optional[str] = None
     conversation_id: Optional[str] = None
-    provider: Optional[str] = None  # auto | mock | twilio | telnyx
-    mode: Optional[str] = "script"  # script (TwiML <Gather>) | live (Media Streams)
+    provider: Optional[Literal["auto", "mock", "twilio", "telnyx"]] = None
+    mode: Optional[Literal["script", "live"]] = "script"
 
 
 @router.post("", status_code=201)
-async def create_call(body: CallCreate, user: User = Depends(get_current_user)) -> dict:
+async def create_call(
+    body: CallCreate,
+    user: User = Depends(get_current_user),
+    model_router: ModelRouter = Depends(get_router),
+) -> dict:
     """Create and run a call. Uses the mock provider offline; dials via Telnyx
-    or Twilio when configured. Direct REST calls require explicit confirmation;
-    status must be checked through the returned call ID and status callbacks."""
+    or Twilio when configured. A confirmed REST request creates a reviewable
+    task; dialing begins only after its task approval is accepted."""
     if not body.confirm:
         raise BadRequestError(
             "Confirm before placing this phone call.",
             "CALL_CONFIRMATION_REQUIRED",
         )
     try:
-        return await voice.place_call(
+        from app.services.direct_action import execute_direct_action
+
+        outcome = await execute_direct_action(
             user_id=user.id,
-            to_phone=body.phone_number,
-            purpose=body.purpose,
-            questions=body.questions,
-            run_id=body.run_id or None,
-            task_id=body.task_id or None,
+            model_router=model_router,
+            tool_name="make_call",
+            arguments={
+                "phone_number": body.phone_number,
+                "purpose": body.purpose,
+                "questions": body.questions,
+                "provider": body.provider,
+                "mode": body.mode or "script",
+            },
+            request_message=f"Call {body.phone_number}: {body.purpose}",
+            description=f"Place a phone call to {body.phone_number}.",
+            success_message=f"The call to {body.phone_number} completed.",
+            require_approval=True,
             conversation_id=body.conversation_id or None,
-            provider_override=body.provider or None,
-            mode=body.mode or "script",
         )
+        if outcome.status == "error" and outcome.error:
+            raise JaloraError(
+                502,
+                outcome.error.get("code", "CALL_FAILED"),
+                outcome.error.get("details", "The call could not be prepared."),
+            )
+        return outcome.as_response()
     except comms_service.CommsError as exc:
         raise HTTPException(status_code=400, detail=exc.detail) from None
 

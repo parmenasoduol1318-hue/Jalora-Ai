@@ -202,3 +202,63 @@ def test_job_tools_have_correct_imports():
     assert hasattr(job_tools, "search_jobs")
     assert hasattr(job_tools, "generate_cv_for_job")
     assert hasattr(job_tools, "send_application")
+
+
+def test_rest_send_application_uses_shared_approval_lifecycle(
+    client, auth_headers, fake_router,
+):
+    from sqlalchemy import select
+
+    from app.database.session import SessionLocal
+    from app.models.job import ApplicationDraft, JobApplication, JobPosting
+    from app.models.user import User
+    from app.services import email as email_service
+
+    headers = auth_headers("job-approval@test.com")
+    with SessionLocal() as db:
+        user = db.scalar(select(User).where(User.email == "job-approval@test.com"))
+        assert user is not None
+        job = JobPosting(
+            user_id=user.id,
+            title="Research Engineer",
+            company="Example Labs",
+            url="https://example.test/jobs/research-engineer",
+            source="test",
+        )
+        db.add(job)
+        db.flush()
+        draft = ApplicationDraft(
+            user_id=user.id,
+            job_posting_id=job.id,
+            subject="Application",
+            body="My reviewed application.",
+            cv_content="Reviewed CV.",
+        )
+        db.add(draft)
+        db.commit()
+        draft_id = draft.id
+        user_id = user.id
+
+    prepared = client.post(
+        "/api/jobs/send",
+        headers=headers,
+        json={"draft_id": draft_id, "recipient_email": "jobs@example.com"},
+    )
+    assert prepared.status_code == 200, prepared.text
+    pending = prepared.json()
+    assert pending["status"] == "paused_approval"
+    assert pending["approval"]["task_id"] == pending["task_id"]
+    assert email_service._MOCK.sent_count(user_id) == 0
+
+    approved = client.post(
+        f"/api/approvals/{pending['approval']['id']}/approve",
+        headers=headers,
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "completed", approved.text
+    assert email_service._MOCK.sent_count(user_id) == 1
+    with SessionLocal() as db:
+        assert db.get(ApplicationDraft, draft_id).status == "sent"
+        assert db.scalar(
+            select(JobApplication).where(JobApplication.user_id == user_id)
+        ) is not None

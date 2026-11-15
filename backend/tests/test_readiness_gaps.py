@@ -39,7 +39,9 @@ def test_missing_message_field_is_rejected(client, auth_headers):
 # --------------------------------------------------------------------------- #
 # 2.13  IDOR — users must not access another user's conversations            #
 # --------------------------------------------------------------------------- #
-def test_conversation_messages_are_scoped_to_owner(client, auth_headers):
+def test_conversation_messages_are_scoped_to_owner(
+    client, auth_headers, fake_router,
+):
     """User B cannot read user A's conversation messages (IDOR)."""
     from langchain_core.messages import AIMessage
 

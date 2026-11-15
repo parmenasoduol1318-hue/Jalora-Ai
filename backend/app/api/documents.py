@@ -18,7 +18,9 @@ from app.models.user import User
 from app.schemas import DocumentOut, DocumentQueryResponse
 from app.services.direct_action import execute_direct_action
 from app.services.document_service import (
+    MAX_BYTES_BY_EXTENSION,
     MAX_UPLOAD_BYTES,
+    analyze_tabular_document,
     prepare_document_upload,
     retrieve_for_document,
     search_files,
@@ -49,9 +51,20 @@ async def upload_document(file: UploadFile = File(...),
                           user: User = Depends(get_current_user),
                           db: Session = Depends(get_db),
                           model_router: ModelRouter = Depends(get_router)):
-    content = await file.read(MAX_UPLOAD_BYTES + 1)
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise BadRequestError("File exceeds the 25 MB upload limit.", "FILE_TOO_LARGE")
+    extension = (file.filename or "").rsplit(".", 1)
+    ext = f".{extension[-1].lower()}" if len(extension) == 2 else ""
+    byte_limit = MAX_BYTES_BY_EXTENSION.get(ext, MAX_UPLOAD_BYTES)
+    content = await file.read(byte_limit + 1)
+    if len(content) > byte_limit:
+        limit = (
+            f"{byte_limit // (1024 * 1024)} MB"
+            if byte_limit >= 1024 * 1024
+            else f"{byte_limit} bytes"
+        )
+        raise BadRequestError(
+            f"File exceeds the {limit} upload limit for this type.",
+            "FILE_TOO_LARGE",
+        )
     if not content:
         raise BadRequestError("The uploaded file is empty.", "EMPTY_FILE")
     doc = await prepare_document_upload(
@@ -112,6 +125,18 @@ async def search_documents(q: str, user: User = Depends(get_current_user)):
     if not q.strip():
         raise BadRequestError("'q' is required.", "MISSING_FIELD")
     return {"query": q, "results": await search_files(user_id=user.id, query=q)}
+
+
+@router.post("/{document_id}/analyze", response_model=dict)
+def analyze_document(
+    document_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Run bounded, deterministic statistics on an owned CSV/XLSX upload."""
+    return analyze_tabular_document(
+        db, user_id=user.id, document_id=document_id,
+    )
 
 
 @router.delete("/{document_id}", status_code=202)

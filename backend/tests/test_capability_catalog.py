@@ -27,6 +27,8 @@ def test_each_catalog_scope_maps_to_registered_tools_and_existing_tests():
         "messaging_and_calls",
         "contacts",
         "files_and_documents",
+        "data_analysis",
+        "google_workspace",
         "calendar_and_reminders",
         "device_media",
         "travel",
@@ -72,6 +74,12 @@ def test_external_actions_are_not_listed_as_approval_free():
             "book_flight",
             "book_reservation",
             "delete_document",
+            "create_google_doc",
+            "edit_google_doc",
+            "create_google_sheet",
+            "edit_google_sheet",
+            "create_google_slides",
+            "edit_google_slides",
         }
     }
 

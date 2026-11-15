@@ -4,9 +4,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from app.api.deps import get_current_user, get_db
-from app.errors import NotFoundError
+from app.api.deps import get_current_user, get_db, get_router
+from app.errors import JaloraError, NotFoundError
 from app.models.user import User
+from app.services.model_router import ModelRouter
 from app.tools.job_tools import (
     search_jobs as search_jobs_tool,
     list_user_jobs as list_user_jobs_tool,
@@ -18,7 +19,6 @@ from app.tools.job_tools import (
     list_application_drafts as list_application_drafts_tool,
     list_applications as list_applications_tool,
     create_application_draft as create_application_draft_tool,
-    send_application as send_application_tool,
     review_application_draft as review_application_draft_tool,
 )
 
@@ -293,17 +293,36 @@ async def create_draft(request: CreateDraftRequest, user: User = Depends(get_cur
 
 
 @router.post("/send", response_model=dict)
-async def send_application(request: SendApplicationRequest, user: User = Depends(get_current_user)):
+async def send_application(
+    request: SendApplicationRequest,
+    user: User = Depends(get_current_user),
+    model_router: ModelRouter = Depends(get_router),
+):
     """Send a job application (requires approval)."""
-    result = await send_application_tool(
-        draft_id=request.draft_id,
-        recipient_email=request.recipient_email,
-    )
-    if not result.success:
-        from app.errors import JaloraError
-        raise JaloraError(400, result.error.code if result.error else "ERROR", result.message)
+    from app.services.direct_action import execute_direct_action
 
-    return result.data
+    outcome = await execute_direct_action(
+        user_id=user.id,
+        model_router=model_router,
+        tool_name="send_application",
+        arguments={
+            "draft_id": request.draft_id,
+            "recipient_email": request.recipient_email,
+        },
+        request_message="Send the reviewed job application.",
+        description="Send the reviewed job application.",
+        success_message="The job application was sent.",
+        require_approval=True,
+    )
+    if outcome.status == "error" and outcome.error:
+        raise JaloraError(
+            502,
+            outcome.error.get("code", "APPLICATION_SEND_FAILED"),
+            outcome.error.get(
+                "details", "The job application could not be prepared."
+            ),
+        )
+    return outcome.as_response()
 
 
 # --- Application History Endpoints ---

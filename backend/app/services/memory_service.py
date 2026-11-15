@@ -121,7 +121,11 @@ async def search_memories(
         hits = vector_store.get_vector_store().search(
             user_id, query_vec, k, rows, query_text=query
         )
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "Memory vector retrieval failed; using SQL fallback (%s)",
+            type(exc).__name__,
+        )
         hits = None
     if hits is None:
         # store failure -> plain SQL cosine over the same rows

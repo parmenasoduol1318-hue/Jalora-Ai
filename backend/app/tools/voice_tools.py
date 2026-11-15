@@ -19,7 +19,9 @@ from app.tools.base import PermissionLevel, registry
 
 
 async def make_call(phone_number: str, purpose: str,
-                    questions: list[str] | None = None) -> ToolResult:
+                    questions: list[str] | None = None,
+                    provider: str | None = None,
+                    mode: str = "script") -> ToolResult:
     """Make a real phone call to accomplish a goal. Builds a goal-driven script, pauses for your approval before dialing, conducts the conversation (spoken questions, capturing yes/no and free-form answers), and returns a full transcript plus a summary starting with 'Person's response:' and 'Jalora summary:'. Provide the E.164 phone number (e.g. +254712345678) and a short, specific purpose; optionally list follow-up questions to ask when the person approves."""
     ctx = get_tool_context()
     try:
@@ -31,6 +33,8 @@ async def make_call(phone_number: str, purpose: str,
             to_phone=phone_number,
             purpose=purpose,
             questions=questions,
+            provider_override=provider,
+            mode=mode,
         )
     except comms.CommsError as exc:
         return ToolResult.fail(exc.code, exc.detail, message=exc.detail)

@@ -1,6 +1,8 @@
 """Registers every built-in tool with the shared registry."""
 from app.tools import web as _web  # noqa: F401
 from app.tools import scientific_sources as _scientific_sources  # noqa: F401
+from app.tools import deep_research_tools as _deep_research_tools  # noqa: F401
+from app.tools import google_workspace_tools as _google_workspace_tools  # noqa: F401
 from app.tools import browse as _browse  # noqa: F401
 from app.tools import browser as _browser  # noqa: F401
 from app.tools import device_tools as _device_tools  # noqa: F401

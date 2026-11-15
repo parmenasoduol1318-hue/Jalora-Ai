@@ -74,6 +74,17 @@ _CARDS = (
         ],
     },
     {
+        "id": "data_analysis",
+        "title": "Tabular data analysis",
+        "categories": ["data_analysis"],
+        "scope": "Compute bounded descriptive statistics from owned CSV and XLSX uploads without executing formulas or returning cell values.",
+        "limitations": [
+            "The deterministic engine supports CSV/XLSX only with explicit file, row, cell, sheet, and runtime limits.",
+            "This is descriptive analysis, not a general Python execution environment or a substitute for expert review.",
+        ],
+        "tests": ["tests/test_tabular_analysis.py", "tests/test_documents.py"],
+    },
+    {
         "id": "calendar_and_reminders",
         "title": "Calendar and reminders",
         "categories": ["calendar", "scheduling"],
@@ -102,13 +113,25 @@ _CARDS = (
     {
         "id": "cloud_drive",
         "title": "Cloud drive",
-        "categories": ["drive"],
-        "scope": "Search, read, create, or upload files through supported connected drive providers.",
+        "categories": ["drive", "google_drive"],
+        "scope": "Search and read supported files through local storage or an explicitly connected Google Drive account.",
         "limitations": [
             "Provider availability and file permissions are account-specific.",
-            "Local mock/provider tests do not establish live cloud-provider access.",
+            "Google Drive reads are limited to owned supported text and native Workspace files; local mock tests do not establish live access.",
         ],
-        "tests": ["tests/test_phase_i_integrations.py"],
+        "tests": ["tests/test_phase_i_integrations.py", "tests/test_google_workspace.py"],
+    },
+    {
+        "id": "google_workspace",
+        "title": "Google Docs, Sheets, and Slides",
+        "categories": ["google_docs", "google_sheets", "google_slides"],
+        "scope": "Read, create, and edit owned Workspace documents, spreadsheets, and presentations through official APIs.",
+        "limitations": [
+            "Each service requires its own user-granted OAuth scope; reading existing files also requires Drive read permission.",
+            "Writes require shared task approval and provider acceptance is not equivalent to independent verification or delivery.",
+            "Contract tests use a mocked HTTP transport; live Google account and OAuth consent verification remain unperformed.",
+        ],
+        "tests": ["tests/test_google_workspace.py", "tests/test_oauth_calendar.py"],
     },
     {
         "id": "maps",

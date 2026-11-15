@@ -2438,6 +2438,7 @@ def build_graph(
                                 "current_step": current,
                             })
                     if tname in (
+                        "deep_research",
                         "search_web",
                         "search_scientific_sources",
                         "open_url",
@@ -5210,7 +5211,23 @@ async def _sync_plan(task_id: str, plan: list[dict[str, Any]],
 
 def _extract_sources(tool_name: str, data: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    if tool_name in {"search_web", "search_scientific_sources"}:
+    if tool_name == "deep_research":
+        for source in data.get("sources", []):
+            if not isinstance(source, dict):
+                continue
+            out.append({
+                "title": source.get("title", ""),
+                "url": source.get("url", ""),
+                "snippet": source.get("excerpt", ""),
+                "source_type": "page",
+                "citation_id": source.get("citation_id"),
+                "publisher": source.get("publisher"),
+                "author": source.get("author"),
+                "retrieved_at": source.get("retrieved_at"),
+                "published_at": source.get("published_at"),
+                "freshness": source.get("freshness"),
+            })
+    elif tool_name in {"search_web", "search_scientific_sources"}:
         for r in data.get("results", []):
             out.append({"title": r.get("title", ""), "url": r.get("url", ""),
                         "snippet": r.get("snippet") or r.get("abstract", ""),

@@ -59,6 +59,14 @@ _WINDOWS_COMPANION_REQUEST = re.compile(
     r"(?:windows|pc|desktop|laptop)\s+companion)\b",
     re.I,
 )
+_DEVICE_MESSAGE_REPLY_REQUEST = re.compile(
+    r"\b(?:reply|respond|send)\b.{0,100}\b"
+    r"(?:message|notification|text|sms)\b.{0,80}\b"
+    r"(?:phone|device|android|iphone|paired|connected)\b"
+    r"|\b(?:phone|device|android|iphone|paired|connected)\b.{0,100}\b"
+    r"(?:message|notification|text|sms)\b.{0,80}\b(?:reply|respond|send)\b",
+    re.I,
+)
 _NON_APP_TARGETS = frozenset({
     "all apps", "an app", "any", "any app", "any application",
     "app", "application",
@@ -195,6 +203,8 @@ def route_request(
         active_signals.add("local_app_control")
     if remote_device_request:
         active_signals.add("remote_device_control")
+    if _DEVICE_MESSAGE_REPLY_REQUEST.search(request_text):
+        active_signals.add("device_message_reply")
     selected_intent = intent_override or (
         "task"
         if "remote_device_control" in active_signals and result.intent == "chat"
@@ -209,13 +219,25 @@ def route_request(
         context_text,
     )))
     multi_step = is_multi_step_request(discovery_request)
-    if request_text.strip() and selected_intent in {"research", "web_search"}:
+    research_request = request_text.strip() and (
+        selected_intent in {"research", "web_search"}
+        or result.intent in {"research", "web_search"}
+    )
+    if research_request:
         discovery_request += "\nSearch the web"
     tool_names = registry.select_for_task(
         discovery_request,
         context=selected_intent if request_text.strip() else "",
         signals=active_signals,
     )
+    if research_request:
+        tool_names = sorted(set(tool_names) | {
+            "deep_research"
+        } if registry.get("deep_research") is not None else set(tool_names))
+    if selected_intent == "chat" and request_text.strip():
+        tool_names = [
+            name for name in tool_names if name != "request_user_input"
+        ]
     if "remote_device_control" in active_signals:
         selected = {
             spec.name for spec in registry.all()

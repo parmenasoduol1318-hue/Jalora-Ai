@@ -118,6 +118,24 @@ async def process_uploaded_document(document_id: str) -> ToolResult:
         )
 
 
+async def analyze_tabular_document_tool(document_id: str) -> ToolResult:
+    """Compute bounded descriptive statistics from an owned CSV/XLSX upload."""
+    user_id = get_tool_context().user_id
+    from app.services.document_service import analyze_tabular_document
+
+    with SessionLocal() as db:
+        try:
+            result = analyze_tabular_document(
+                db, user_id=user_id, document_id=document_id,
+            )
+        except JaloraError as exc:
+            return ToolResult.fail(exc.code, exc.message)
+    return ToolResult.ok(
+        f"Analyzed '{result['filename']}' without returning cell contents.",
+        result,
+    )
+
+
 registry.register(current_datetime, permission=PermissionLevel.AUTO, category="utility",
                   tags=["time"], always_available=True)
 registry.register(list_documents, permission=PermissionLevel.AUTO, category="documents",
@@ -137,4 +155,13 @@ registry.register(
     permission=PermissionLevel.AUTO,
     category="documents",
     tags=["documents", "upload", "processing"],
+)
+registry.register(
+    analyze_tabular_document_tool,
+    permission=PermissionLevel.AUTO,
+    category="data_analysis",
+    tags=["documents", "csv", "xlsx", "analysis", "statistics"],
+    side_effect="read_only",
+    idempotent=True,
+    retryable=True,
 )

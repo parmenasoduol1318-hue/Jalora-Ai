@@ -25,11 +25,14 @@ const LABEL: Record<string, string> = {
 const CALL_CHIP: Record<string, string> = {
   dialing: "warn", in_progress: "ok", completed: "ok",
   failed: "fail", cancelled: "warn", no_answer: "warn",
+  cancellation_requested: "warn", cancellation_unknown: "warn",
 };
 const CALL_LABEL: Record<string, string> = {
   dialing: "callStatusDialing", in_progress: "callStatusInProgress",
   completed: "callStatusCompleted", failed: "callStatusFailed",
   cancelled: "callStatusCancelled", no_answer: "callStatusNoAnswer",
+  cancellation_requested: "callStatusCancellationRequested",
+  cancellation_unknown: "callStatusCancellationUnknown",
 };
 const STEP_ICON: Record<string, string> = {
   pending: "○", active: "◐", done: "✓", failed: "✗", skipped: "⊘",
@@ -399,9 +402,9 @@ export function TasksView({
 
   const hangupCall = async (call: Call) => {
     try {
-      await api(`/api/calls/${call.id}/hangup`, { method: "POST" });
+      const updated = await api<Call>(`/api/calls/${call.id}/hangup`, { method: "POST" });
       setCalls((prev) =>
-        prev.map((c) => (c.id === call.id ? { ...c, status: "cancelled" } : c)),
+        prev.map((c) => (c.id === call.id ? { ...c, ...updated } : c)),
       );
       load();
     } catch (err) {
