@@ -99,8 +99,9 @@ class Settings(BaseSettings):
     jan_base_url: str | None = None
     jan_model: str = "llama3-8b-instruct"
 
-    # Preferred local provider for auto-routing when no cloud key is set or as
-    # the first fallback. Options: "lmstudio" (default), "jan", "ollama".
+    # Compatibility preference for local-provider clients. Chat routing opts
+    # into local endpoints through the per-user preferred_provider setting or
+    # an explicit provider override; automatic routing skips them by default.
     local_provider_preference: str = "lmstudio"
 
     # Cohere — cloud provider with OpenAI-compatible endpoint.

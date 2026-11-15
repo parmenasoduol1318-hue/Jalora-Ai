@@ -729,6 +729,32 @@ def test_normal_conversation_persists(client, fake_router):
     assert any("Hello! How can I help?" in str(c) for c in contents)
 
 
+def test_invalid_tool_call_does_not_fail_a_simple_greeting(client, fake_router):
+    fake_router.script.append(AIMessage(content="", tool_calls=[{
+        "name": "unknown_greeting_tool",
+        "args": {},
+        "id": "invalid-greeting-tool",
+        "type": "tool_call",
+    }]))
+    headers = _token(client, "greeting-tool-guard@test.com")
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": (
+                "Hi Jalora. Please reply briefly to confirm this local message "
+                "reached you."
+            )
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["status"] == "completed"
+    assert result["reply"] == "Hello! I'm here and ready to help."
+
+
 def test_attached_document_is_read_before_completing_user_task(
         client, fake_router):
     headers = _token(client, "chat-attached-document@test.com")

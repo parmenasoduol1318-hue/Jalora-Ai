@@ -2437,7 +2437,12 @@ def build_graph(
                                 "progress": progress,
                                 "current_step": current,
                             })
-                    if tname in ("search_web", "open_url", "browse_page"):
+                    if tname in (
+                        "search_web",
+                        "search_scientific_sources",
+                        "open_url",
+                        "browse_page",
+                    ):
                         sources = _dedupe_sources(
                             sources + _extract_sources(tname, parsed.data)
                         )
@@ -3521,6 +3526,22 @@ def build_graph(
                 **await completed_response_plan_update(final_status),
             }
 
+        if (
+            state.get("intent") == "chat"
+            and not plan
+            and _has_execution_guard_failure(current_turn_messages)
+            and not _has_successful_task_action(current_turn_messages)
+            and _is_simple_greeting(_task_request(state, messages))
+        ):
+            return {
+                "messages": [AIMessage(
+                    content="Hello! I'm here and ready to help.",
+                    id=new_id(),
+                )],
+                "status": "completed",
+                "recoverable": False,
+            }
+
         if status == "partial" and state.get("recoverable") and not partial:
             cbr_reply = _official_cbr_fallback(
                 _task_request(state, messages),
@@ -3956,6 +3977,23 @@ def _has_execution_guard_failure(messages: list[BaseMessage]) -> bool:
         if isinstance(message, ToolMessage)
         for result in [_parse_tool_result(str(message.content or ""))]
     )
+
+
+def _is_simple_greeting(request: str) -> bool:
+    if len(request) > 240 or not re.match(
+        r"^\s*(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))\b",
+        request,
+        re.I,
+    ):
+        return False
+    return re.search(
+        r"\b(?:send|create|generate|search|open|run|edit|delete|book|schedule|"
+        r"download|upload|calculate|research|analyze|analyse|build|fix|"
+        r"implement|compare|find|draft|execute|install|push|commit|call|"
+        r"submit|purchase|change|update|write|email|translate|convert|make)\b",
+        request,
+        re.I,
+    ) is None
 
 
 def _has_successful_task_action(messages: list[BaseMessage]) -> bool:
@@ -5172,10 +5210,10 @@ async def _sync_plan(task_id: str, plan: list[dict[str, Any]],
 
 def _extract_sources(tool_name: str, data: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    if tool_name == "search_web":
+    if tool_name in {"search_web", "search_scientific_sources"}:
         for r in data.get("results", []):
             out.append({"title": r.get("title", ""), "url": r.get("url", ""),
-                        "snippet": r.get("snippet", ""),
+                        "snippet": r.get("snippet") or r.get("abstract", ""),
                         "source_type": "search_result"})
     elif tool_name in ("open_url", "browse_page"):
         out.append({"title": data.get("title", ""), "url": data.get("url", ""),

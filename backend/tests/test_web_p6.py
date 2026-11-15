@@ -171,6 +171,79 @@ def test_kenya_president_search_reports_unavailable_official_source(monkeypatch)
     assert result.error.code == "OFFICIAL_SOURCE_UNAVAILABLE"
 
 
+def test_search_web_removes_leading_discourse_and_filters_unrelated_results(
+    monkeypatch,
+):
+    observed_queries = []
+
+    async def fake_search(query: str, max_results: int):
+        observed_queries.append(query)
+        return [
+            search_service.SearchResult(
+                title="FIRST | English meaning - Cambridge Dictionary",
+                url="https://dictionary.example/first",
+                snippet="Of an extremely good kind; first order.",
+            ),
+            search_service.SearchResult(
+                title="FIRST California Northern State Championship",
+                url="https://sports.example/first-california",
+                snippet="FIRST California Championship 2026.",
+            ),
+            search_service.SearchResult(
+                title="FIRST - Improving Security Together",
+                url="https://security.example/",
+                snippet="FIRST is a global incident-response organization.",
+            ),
+            search_service.SearchResult(
+                title="Mombasa climate: why coastal temperatures stay high",
+                url="https://weather.example/kenya/mombasa-climate",
+                snippet=(
+                    "Mombasa is hot and humid; high temperatures are driven "
+                    "by its tropical coastal climate."
+                ),
+            ),
+        ]
+
+    monkeypatch.setattr(search_service, "search", fake_search)
+
+    result = asyncio.run(web.search_web(
+        "First, why is Mombasa temperatures very high?"
+    ))
+
+    assert result.success is True
+    assert observed_queries == ["Mombasa temperatures high"]
+    assert result.data["query"] == "Mombasa temperatures high"
+    assert [item["title"] for item in result.data["results"]] == [
+        "Mombasa climate: why coastal temperatures stay high",
+    ]
+
+
+def test_search_web_fails_closed_when_all_results_are_off_topic(monkeypatch):
+    async def fake_search(query: str, max_results: int):
+        return [
+            search_service.SearchResult(
+                title="FIRST | English meaning",
+                url="https://dictionary.example/first",
+                snippet="First order means extremely good.",
+            ),
+            search_service.SearchResult(
+                title="Incident response security teams",
+                url="https://security.example/",
+                snippet="FIRST is a global incident-response organization.",
+            ),
+        ]
+
+    monkeypatch.setattr(search_service, "search", fake_search)
+
+    result = asyncio.run(web.search_web(
+        "First, why is Mombasa temperatures very high?"
+    ))
+
+    assert result.success is False
+    assert result.error.code == "SEARCH_IRRELEVANT"
+    assert result.data["query"] == "Mombasa temperatures high"
+
+
 def test_html_to_text_preserves_document_blocks_and_table_rows():
     title, text = page_text.html_to_text(
         "<html><head><title>Policy</title></head><body>"

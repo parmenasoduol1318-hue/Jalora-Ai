@@ -152,3 +152,19 @@ def test_disabled_providers_are_per_user(client):
     assert da["providers"]["openai"]["disabled"] is True
     assert "openai" not in db["disabled_providers"]
     assert db["providers"]["openai"]["disabled"] is False
+
+
+def test_local_provider_can_be_opted_in_per_user(client):
+    headers = _auth_headers(client, "local-opt-in@test.com")
+    saved = client.patch(
+        "/api/settings",
+        headers=headers,
+        json={"preferred_provider": "lmstudio"},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["preferred_provider"] == "lmstudio"
+
+    other_headers = _auth_headers(client, "local-default@test.com")
+    other = client.get("/api/settings", headers=other_headers)
+    assert other.status_code == 200
+    assert other.json()["preferred_provider"] == "auto"

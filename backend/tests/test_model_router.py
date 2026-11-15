@@ -21,10 +21,7 @@ _PROVIDER_KEY_ENV = (
 )
 
 # ``app.services.provider_extensions`` (imported via ``app.main`` in conftest)
-# prepends the local providers LM Studio and Jan ahead of Ollama in
-# AUTO_PRIORITY, so the primary keyless fallback is now LM Studio with Ollama as
-# the secondary local provider.
-LOCAL_FALLBACK = "ollama"
+# registers local providers in AUTO_PRIORITY, but they require explicit opt-in.
 LOCAL_KEYLESS = ("lmstudio", "jan", "ollama")
 
 
@@ -54,11 +51,11 @@ def test_unknown_provider_override_rejected():
 
 
 def test_unconfigured_provider_override_falls_back():
-    # A soft preference for a provider that is not configured must not fail
-    # the turn: route silently to the next available provider (local, keyless).
+    # A soft preference for a provider that is not configured falls back only
+    # to another provider the user has configured.
     router = ModelRouter(_settings())
-    route = router.route(provider_override="openai")
-    assert route.provider.name == LOCAL_FALLBACK
+    with pytest.raises(ModelNotConfiguredError):
+        router.route(provider_override="openai")
 
 
 def test_provider_override_selects_spec():
@@ -94,11 +91,11 @@ def test_pinned_default_provider_wins():
 
 
 def test_pinned_default_provider_unconfigured_falls_back():
-    # A pinned default that is not configured is a soft hint: auto-routing
-    # takes over (local providers are keyless), so open-source-only setups work.
+    # A pinned cloud default is a soft hint, but local endpoints are not an
+    # implicit automatic fallback.
     router = ModelRouter(_settings(default_provider="groq"))
-    route = router.route(message="hello")
-    assert route.provider.name == LOCAL_FALLBACK
+    with pytest.raises(ModelNotConfiguredError):
+        router.route(message="hello")
 
 
 def test_auto_picks_first_configured_by_priority():
@@ -188,11 +185,42 @@ def test_complex_reasoning_model_mapping_is_used_in_fallback_chain():
     ]["model"]
 
 
-def test_auto_falls_back_to_local_when_no_keys():
-    # Local providers are keyless, so auto routing still works honestly offline.
+def test_auto_does_not_select_local_endpoints_without_opt_in():
     router = ModelRouter(_settings())
+    with pytest.raises(ModelNotConfiguredError):
+        router.route(message="hello")
+
+
+@pytest.mark.parametrize("provider", ["ollama", "lmstudio"])
+def test_local_provider_override_is_an_explicit_opt_in(provider):
+    router = ModelRouter(_settings())
+    route = router.route(provider_override=provider)
+    assert route.provider.name == provider
+
+
+@pytest.mark.parametrize("provider", ["ollama", "lmstudio"])
+def test_pinned_local_default_is_an_explicit_opt_in(provider):
+    router = ModelRouter(_settings(default_provider=provider))
     route = router.route(message="hello")
-    assert route.provider.name == LOCAL_FALLBACK
+    assert route.provider.name == provider
+
+
+def test_auto_route_chain_excludes_local_providers_without_opt_in():
+    router = ModelRouter(_settings(openai_api_key="sk-test"))
+    routes = router.route_chain()
+    assert "ollama" not in [route.provider.name for route in routes]
+    assert "lmstudio" not in [route.provider.name for route in routes]
+
+
+def test_per_user_local_preference_is_an_explicit_opt_in():
+    # chat_service passes the user's preferred_provider through the existing
+    # provider_override route argument.
+    router = ModelRouter(_settings())
+    route = router.route(provider_override="lmstudio")
+    assert route.provider.name == "lmstudio"
+    assert [r.provider.name for r in router.route_chain(
+        provider_override="lmstudio"
+    )][:2] == ["lmstudio", "ollama"]
 
 
 # --- per-user disconnect (provider disabled) -------------------------------
@@ -208,15 +236,15 @@ def test_disabled_provider_override_falls_back():
     # Even an explicit override is a soft hint when the user has disconnected
     # the provider: fall through to auto-routing instead of erroring.
     router = ModelRouter(_settings(openai_api_key="sk-x"))
-    route = router.route(provider_override="openai", disabled=["openai"])
-    assert route.provider.name == LOCAL_FALLBACK
+    with pytest.raises(ModelNotConfiguredError):
+        router.route(provider_override="openai", disabled=["openai"])
 
 
 def test_pinned_default_provider_disabled_skipped():
     router = ModelRouter(_settings(default_provider="groq", groq_api_key="gsk-test"),
                          )
-    route = router.route(message="hello", disabled=["groq"])
-    assert route.provider.name == LOCAL_FALLBACK
+    with pytest.raises(ModelNotConfiguredError):
+        router.route(message="hello", disabled=["groq"])
 
 
 def test_all_providers_disabled_raises():
@@ -259,12 +287,13 @@ def test_image_keeps_google_when_google_is_the_route():
 
 
 def test_image_switches_to_vision_capable_provider():
-    # deepseek wins text priority but has no vision; only local ollama remains.
+    # Without a configured vision provider, automatic routing must not opt in
+    # to a keyless local endpoint merely because it exists.
     router = ModelRouter(_settings(deepseek_api_key="d-x"))
     text = router.route(message="hello")
     assert text.provider.name == "deepseek"
     image = router.route(message="describe", modality="image")
-    assert image.provider.name == "ollama"
+    assert image.provider.name == "deepseek"
 
 
 def test_image_respects_private_routing():

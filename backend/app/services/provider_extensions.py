@@ -140,10 +140,9 @@ def _route_chain_with_loaded_lmstudio_model(
 
 ModelRouter.route_chain = _route_chain_with_loaded_lmstudio_model  # type: ignore[assignment]
 
-#: New providers added by this extension, in the order they are appended to
-#: the auto-routing priority list.  Keyless / local providers come first
-#: (LMStudio, Jan) so they are preferred for free budgets, followed by cloud
-#: providers that require an API key.
+#: New providers registered in routing-priority order. Local providers remain
+#: visible/configurable, but the router requires explicit opt-in before
+#: selecting a local endpoint automatically.
 _EXTENDED_PRIORITY: list[str] = [
     "lmstudio",  # local, keyless — OpenAI-compatible at localhost:1234/v1
     "jan",  # local/remote, keyless — user-configured OpenAI-compatible URL
@@ -282,16 +281,11 @@ import app.services.model_router as _model_router_mod  # noqa: E402
 
 _model_router_mod.build_provider_specs = _patched_build_provider_specs  # type: ignore[assignment]
 
-# 2. Extend AUTO_PRIORITY so auto-routing and route_chain() consider the new
-#    providers.  Local providers are ordered **Ollama-first** (the project's
-#    Ollama-first rule): when no explicit provider is configured, the router
-#    prefers the local Ollama daemon and only falls back to LM Studio / Jan
-#    when Ollama is unavailable.  This prevents auto-routing from ever landing
-#    on a dead LM Studio server (localhost:1234) and surfacing
-#    "The local LM Studio model couldn't finish the reply."  Cloud providers
-#    that require an API key remain first in the list but are skipped by
-#    is_configured() when no key/env secret is present, so Ollama (keyless)
-#    is the effective primary local provider.
+# 2. Extend AUTO_PRIORITY so routing and provider settings know about the new
+#    providers. ModelRouter filters keyless local endpoints from automatic
+#    routing unless a user pins one via preferred_provider/provider_override
+#    (or a caller explicitly requests private/local routing). Ollama precedes
+#    LM Studio when local routing is opted into.
 _extended = list(_orig_auto_priority)
 # Remove ollama from its original (last) position — we re-add it FIRST among
 # the local providers below so it is preferred over LM Studio / Jan.

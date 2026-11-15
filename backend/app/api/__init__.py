@@ -15,6 +15,7 @@ from app.api import (
     feedback,
     files,
     integrations,
+    idea_projects,
     media,
     memory,
     notifications,
@@ -40,6 +41,7 @@ api_router.include_router(files.router)
 api_router.include_router(runs.router)
 api_router.include_router(activity.router)
 api_router.include_router(tasks.router)
+api_router.include_router(idea_projects.router)
 api_router.include_router(settings.router)
 api_router.include_router(comms.router)
 api_router.include_router(artifacts.router)

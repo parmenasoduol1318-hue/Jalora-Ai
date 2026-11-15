@@ -46,6 +46,7 @@ export const navIcons: {
   history: NavIcon;
   creative: NavIcon;
   people: NavIcon;
+  ideas: NavIcon;
 } = {
   chat: Icon(<path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L4 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 0 7.6-9.3 8.4 8.4 0 0 1 8.4-3v8z" />),
 
@@ -76,4 +77,6 @@ export const navIcons: {
   creative: Icon(<><path d="M12 3v10h3" /><circle cx="15" cy="8" r="3" /><path d="M12 5a5 5 0 1 0 0 8 5 5 0 0 0 0-8z" /><path d="M18 12c0 2.2-.8 4.2-2 5.7.6.3 1.2.8 1.7 1.4A7.9 7.9 0 0 0 21 12c0-1.8-.5-3.5-1.3-4.9-.6.7-1.3 1.1-2 1.4" /></>),
 
   people: Icon(<><circle cx="9" cy="8" r="3" /><path d="M3 20v-1a6 6 0 0 1 12 0v1zM16 5.5a3 3 0 0 1 0 5.8M18 14a5 5 0 0 1 3 4.6V20h-3" /></>),
+
+  ideas: Icon(<><path d="M9 18h6M10 22h4M8.2 14.5A7 7 0 1 1 15.8 14.5c-.9.7-1.3 1.4-1.5 2.5h-4.6c-.2-1.1-.6-1.8-1.5-2.5Z" /></>),
 };

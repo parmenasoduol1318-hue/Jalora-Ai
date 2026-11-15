@@ -1,5 +1,5 @@
 import type {
-  DocumentT, MediaItem, TranscribeResult, VoiceConfig, WorkspaceActionResponse, WorkspaceUploadOut,
+  DocumentT, IdeaProject, MediaItem, TranscribeResult, VoiceConfig, WorkspaceActionResponse, WorkspaceUploadOut,
 } from "./types";
 
 export class ApiError extends Error {
@@ -13,7 +13,9 @@ export class ApiError extends Error {
 }
 
 let token = localStorage.getItem("jalora_token") || "";
+let refreshToken = localStorage.getItem("jalora_refresh_token") || "";
 let unauthorized: (() => void) | null = null;
+let refreshInFlight: Promise<void> | null = null;
 
 export function setUnauthorizedHandler(fn: () => void) {
   unauthorized = fn;
@@ -21,13 +23,23 @@ export function setUnauthorizedHandler(fn: () => void) {
 export function getToken() {
   return token;
 }
-export function setToken(value: string) {
+export function setToken(value: string, refreshValue?: string | null) {
   token = value;
   localStorage.setItem("jalora_token", value);
+  if (refreshValue !== undefined) {
+    refreshToken = refreshValue || "";
+    if (refreshToken) {
+      localStorage.setItem("jalora_refresh_token", refreshToken);
+    } else {
+      localStorage.removeItem("jalora_refresh_token");
+    }
+  }
 }
 export function clearToken() {
   token = "";
+  refreshToken = "";
   localStorage.removeItem("jalora_token");
+  localStorage.removeItem("jalora_refresh_token");
 }
 
 /* Append the Bearer token as a `?token=` query parameter to a media URL so
@@ -46,24 +58,89 @@ export interface RequestOptions {
   formData?: FormData;
 }
 
-export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+async function refreshAccessToken(): Promise<void> {
+  if (!refreshToken) {
+    clearToken();
+    unauthorized?.();
+    throw new ApiError("TOKEN_EXPIRED", "Session expired. Please log in again.", 401);
+  }
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      const resp = await fetch("/api/auth/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      const data = await resp.json().catch(() => ({})) as {
+        access_token?: string;
+        refresh_token?: string;
+        error?: { code?: string; details?: string };
+        message?: string;
+      };
+      if (!resp.ok || !data.access_token || !data.refresh_token) {
+        clearToken();
+        unauthorized?.();
+        throw new ApiError(
+          data.error?.code || "TOKEN_EXPIRED",
+          data.error?.details || data.message || "Session expired. Please log in again.",
+          resp.status,
+        );
+      }
+      setToken(data.access_token, data.refresh_token);
+    })().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  await refreshInFlight;
+}
+
+function unauthorizedError(
+  data: Record<string, unknown>,
+  status: number,
+): ApiError {
+  const err = (data.error || {}) as { code?: string; details?: string };
+  return new ApiError(
+    err.code || "UNAUTHORIZED",
+    err.details || (data.message as string) || "Session expired",
+    status,
+  );
+}
+
+async function sendRequest(path: string, opts: RequestOptions): Promise<Response> {
   const headers: Record<string, string> = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (opts.body) headers["Content-Type"] = "application/json";
-  const resp = await fetch(path, {
+  return fetch(path, {
     method: opts.method || "GET",
     headers,
     body: opts.formData || (opts.body ? JSON.stringify(opts.body) : undefined),
   });
+}
+
+export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+  let resp = await sendRequest(path, opts);
   if (resp.status === 401) {
     const data = await resp.json().catch(() => ({})) as Record<string, unknown>;
     const err = (data.error || {}) as { code?: string; details?: string };
-    if (err.details || data.message) {
-      throw new ApiError(err.code || "INVALID_CREDENTIALS", err.details || String(data.message), resp.status);
+    if (err.code === "TOKEN_EXPIRED" && path !== "/api/auth/refresh") {
+      await refreshAccessToken();
+      resp = await sendRequest(path, opts);
+      if (resp.status !== 401) {
+        if (resp.status === 204) return null as T;
+        const retryData = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+        if (!resp.ok) throw unauthorizedError(retryData, resp.status);
+        return retryData as T;
+      }
+      const retryError = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+      clearToken();
+      unauthorized?.();
+      throw unauthorizedError(retryError, resp.status);
     }
-    clearToken();
-    unauthorized?.();
-    throw new ApiError("UNAUTHORIZED", "Session expired", 401);
+    if (err.code === "TOKEN_EXPIRED" || err.code === "TOKEN_INVALID") {
+      clearToken();
+      unauthorized?.();
+    }
+    throw unauthorizedError(data, resp.status);
   }
   if (resp.status === 204) return null as T;
   const data = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
@@ -106,6 +183,38 @@ export async function uploadEmailAttachment(file: File): Promise<EmailAttachment
     method: "POST",
     formData: fd,
   });
+}
+
+export function listIdeaProjects(includeArchived = false): Promise<IdeaProject[]> {
+  return api<IdeaProject[]>(
+    `/api/idea-projects${includeArchived ? "?include_archived=true" : ""}`,
+  );
+}
+
+export function createIdeaProject(
+  project: Omit<IdeaProject, "id" | "archived" | "created_at" | "updated_at">,
+): Promise<IdeaProject> {
+  return api<IdeaProject>("/api/idea-projects", { method: "POST", body: project });
+}
+
+export function updateIdeaProject(
+  id: string,
+  project: Partial<Omit<IdeaProject, "id" | "archived" | "created_at" | "updated_at">>,
+): Promise<IdeaProject> {
+  return api<IdeaProject>(`/api/idea-projects/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: project,
+  });
+}
+
+export function setIdeaProjectArchived(
+  id: string,
+  archived: boolean,
+): Promise<IdeaProject> {
+  return api<IdeaProject>(
+    `/api/idea-projects/${encodeURIComponent(id)}/${archived ? "archive" : "reopen"}`,
+    { method: "POST" },
+  );
 }
 
 /* Phase H (§46-48): server-side speech-to-text fallback for browsers without

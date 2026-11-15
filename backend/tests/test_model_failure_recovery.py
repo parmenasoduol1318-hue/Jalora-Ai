@@ -1128,6 +1128,121 @@ def test_failed_provider_is_not_retried_during_the_same_workflow(monkeypatch):
     assert tool_calls == {"first": 1, "second": 1}
 
 
+def test_exhausted_credit_fallback_preserves_completed_tool_state(monkeypatch):
+    from conftest import Box, FakeModel
+    from app.services import model_router as mr
+
+    user_id, task_id, run_id = _persisted_task_run(
+        "Run the successful tool and finish the response."
+    )
+    tool_calls = 0
+
+    async def successful_tool() -> ToolResult:
+        nonlocal tool_calls
+        tool_calls += 1
+        return ToolResult.ok("completed once")
+
+    class CreditResponse:
+        status_code = 402
+
+        def __init__(self, affordable: int):
+            self.body = (
+                '{"error":{"code":402,"message":"You can only afford '
+                + str(affordable)
+                + ' tokens."}}'
+            )
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def aread(self):
+            return self.body.encode()
+
+    class CreditClient:
+        def __init__(self):
+            self.responses = [CreditResponse(1451), CreditResponse(200)]
+            self.payloads = []
+
+        def stream(self, method, url, headers=None, json=None, timeout=None):
+            self.payloads.append(dict(json or {}))
+            return self.responses.pop(0)
+
+    credit_client = CreditClient()
+    monkeypatch.setattr(mr, "get_async_client", lambda timeout=120.0: credit_client)
+    credit_provider = mr.JaloraChatModel(
+        spec=mr.ProviderSpec(
+            "openrouter", "openai", "https://openrouter.ai/api/v1",
+            "test-key", "paid-model", "paid-model",
+        ),
+        model_name="paid-model",
+    )
+
+    class ToolThenCreditFailureModel(FakeModel):
+        calls: int = 0
+
+        async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                async for chunk in super()._astream(
+                    messages, stop, run_manager, **kwargs
+                ):
+                    yield chunk
+                return
+            async for chunk in credit_provider._astream_openai({
+                "model": "paid-model",
+                "max_tokens": 8192,
+                "messages": [],
+                "stream": True,
+            }):
+                yield chunk
+
+    async def no_audit(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.agents.graph._audit_tool", no_audit)
+    registry = ToolRegistry()
+    registry.register(successful_tool, permission=PermissionLevel.AUTO)
+    primary = ToolThenCreditFailureModel(script=Box([AIMessage(
+        content="", tool_calls=[{
+            "name": "successful_tool", "args": {}, "id": "credit-recovery-tool",
+        }]
+    )]))
+    fallback = FakeModel(script=Box([AIMessage(content="workflow completed")]))
+    state = {
+        "messages": [HumanMessage(content="Run the successful tool and finish.")],
+        "steps": 0, "sources": [], "artifacts": [], "pending_approval": None,
+        "approved_call_ids": [], "rejected_call_ids": [], "status": "running",
+        "run_id": run_id, "user_id": user_id, "task_id": task_id,
+        "plan": None, "tool_calls": 0,
+        "policy": {"autonomy": 2, "tool_policies": {}}, "intent": "chat",
+    }
+
+    result = asyncio.run(build_graph(
+        model=primary,
+        fallback_models=[fallback],
+        registry=registry,
+        max_steps=5,
+        tool_timeout=2,
+        max_tool_calls=5,
+        max_retries=0,
+        system_prompt="test",
+    ).ainvoke(state))
+
+    assert result["status"] == "completed"
+    assert result["messages"][-1].content == "workflow completed"
+    assert tool_calls == 1
+    assert [payload["max_tokens"] for payload in credit_client.payloads] == [
+        8192, 1451,
+    ]
+    assert any(
+        isinstance(message, ToolMessage) and "completed once" in str(message.content)
+        for message in fallback.tape[-1]
+    )
+
+
 def test_planned_workflow_can_continue_after_model_responds_without_tool_calls(
     monkeypatch,
 ):

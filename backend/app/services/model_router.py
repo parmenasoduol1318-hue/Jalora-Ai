@@ -232,6 +232,7 @@ def build_provider_specs(s: Settings) -> dict[str, ProviderSpec]:
 # Priority used for automatic selection (strongest ecosystem first, local last).
 AUTO_PRIORITY = ["openai", "anthropic", "google", "deepseek", "groq", "mistral", "openrouter", "ollama"]
 PRIVATE_PRIORITY = ["ollama"]  # privacy-sensitive tasks prefer local
+LOCAL_AUTO_PROVIDERS = frozenset({"ollama", "lmstudio"})
 
 
 @dataclass
@@ -1193,18 +1194,35 @@ class ModelRouter:
                 model = self._model_for_complexity(spec, model_override, complexity)
                 return TaskRoute(spec, model, "configured default provider")
 
-        pool = PRIVATE_PRIORITY if prefer_private else AUTO_PRIORITY
+        local_opt_in = (
+            prefer_private
+            or provider_override in LOCAL_AUTO_PROVIDERS
+            or self.settings.default_provider in LOCAL_AUTO_PROVIDERS
+        )
+        pool = PRIVATE_PRIORITY if prefer_private else [
+            name for name in AUTO_PRIORITY
+            if local_opt_in or name not in LOCAL_AUTO_PROVIDERS
+        ]
         chosen_name = next((n for n in pool if self.is_usable(n, disabled)), None)
         if chosen_name is None:
             # fall back to any configured provider outside the pool
-            chosen_name = next((n for n in AUTO_PRIORITY if self.is_usable(n, disabled)), None)
+            chosen_name = next(
+                (
+                    n for n in AUTO_PRIORITY
+                    if (local_opt_in or n not in LOCAL_AUTO_PROVIDERS)
+                    and self.is_usable(n, disabled)
+                ),
+                None,
+            )
         if chosen_name is None:
             raise ModelNotConfiguredError()
 
         spec = self.specs[chosen_name]
         if modality == "image":
             # vision-capable providers first; keep the chosen one when it is vision-capable
-            vision_order = ["openai", "anthropic", "google", "ollama"]
+            vision_order = ["openai", "anthropic", "google"]
+            if local_opt_in:
+                vision_order.append("ollama")
             if chosen_name not in vision_order:
                 for name in vision_order:
                     if self.is_usable(name, disabled):
@@ -1241,6 +1259,12 @@ class ModelRouter:
         disabled = set(disabled or ())
         if complexity == "auto":
             complexity = estimate_complexity(message)
+        local_opt_in = (
+            prefer_private
+            or ollama_first
+            or provider_override in LOCAL_AUTO_PROVIDERS
+            or self.settings.default_provider in LOCAL_AUTO_PROVIDERS
+        )
         order: list[str] = []
 
         def _add(name: str | None) -> None:
@@ -1251,11 +1275,14 @@ class ModelRouter:
         if self.settings.default_provider != "auto":
             _add(self.settings.default_provider)
         base = list(PRIVATE_PRIORITY if prefer_private else AUTO_PRIORITY)
+        if not local_opt_in:
+            base = [name for name in base if name not in LOCAL_AUTO_PROVIDERS]
         pool = (["ollama"] + [n for n in base if n != "ollama"]) if ollama_first else base
         for name in pool:
             _add(name)
         for name in AUTO_PRIORITY:
-            _add(name)
+            if local_opt_in or name not in LOCAL_AUTO_PROVIDERS:
+                _add(name)
 
         return [
             TaskRoute(

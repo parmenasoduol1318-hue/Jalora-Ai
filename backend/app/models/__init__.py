@@ -5,6 +5,7 @@ from app.models.memory import Memory
 from app.models.document import Document, DocumentChunk
 from app.models.agent import AgentRun, Approval, ActivityLog
 from app.models.task import Task, TaskStep
+from app.models.idea_project import IdeaProject
 from app.models.comms import CommsIdentity
 from app.models.credential import Credential
 from app.models.integration import Integration
@@ -64,6 +65,7 @@ __all__ = [
     "ActivityLog",
     "Task",
     "TaskStep",
+    "IdeaProject",
     "CommsIdentity",
     "Credential",
     "Integration",

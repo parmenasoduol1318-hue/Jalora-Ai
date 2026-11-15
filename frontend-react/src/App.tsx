@@ -17,6 +17,7 @@ import { SchedulesView } from "./views/SchedulesView";
 import { CalendarView } from "./views/CalendarView";
 import { CreativeStudioView } from "./views/CreativeStudioView";
 import { PeopleView } from "./views/PeopleView";
+import { IdeaProjectsView } from "./views/IdeaProjectsView";
 import { DevicesView } from "./views/DevicesView";
 import { NotificationBell } from "./components/NotificationBell";
 import { RightSidebar } from "./components/RightSidebar";
@@ -33,6 +34,7 @@ const NAV: { view: ViewName; icon: NavIconKey; key: string }[] = [
   { view: "calendar", icon: "calendar", key: "calendarNav" },
   { view: "memory", icon: "memory", key: "notesMemory" },
   { view: "workspace", icon: "workspace", key: "workspaceNav" },
+  { view: "ideas", icon: "ideas", key: "ideasNav" },
   { view: "documents", icon: "documents", key: "filesNav" },
   { view: "integrations", icon: "integrations", key: "integrations" },
   { view: "devices", icon: "devices", key: "devicesAccess" },
@@ -501,6 +503,14 @@ export default function App() {
             onOpenRun={(runId) => void openRun(runId)}
           />
         )}
+        {view === "ideas" && (
+          <IdeaProjectsView
+            t={t}
+            onToast={toast}
+            onOpenConversation={openConversationById}
+            onOpenTask={focusTask}
+          />
+        )}
         {view === "integrations" && <IntegrationsView t={t} onToast={toast} />}
         {view === "devices" && <DevicesView t={t} onToast={toast} />}
         {view === "people" && <PeopleView t={t} onToast={toast} />}
@@ -571,11 +581,15 @@ function AuthScreen({
     setBusy(true);
     setError("");
     try {
-      const data = await api<{ access_token: string; user: User }>(
+      const data = await api<{
+        access_token: string;
+        refresh_token?: string | null;
+        user: User;
+      }>(
         `/api/auth/${mode}`,
         { method: "POST", body: mode === "register" ? { email, password, name } : { email, password } },
       );
-      setToken(data.access_token);
+      setToken(data.access_token, data.refresh_token);
       await onLoggedIn(data.user);
     } catch (err) {
       setError((err as Error).message || t("failed"));

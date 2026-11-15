@@ -146,6 +146,21 @@ export interface Task {
   created_at: string;
 }
 
+export interface IdeaProject {
+  id: string;
+  title: string;
+  brief: string;
+  goals: string;
+  next_steps: string;
+  notes: string;
+  milestones: string[];
+  task_ids: string[];
+  conversation_ids: string[];
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface MemoryItem {
   id: string;
   content: string;
@@ -316,7 +331,7 @@ export interface ChatResponse {
 
 export type ViewName =
   | "chat" | "dashboard" | "recents" | "tasks" | "memory" | "documents" | "settings"
-  | "integrations" | "devices" | "email" | "schedules" | "workspace" | "calendar" | "history" | "creative" | "people";
+  | "integrations" | "devices" | "email" | "schedules" | "workspace" | "ideas" | "calendar" | "history" | "creative" | "people";
 
 export interface ProfessionalProfile {
   name: string;

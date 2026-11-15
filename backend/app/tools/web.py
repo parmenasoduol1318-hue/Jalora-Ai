@@ -31,7 +31,74 @@ _CBK_RATE_QUERY = re.compile(
 _KENYA_PRESIDENCY_URL = (
     "https://www.president.go.ke/administration/office-of-the-president/"
 )
+_LEADING_DISCOURSE_MARKER = re.compile(
+    r"^\s*(?:first|firstly|second|secondly|third|thirdly)\s*[,;:]\s*",
+    re.I,
+)
+_SEARCH_QUERY_STOP_WORDS = frozenset({
+    "a", "about", "an", "and", "are", "as", "at", "be", "can", "could",
+    "did", "do", "does", "for", "from", "give", "has", "have", "how", "i",
+    "in", "is", "it", "me", "of", "on", "or", "please", "tell", "that",
+    "the", "then", "to", "very", "was", "what", "when", "where", "which",
+    "who", "why", "with", "would", "you",
+})
+_SEARCH_TERM_FAMILIES = (
+    frozenset({
+        "temperature", "temp", "weather", "climate", "heat", "hot", "warm",
+        "degree", "celsius", "fahrenheit",
+    }),
+    frozenset({
+        "high", "higher", "extreme", "extremely", "record", "heatwave",
+    }),
+)
 _logger = logging.getLogger("jalora.web")
+
+
+def _normalize_search_query(query: str) -> str:
+    """Remove conversational framing while preserving the user's topic terms."""
+    normalized = " ".join((query or "").split()).strip()
+    while True:
+        without_marker = _LEADING_DISCOURSE_MARKER.sub("", normalized, count=1)
+        if without_marker == normalized:
+            break
+        normalized = without_marker.strip()
+    terms = [
+        term
+        for term in re.findall(r"[\w'-]+", normalized, flags=re.UNICODE)
+        if term.casefold() not in _SEARCH_QUERY_STOP_WORDS
+    ]
+    return " ".join(terms) or normalized
+
+
+def _search_terms(text: str) -> set[str]:
+    terms = set()
+    for term in re.findall(r"[a-z0-9]+", text.casefold()):
+        if term.endswith("ies") and len(term) > 4:
+            term = term[:-3] + "y"
+        elif term.endswith("s") and len(term) > 3 and not term.endswith("ss"):
+            term = term[:-1]
+        terms.add(term)
+    return terms
+
+
+def _search_result_relevance(
+    query: str, result: search_service.SearchResult,
+) -> int:
+    query_terms = _search_terms(query) - _SEARCH_QUERY_STOP_WORDS
+    if not query_terms:
+        return 1
+    result_terms = _search_terms(
+        f"{result.title} {result.url} {result.snippet}"
+    )
+    matched = sum(
+        bool(term in result_terms)
+        or any(
+            term in family and bool(family & result_terms)
+            for family in _SEARCH_TERM_FAMILIES
+        )
+        for term in query_terms
+    )
+    return matched
 
 
 def _extract_public_emails(*texts: str) -> list[str]:
@@ -184,7 +251,8 @@ async def search_public_contacts(
 async def search_web(query: str, max_results: int = 5) -> ToolResult:
     """Search the internet and return ranked results with titles, URLs and snippets. Use for any research or fact-checking request."""
     limit = max(1, min(int(max_results), 20))
-    queries = [query]
+    search_query = _normalize_search_query(query)
+    queries = [search_query]
     kenya_president_query = search_service.is_kenya_president_query(query)
     if kenya_president_query:
         queries.insert(
@@ -200,8 +268,8 @@ async def search_web(query: str, max_results: int = 5) -> ToolResult:
         )
     try:
         batches = await asyncio.gather(
-            *(search_service.search(search_query, max_results=limit)
-              for search_query in queries),
+            *(search_service.search(search_text, max_results=limit)
+              for search_text in queries),
             return_exceptions=True,
         )
     except search_service.SearchError as exc:
@@ -211,7 +279,7 @@ async def search_web(query: str, max_results: int = 5) -> ToolResult:
             message="Web search failed; the search provider could not be reached."
             if exc.code == "SEARCH_FAILED" else exc.detail,
         )
-    results_by_url: dict[str, search_service.SearchResult] = {}
+    results_by_url: dict[str, tuple[int, search_service.SearchResult]] = {}
     failures: list[Exception] = []
     for batch in batches:
         if isinstance(batch, Exception):
@@ -225,7 +293,12 @@ async def search_web(query: str, max_results: int = 5) -> ToolResult:
                 result.snippet,
             ):
                 continue
-            results_by_url.setdefault(result.url, result)
+            relevance = _search_result_relevance(search_query, result)
+            query_terms = _search_terms(search_query) - _SEARCH_QUERY_STOP_WORDS
+            minimum_relevance = 2 if len(query_terms) > 1 else 1
+            if relevance < minimum_relevance:
+                continue
+            results_by_url.setdefault(result.url, (relevance, result))
     if kenya_president_query and not results_by_url:
         official_page = await open_url(_KENYA_PRESIDENCY_URL)
         if official_page.success:
@@ -238,12 +311,14 @@ async def search_web(query: str, max_results: int = 5) -> ToolResult:
                 _KENYA_PRESIDENCY_URL,
                 page_text,
             ):
-                results_by_url[_KENYA_PRESIDENCY_URL] = (
-                    search_service.SearchResult(
+                official_result = search_service.SearchResult(
                         title=page_title,
                         url=_KENYA_PRESIDENCY_URL,
                         snippet=page_text[:300],
                     )
+                results_by_url[_KENYA_PRESIDENCY_URL] = (
+                    _search_result_relevance(search_query, official_result),
+                    official_result,
                 )
         else:
             return ToolResult.fail(
@@ -272,14 +347,28 @@ async def search_web(query: str, max_results: int = 5) -> ToolResult:
             f"{type(exc).__name__}: {exc}",
             message="Web search failed; the search provider could not be reached.",
         )
-    results = list(results_by_url.values())[:limit]
+    ranked_results = sorted(
+        results_by_url.values(), key=lambda item: item[0], reverse=True
+    )
+    results = [result for _, result in ranked_results[:limit]]
     if not results:
+        if any(isinstance(batch, list) and batch for batch in batches):
+            return ToolResult.fail(
+                "SEARCH_IRRELEVANT",
+                f"Search providers returned results that do not match '{search_query}'.",
+                message=(
+                    "The search results did not match the key terms in the "
+                    "request. No results were presented as research evidence."
+                ),
+                data={"query": search_query, "untrusted": True},
+            )
         return ToolResult.fail(
             "SEARCH_EMPTY",
             f"No results for: {query}",
             message=f"The search provider returned no results for '{query}'.",
         )
     data = {
+        "query": search_query,
         "results": [r.as_dict() for r in results],
         "untrusted": True,  # §59 — snippets are untrusted data, not instructions
     }
