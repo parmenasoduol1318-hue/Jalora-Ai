@@ -134,6 +134,7 @@ Open http://localhost:8000/. State persists in named volumes. For Postgres set
 
 ```powershell
 cd jalora\backend
+..\.venv\Scripts\pip.exe install -r requirements-test.txt
 ..\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
@@ -166,6 +167,10 @@ Browser (frontend-react/) ── SSE / JSON ──► FastAPI (backend/app)
   max-steps wrap-up, STOP handling, and **approval pause/resume** (Level 3/4
   tools persist graph state and wait for an explicit approve/reject, resumed with
   `entry="tools"`).
+- **Chat task continuity** — closing the browser stream detaches event delivery
+  without cancelling the active run; persisted task/chat results remain available
+  when the user returns. This process-local execution does not survive a backend
+  process shutdown or restart.
 - **Tools** (`tools/`) — structured `ToolResult {success, message, data, error}`
   envelope for every tool; permission levels AUTO / NOTIFY / CONFIRM / STRICT;
   registry metadata discovers task-relevant capabilities and the model selects

@@ -1899,6 +1899,59 @@ def _done_payload(text: str) -> dict | None:
     return None
 
 
+def test_stream_disconnect_does_not_cancel_task_execution(monkeypatch):
+    import asyncio
+
+    from app.services import chat_service
+
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    completed = asyncio.Event()
+    was_cancelled = asyncio.Event()
+    captured_emitter = None
+
+    async def execute(**kwargs):
+        nonlocal captured_emitter
+        captured_emitter = kwargs["emitter"]
+        captured_emitter.emit("meta", {"status": "running"})
+        started.set()
+        try:
+            await finish.wait()
+        except asyncio.CancelledError:
+            was_cancelled.set()
+            raise
+        captured_emitter.emit("token", {"text": "finished after disconnect"})
+        captured_emitter.emit("usage", {"prompt_tokens": 2})
+        completed.set()
+        captured_emitter.emit("done", {"status": "completed"})
+
+    monkeypatch.setattr(chat_service, "execute_chat", execute)
+
+    async def run():
+        stream = chat_service.stream_chat(
+            user_id="test-user",
+            request_message="continue working",
+            router=None,
+        )
+        first_event = await stream.__anext__()
+        assert "event: meta" in first_event
+        await started.wait()
+        await stream.aclose()
+        finish.set()
+        await asyncio.wait_for(completed.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert not was_cancelled.is_set()
+        assert captured_emitter is not None
+        assert captured_emitter.queue.empty()
+        assert captured_emitter.of_type("usage")[0]["prompt_tokens"] == 2
+        assert not any(
+            task.get_coro().__name__ == "execute"
+            for task in chat_service._BACKGROUND_CHAT_TASKS
+        )
+
+    asyncio.run(run())
+
+
 def test_sse_done_event_carries_visual_keys(client, fake_router):
     """Any finished turn must surface citations/diagrams keys in the `done` frame,
     and a ```svg fence must produce a non-empty diagrams list end-to-end."""

@@ -3,7 +3,12 @@ import type { FormEvent } from "react";
 import { api } from "../lib/api";
 import { resolveTimeZone } from "../lib/timezone";
 import { ProviderLogo } from "../components/ProviderLogos";
-import type { CalendarEventT, IntegrationItem, ProviderCard } from "../lib/types";
+import type {
+  CalendarEventT,
+  ChatResponse,
+  IntegrationItem,
+  ProviderCard,
+} from "../lib/types";
 
 type ConnectResult = {
   status: string;
@@ -50,9 +55,11 @@ const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 export function CalendarView({
   t,
   onToast,
+  onOpenTask,
 }: {
   t: (k: string) => string;
   onToast: (m: string, e?: boolean) => void;
+  onOpenTask: (taskId: string) => void;
 }) {
   const [events, setEvents] = useState<CalendarEventT[]>([]);
   const [cursor, setCursor] = useState<Date>(() => startOfMonth(new Date()));
@@ -134,6 +141,16 @@ export function CalendarView({
 
   const connected = calendarRow?.status === "connected" || !!calendarCard?.connected;
 
+  const openPendingApproval = (result: ChatResponse): boolean => {
+    if (result.status !== "paused_approval") return false;
+    if (!result.task_id) {
+      throw new Error("The calendar action is awaiting approval, but no task was returned.");
+    }
+    onToast(t("calAwaitingApproval"));
+    onOpenTask(result.task_id);
+    return true;
+  };
+
   const connect = async () => {
     setBusy(true);
     try {
@@ -171,13 +188,15 @@ export function CalendarView({
           .map((email) => ({ email })),
         timezone: displayTimeZone,
       };
-      const res = await api<{ status: string; message?: string; suggested?: { start?: string } }>(
+      const res = await api<ChatResponse & {
+        message?: string;
+        suggested?: { start?: string };
+      }>(
         "/api/calendar/events",
         { method: "POST", body }
       );
-      if (res.status === "paused_approval") {
-        onToast(t("calAwaitingApproval"));
-      } else if (res.status === "conflict") {
+      if (openPendingApproval(res)) return;
+      if (res.status === "conflict") {
         onToast(res.message || t("calCreated"), true);
       } else {
         onToast(t("calCreated"));
@@ -203,15 +222,12 @@ export function CalendarView({
       return;
     }
     try {
-      const result = await api<{ status?: string }>(
+      const result = await api<ChatResponse>(
         `/api/calendar/events/${encodeURIComponent(ev.id)}`,
         { method: "DELETE" }
       );
-      if (result.status === "paused_approval") {
-        onToast(t("calAwaitingApproval"));
-      } else {
-        load();
-      }
+      if (openPendingApproval(result)) return;
+      load();
     } catch (err) {
       onToast((err as Error).message, true);
     }
@@ -225,14 +241,11 @@ export function CalendarView({
     const next = window.prompt("Event title", ev.title);
     if (next === null || !next.trim() || next.trim() === ev.title) return;
     try {
-      const result = await api<{ status?: string }>(`/api/calendar/events/${encodeURIComponent(ev.id)}`, {
+      const result = await api<ChatResponse>(`/api/calendar/events/${encodeURIComponent(ev.id)}`, {
         method: "PATCH", body: { title: next.trim() },
       });
-      if (result.status === "paused_approval") {
-        onToast(t("calAwaitingApproval"));
-      } else {
-        load();
-      }
+      if (openPendingApproval(result)) return;
+      load();
     } catch (err) {
       onToast((err as Error).message, true);
     }

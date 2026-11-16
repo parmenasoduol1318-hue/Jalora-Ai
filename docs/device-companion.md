@@ -321,3 +321,15 @@ with general access to other apps' messages. Desktop access is likewise
 app-specific and requires explicit OS/app integration. Calls are not handled
 by this bridge; existing Twilio/Telnyx call integrations are separate,
 provider-based services and do not control local handset calls.
+
+On Android, recognized visible password, PIN, and verification-code inputs stop
+remote click, scroll, and typing operations, so users must complete those steps
+directly on the phone. This depends on the app exposing the secure input through
+Android accessibility and is not a guarantee for custom keypads. App-based
+message sends require separate approved UI actions; notification reply support
+and complete group-chat history are not implemented by the Android companion.
+SIM Toolkit and carrier-payment screens remain app/device-specific, and Jalora
+does not submit a payment or enter a payment credential through this UI bridge.
+Windows UI Automation paths likewise reject input while they detect a visible
+password, PIN, or verification-code field; custom or inaccessible app keypads
+cannot be guaranteed detectable.

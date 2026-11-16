@@ -35,7 +35,14 @@ test.describe('Calendar view', () => {
     await form.locator('input[type="datetime-local"]').first().fill(start);
     await form.getByRole('button', { name: /create/i }).click();
 
-    // The event should appear on the month grid after the list reloads.
+    // Calendar writes require explicit approval through the shared Tasks flow.
+    const approval = authenticatedPage.locator('.task-approval')
+      .filter({ hasText: 'create_event' });
+    await expect(approval).toBeVisible({ timeout: 10000 });
+    await approval.getByRole('button', { name: /approve/i }).click();
+    await expect(approval).toContainText('approved', { timeout: 10000 });
+
+    await authenticatedPage.locator('.sidebar .nav-item', { hasText: /calendar/i }).click();
     await expect(
       authenticatedPage.locator('.cal-event', { hasText: 'E2E Calendar Event' })
     ).toBeVisible({ timeout: 10000 });

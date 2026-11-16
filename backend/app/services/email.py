@@ -397,7 +397,7 @@ async def generate_email_draft_with_model(
             set_active_user_key_values,
             set_active_user_keys,
         )
-        from app.services.provider_state import normalize_disabled
+        from app.services.provider_state import disabled_for_preferences
 
         reset_user_keys = clear_active_user_keys
         keys = _load_user_provider_keys(preferences)
@@ -412,7 +412,7 @@ async def generate_email_draft_with_model(
                 or preferences.get("model_provider")
             ),
             model_override=preferences.get("model_name"),
-            disabled=normalize_disabled(preferences.get("disabled_providers")),
+            disabled=disabled_for_preferences(preferences),
         )
         model = router.get_model(apply_user_key_to_route(route))
         response = await model.ainvoke([

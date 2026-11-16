@@ -136,13 +136,12 @@ test.describe('Workspace start-coding button', () => {
     await page.locator('.sidebar .nav-item', { hasText: /workspace/i }).click();
 
     const emptyWorkspaceCreate = page.locator('.ws-empty-full .btn.primary');
-    if (await emptyWorkspaceCreate.isVisible().catch(() => false)) {
-      page.once('dialog', (dialog) => void dialog.accept('E2E coding project'));
-      await emptyWorkspaceCreate.click();
-      const approvalBanner = page.locator('.approval-banner');
-      await expect(approvalBanner).toBeVisible();
-      await approvalBanner.locator('.btn.primary').click();
-    }
+    await expect(emptyWorkspaceCreate).toBeVisible({ timeout: 15000 });
+    page.once('dialog', (dialog) => void dialog.accept('E2E coding project'));
+    await emptyWorkspaceCreate.click();
+    const approvalBanner = page.locator('.approval-banner');
+    await expect(approvalBanner).toBeVisible();
+    await approvalBanner.locator('.btn.primary').click();
 
     const textarea = page.locator('.ws-requirements-input');
     await expect(textarea).toBeVisible({ timeout: 15000 });

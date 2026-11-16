@@ -207,6 +207,46 @@ def test_project_chat_task_is_linked_to_project(client):
         assert task.trigger_data["idea_project_id"] == project_id
 
 
+def test_project_chat_context_includes_only_its_owned_recent_task_history(client):
+    from app.services.chat_service import _build_idea_project_context
+
+    owner_headers = _register(client, "idea-context-history-owner@test.com")
+    other_headers = _register(client, "idea-context-history-other@test.com")
+    owner_id = client.get("/api/auth/me", headers=owner_headers).json()["id"]
+    other_id = client.get("/api/auth/me", headers=other_headers).json()["id"]
+    project_response = client.post(
+        "/api/idea-projects",
+        headers=owner_headers,
+        json={"title": "Long-running research"},
+    )
+    project_id = project_response.json()["id"]
+
+    with SessionLocal() as db:
+        project = db.get(IdeaProject, project_id)
+        assert project is not None
+        own_task = Task(
+            user_id=owner_id,
+            goal="Compare current coastal heat studies",
+            status="completed",
+            result="Two opened scientific sources agree on humid nights.",
+        )
+        foreign_task = Task(
+            user_id=other_id,
+            goal="Private task",
+            status="completed",
+            result="This must never enter another user's context.",
+        )
+        db.add_all([own_task, foreign_task])
+        db.flush()
+        project.task_ids = [own_task.id, foreign_task.id]
+        context = _build_idea_project_context(db, owner_id, project)
+
+    assert "Compare current coastal heat studies" in context
+    assert "Two opened scientific sources agree" in context
+    assert "Private task" not in context
+    assert "must never enter another user's context" not in context
+
+
 def test_idea_project_requires_nonblank_title_and_authentication(client):
     headers = _register(client, "idea-validation@test.com")
     assert client.post(

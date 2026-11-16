@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,10 @@ _MOUSEEVENTF_LEFTDOWN = 0x0002
 _MOUSEEVENTF_LEFTUP = 0x0004
 _KEYEVENTF_KEYUP = 0x0002
 _KEYEVENTF_UNICODE = 0x0004
+_AUTHENTICATION_FIELD_LABEL = re.compile(
+    r"\b(pin|m[- ]?pin|passcode|password|one[- ]time|otp|verification code|security code)\b",
+    re.IGNORECASE,
+)
 _KEYS = {
     "ENTER": 0x0D,
     "TAB": 0x09,
@@ -361,6 +366,7 @@ def click_accessible_control(
         _, hwnd, _ = _foreground_app_window(process.pid)
         window = _uia_window(process.pid, hwnd)
         try:
+            _ensure_no_authentication_field(window)
             matches = [
                 control for control in window.descendants()
                 if (not normalized_name or control.element_info.name == normalized_name)
@@ -402,6 +408,37 @@ def click_accessible_control(
                 "Windows UI Automation could not perform or verify the selected action.",
                 "ACCESSIBLE_ACTION_FAILED",
             ) from exc
+
+
+def _ensure_no_authentication_field(window) -> None:
+    try:
+        controls = window.descendants()
+        if len(controls) > 300:
+            raise ServiceUnavailableError(
+                "The app screen is too large to verify safely; no interaction was performed.",
+                "LOCAL_AUTHENTICATION_CHECK_UNAVAILABLE",
+            )
+        for control in controls:
+            if not control.is_visible():
+                continue
+            info = control.element_info
+            if str(info.control_type or "") not in {"Edit", "ComboBox", "Document"}:
+                continue
+            if _AUTHENTICATION_FIELD_LABEL.search(
+                f"{info.name or ''} {info.automation_id or ''}"
+            ) or info.element.CurrentIsPassword:
+                raise ConflictError(
+                    "A password, PIN, or verification-code field is visible. "
+                    "Enter credentials and complete this step directly on the device."
+                )
+    except (ConflictError, ServiceUnavailableError):
+        raise
+    except Exception as exc:
+        raise ServiceUnavailableError(
+            "Windows could not verify that the app screen is free of a password "
+            "or PIN field; no interaction was performed.",
+            "LOCAL_AUTHENTICATION_CHECK_UNAVAILABLE",
+        ) from exc
 
 
 def _ensure_foreground_window(process_id: int, expected_hwnd: int) -> None:
@@ -490,6 +527,8 @@ def interact_with_local_app(
                 "Open this approved app through Jalora before operating it."
             )
         user32, hwnd, client_rect = _foreground_app_window(process.pid)
+        if action in {"click", "type", "key"}:
+            _ensure_no_authentication_field(_uia_window(process.pid, hwnd))
         if action == "click":
             if x is None or y is None:
                 raise BadRequestError("Click requires x and y coordinates.")

@@ -281,6 +281,7 @@ class SettingsPatch(BaseModel):
     timezone: str | None = Field(default=None, max_length=64)
     preferred_provider: str | None = Field(default=None, max_length=32)
     disabled_providers: list[str] | None = None
+    enabled_local_providers: list[str] | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -340,6 +341,7 @@ class SettingsOut(BaseModel):
     timezone: str = "Africa/Nairobi"
     preferred_provider: str = "auto"
     disabled_providers: list[str] = Field(default_factory=list)
+    enabled_local_providers: list[str] = Field(default_factory=list)
     provider_keys: list[str] = Field(default_factory=list)
 
 

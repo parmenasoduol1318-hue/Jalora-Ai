@@ -65,19 +65,16 @@ def test_resolve_path_rejects_double_dot_segment():
     assert exc.value.code == "PATH_ESCAPE"
 
 
-def test_resolve_path_rejects_symlink_escape(tmp_path):
-    """A symlink that points outside the workspace must be blocked."""
+def test_resolve_path_rejects_symlink_escape(tmp_path, external_directory_link):
+    """A symlink or Windows junction that points outside must be blocked."""
     user_id = _user_id()
     root = sandbox.workspace_root(user_id)
-    inside = root / "linkfile"
-    outside = tmp_path / "outside_secret"
-    outside.write_text("secret data")
-    try:
-        inside.symlink_to(outside)
-    except OSError:
-        pytest.skip("cannot create symlink on this platform")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "outside_secret").write_text("secret data")
+    external_directory_link(root / "link", outside)
     with pytest.raises(sandbox.SandboxError):
-        sandbox.read_file(user_id, "linkfile")
+        sandbox.read_file(user_id, "link/outside_secret")
 
 
 def test_resolve_path_rejects_env_exfil():

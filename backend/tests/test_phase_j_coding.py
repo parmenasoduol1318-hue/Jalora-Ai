@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -64,18 +63,15 @@ def test_null_byte_rejected(client):
     assert exc.value.code == "INVALID_PATH"
 
 
-def test_symlink_escape_rejected(client, tmp_path):
+def test_symlink_escape_rejected(client, tmp_path, external_directory_link):
     _, user_id = _user(client, "esc4@test.com")
     root = _workspace(user_id)
-    outside = tmp_path / "outside.txt"
-    outside.write_text("top secret", encoding="utf-8")
-    link = root / "link.txt"
-    try:
-        os.symlink(outside, link)
-    except (OSError, NotImplementedError):
-        pytest.skip("symlink creation not permitted on this platform")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "outside.txt").write_text("top secret", encoding="utf-8")
+    external_directory_link(root / "link", outside)
     with pytest.raises(sandbox.SandboxError) as exc:
-        sandbox.read_file(user_id, "link.txt")
+        sandbox.read_file(user_id, "link/outside.txt")
     assert exc.value.code == "PATH_ESCAPE"
 
 

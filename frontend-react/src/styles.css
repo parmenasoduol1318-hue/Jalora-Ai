@@ -3509,3 +3509,23 @@ body.light .hero-greeting p{color:#627791}
 /* Persistent chat timestamps use the user's IANA timezone from settings. */
 .msg-time { display: block; margin-top: 3px; color: var(--text-3); font-size: 10px; }
 .date-separator { flex-basis: 100%; text-align: center; margin: 12px 0 4px; color: var(--text-3); font-size: 11px; }
+.startup-loading,
+.view-loading {
+  display: flex;
+  min-height: 100vh;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-dim);
+  background: var(--bg);
+}
+.view-loading { min-height: 160px; }
+.startup-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: startup-spin .8s linear infinite;
+}
+@keyframes startup-spin { to { transform: rotate(360deg); } }

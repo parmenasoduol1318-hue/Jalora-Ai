@@ -21,7 +21,7 @@ test.describe('Schedules & reminders', () => {
 
     // Verify the page loads and shows scheduled items (or empty state).
     await expect(
-      authenticatedPage.locator('h1, [class*="header"], [class*="title"]')
+      authenticatedPage.locator('.view-header h2', { hasText: /schedules/i })
     ).toBeVisible({ timeout: 10000 });
   });
 

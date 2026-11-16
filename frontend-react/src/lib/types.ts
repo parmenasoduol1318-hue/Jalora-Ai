@@ -255,6 +255,8 @@ export interface AppSettings {
   preferred_provider?: "auto" | "openai" | "anthropic" | "groq" | "google" | "deepseek" | "mistral" | "openrouter" | "lmstudio" | "jan" | "cohere" | "cerebras" | "perplexity" | "poolside" | "nvidia" | "ollama";
   // AI providers the user has disconnected for their account.
   disabled_providers?: string[];
+  // Ollama and LM Studio require an explicit account-level opt-in.
+  enabled_local_providers?: string[];
   // Names of providers for which the user has stored a per-user API key.
   provider_keys?: string[];
   // LM Studio local provider configuration.
@@ -686,6 +688,7 @@ export interface SettingsOut {
   timezone: string;
   preferred_provider: string;
   disabled_providers?: string[];
+  enabled_local_providers?: string[];
   provider_keys?: string[];
 }
 

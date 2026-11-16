@@ -205,6 +205,45 @@ def test_duplicate_urls_across_queries_are_opened_once():
     assert len(result["sources"]) == 1
 
 
+def test_subquestions_share_the_source_budget_across_queries():
+    searched = []
+    opened = []
+
+    async def search(query, max_results):
+        searched.append(query)
+        return ToolResult.ok("ok", {
+            "results": [
+                {
+                    "title": f"Mombasa heat report {query} {index}",
+                    "url": f"https://climate.example/{query}/{index}",
+                    "snippet": "Mombasa heat",
+                }
+                for index in range(max_results)
+            ],
+        })
+
+    async def open_page(url):
+        opened.append(url)
+        return _opened_page(
+            url,
+            "Mombasa is hot because coastal humidity slows nighttime cooling.",
+        )
+
+    result = asyncio.run(research(
+        "Why is Mombasa hot?",
+        subquestions=["coastal conditions", "urban heat", "regional climate"],
+        max_sources=3,
+        search_fn=search,
+        open_fn=open_page,
+    ))
+
+    assert searched == ["coastal conditions", "urban heat", "regional climate"]
+    assert len(result["sources"]) == 3
+    assert {url.split("/")[3] for url in opened} == {
+        "coastal conditions", "urban heat", "regional climate",
+    }
+
+
 def test_conflicting_numeric_claims_are_reported_as_unresolved():
     rows = [
         {"title": "Report A", "url": "https://a.example/rate", "snippet": ""},

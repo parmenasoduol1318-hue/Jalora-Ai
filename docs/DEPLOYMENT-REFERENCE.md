@@ -123,6 +123,12 @@ Add only keys for providers you actually use. A local Ollama URL such as
 `http://localhost:11434` will not reach Ollama on your personal computer from
 Render.
 
+Ollama and LM Studio are disabled for each account by default. A user can opt
+in from Settings, but the provider URL/model remain server-level configuration:
+in a hosted deployment, opting in uses the deployment's configured endpoint,
+not a model server running on that user's phone or laptop. Do not enable a
+shared local endpoint for untrusted users.
+
 ## Vercel: React frontend
 
 Create a Vercel project from the same GitHub repository and set:

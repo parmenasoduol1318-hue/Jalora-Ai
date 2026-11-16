@@ -69,10 +69,23 @@ Back navigation is an explicit, separately approved Android global-back action.
 It is reported as verified only when the foreground app remains selected and
 the accessibility tree changes.
 Text entry is limited to a unique, visible, enabled, non-password edit control.
+Recognized visible password, PIN, and verification-code inputs stop remote
+click, scroll, and typing actions; enter credentials and complete that step
+directly on the phone. Password-field values are never included in screen
+inspection results. This check depends on the app exposing the secure field
+through Android accessibility and cannot identify every custom app keypad.
 Every remote action has a separate approval notification; the expanded
 notification shows the exact request on an unlocked device. No screen image,
 coordinate gesture, force-close, credential entry, MFA interaction, or
 background hidden action is implemented.
+
+These controls do not make every third-party app workflow available. App-based
+messages require individually approved screen actions and accessible controls;
+the companion does not read a complete chat history or provide a single
+task-level approval for a multi-step send. Notification summaries are limited
+to content exposed in selected-app notifications. SIM Toolkit menus and
+carrier/payment flows are app- and device-specific; Jalora must stop at
+credential entry and the user completes the sensitive step on the phone.
 
 Pairing credentials, app selections, and a pending receipt are encrypted using
 an Android Keystore AES-GCM key. A restart during an action records an

@@ -42,6 +42,26 @@ def test_missing_token_rejected(client):
     assert client.get("/api/auth/me", headers={"Authorization": "Bearer nonsense"}).status_code == 401
 
 
+def test_logout_revokes_refresh_token(client):
+    session = client.post("/api/auth/register", json={
+        "email": "logout@example.com", "password": "longenough1", "name": "Logout",
+    })
+    assert session.status_code == 201
+    refresh_token = session.json()["refresh_token"]
+
+    logged_out = client.post(
+        "/api/auth/logout", json={"refresh_token": refresh_token}
+    )
+    assert logged_out.status_code == 200
+    assert logged_out.json()["success"] is True
+
+    refreshed = client.post(
+        "/api/auth/refresh", json={"refresh_token": refresh_token}
+    )
+    assert refreshed.status_code == 401
+    assert refreshed.json()["error"]["code"] == "TOKEN_INVALID"
+
+
 def test_chat_requires_auth(client):
     resp = client.post("/api/chat", json={"message": "hi"})
     assert resp.status_code == 401

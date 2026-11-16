@@ -16,6 +16,7 @@ type ProvidersResponse = { providers: Record<string, ProviderInfo> };
 
 /* Providers that run locally and do not need (or accept) an API key. */
 const KEYLESS_PROVIDERS = new Set(["ollama", "lmstudio", "jan"]);
+const OPT_IN_LOCAL_PROVIDERS = new Set(["ollama", "lmstudio"]);
 
 /* Dashboard / credit-balance pages for every provider — used by the
    "Open dashboard" link so users can see their key status / usage / credits. */
@@ -136,8 +137,20 @@ export function SettingsView({
     const next = disable
       ? Array.from(new Set([...current, name]))
       : current.filter((n) => n !== name);
+    const body: Record<string, unknown> = { disabled_providers: next };
+    if (OPT_IN_LOCAL_PROVIDERS.has(name)) {
+      const enabled = new Set(settings.enabled_local_providers ?? []);
+      if (disable) enabled.delete(name);
+      else enabled.add(name);
+      body.enabled_local_providers = ["ollama", "lmstudio"].filter((provider) =>
+        enabled.has(provider),
+      );
+      if (disable && settings.preferred_provider === name) {
+        body.preferred_provider = "auto";
+      }
+    }
     const ok = await patchSettings(
-      { disabled_providers: next },
+      body,
       disable ? t("providerDisconnected") : t("providerReconnected"),
     );
     if (ok) await load();

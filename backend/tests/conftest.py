@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -81,6 +82,36 @@ if registry.get("ping_external") is None:
 def client():
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def external_directory_link():
+    links: list[Path] = []
+
+    def create(link: Path, target: Path) -> Path:
+        if os.name == "nt":
+            result = subprocess.run(
+                ["cmd.exe", "/c", "mklink", "/J", str(link), str(target)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode:
+                raise RuntimeError(
+                    f"Could not create a directory junction: {result.stderr or result.stdout}"
+                )
+        else:
+            link.symlink_to(target, target_is_directory=True)
+        links.append(link)
+        return link
+
+    yield create
+
+    for link in reversed(links):
+        if os.name == "nt":
+            link.rmdir()
+        else:
+            link.unlink()
 
 
 @pytest.fixture(autouse=True)

@@ -47,6 +47,10 @@ _SUPPORTED_KEYS = {
     "Left": 0x25,
     "Right": 0x27,
 }
+_AUTHENTICATION_FIELD_LABEL = re.compile(
+    r"\b(pin|m[- ]?pin|passcode|password|one[- ]time|otp|verification code|security code)\b",
+    re.IGNORECASE,
+)
 _KEYEVENTF_KEYUP = 0x0002
 _KEYEVENTF_UNICODE = 0x0004
 _logger = logging.getLogger(__name__)
@@ -335,6 +339,12 @@ class WindowsExecutor:
         if operation == "windows.app.close":
             return self._close(entry, session)
         window = self._window(session)
+        if operation in {
+            "windows.screen.click",
+            "windows.screen.scroll",
+            "windows.screen.type",
+        }:
+            self._ensure_no_authentication_field(window)
         if operation in {"windows.screen.inspect", "windows.screen.ocr"}:
             if operation == "windows.screen.ocr" and self._foreground_pid() != session.process.pid:
                 raise WindowsActionError(
@@ -597,6 +607,41 @@ class WindowsExecutor:
             raise WindowsActionError(
                 "WINDOWS_ACCESSIBILITY_FAILED",
                 f"Windows could not locate the selected accessible control: {exc}",
+            ) from exc
+
+    @staticmethod
+    def _ensure_no_authentication_field(window) -> None:
+        try:
+            controls = window.descendants()
+            if len(controls) > 300:
+                raise WindowsActionError(
+                    "WINDOWS_AUTHENTICATION_CHECK_UNAVAILABLE",
+                    "The app screen is too large to verify safely; no interaction was performed.",
+                )
+            for control in controls:
+                if not control.is_visible():
+                    continue
+                info = control.element_info
+                if str(info.control_type or "") not in {"Edit", "ComboBox", "Document"}:
+                    continue
+                if _AUTHENTICATION_FIELD_LABEL.search(
+                    f"{info.name or ''} {info.automation_id or ''}"
+                ):
+                    raise WindowsActionError(
+                        "WINDOWS_AUTHENTICATION_REQUIRED",
+                        "A password, PIN, or verification-code field is visible. Enter credentials and complete this step directly on the device.",
+                    )
+                if info.element.CurrentIsPassword:
+                    raise WindowsActionError(
+                        "WINDOWS_AUTHENTICATION_REQUIRED",
+                        "A password, PIN, or verification-code field is visible. Enter credentials and complete this step directly on the device.",
+                    )
+        except WindowsActionError:
+            raise
+        except _AUTOMATION_ERRORS as exc:
+            raise WindowsActionError(
+                "WINDOWS_AUTHENTICATION_CHECK_UNAVAILABLE",
+                "Windows could not verify that the app screen is free of a password or PIN field; no interaction was performed.",
             ) from exc
 
     @staticmethod

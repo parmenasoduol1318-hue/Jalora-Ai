@@ -56,6 +56,12 @@ execution, background input, and universal app compatibility are not
 supported. Accessible control names and text are sent to Jalora only when the
 user explicitly grants `windows.screen.read`.
 
+Recognized visible password, PIN, and verification-code fields block remote
+click, scroll, and typing operations so the user must complete those steps
+directly. If Windows cannot verify the screen safely, the action is rejected.
+This depends on the app exposing the secure field through UI Automation and
+cannot identify every custom keypad.
+
 Credentials are protected with Windows DPAPI for the current Windows account
 under `%LOCALAPPDATA%\Jalora\WindowsCompanion`. The companion creates no inbound
 listener. A saved action receipt is encrypted before network submission and

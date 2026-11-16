@@ -112,25 +112,31 @@ def test_disconnect_reconnect_round_trip(client):
         "disabled_providers": ["groq", "openai"],
     })
     assert resp.status_code == 200, resp.text
-    # Persisted in canonical routing-priority order, duplicates dropped.
-    assert resp.json()["disabled_providers"] == ["openai", "groq"]
+    # Local inference is disabled by default, alongside the explicit cloud
+    # disconnects.
+    assert {"openai", "groq", "ollama", "lmstudio"} <= set(
+        resp.json()["disabled_providers"]
+    )
 
     providers = client.get("/api/providers", headers=headers).json()
-    assert providers["disabled_providers"] == ["openai", "groq"]
+    assert {"openai", "groq", "ollama", "lmstudio"} <= set(
+        providers["disabled_providers"]
+    )
     assert providers["providers"]["openai"]["disabled"] is True
     assert providers["providers"]["openai"]["usable"] is False
     assert providers["providers"]["groq"]["disabled"] is True
-    assert providers["providers"]["ollama"]["disabled"] is False
-    assert providers["providers"]["ollama"]["usable"] is True  # keyless
+    assert providers["providers"]["ollama"]["disabled"] is True
+    assert providers["providers"]["ollama"]["usable"] is False
 
     resp2 = client.patch("/api/settings", headers=headers, json={
         "disabled_providers": [],
     })
     assert resp2.status_code == 200
-    assert resp2.json()["disabled_providers"] == []
+    assert set(resp2.json()["disabled_providers"]) == {"ollama", "lmstudio"}
     after = client.get("/api/providers", headers=headers).json()
     assert after["providers"]["openai"]["disabled"] is False
     assert after["providers"]["openai"]["usable"] is False  # no key in test env
+    assert after["providers"]["ollama"]["disabled"] is True
 
 
 def test_unknown_provider_rejected(client):
@@ -152,6 +158,8 @@ def test_disabled_providers_are_per_user(client):
     assert da["providers"]["openai"]["disabled"] is True
     assert "openai" not in db["disabled_providers"]
     assert db["providers"]["openai"]["disabled"] is False
+    assert {"ollama", "lmstudio"} <= set(db["disabled_providers"])
+    assert {"ollama", "lmstudio"} <= set(da["disabled_providers"])
 
 
 def test_local_provider_can_be_opted_in_per_user(client):
@@ -163,8 +171,35 @@ def test_local_provider_can_be_opted_in_per_user(client):
     )
     assert saved.status_code == 200, saved.text
     assert saved.json()["preferred_provider"] == "lmstudio"
+    assert "lmstudio" in saved.json()["enabled_local_providers"]
+    assert "lmstudio" not in saved.json()["disabled_providers"]
+    assert client.get("/api/providers", headers=headers).json()[
+        "providers"
+    ]["lmstudio"]["disabled"] is False
 
     other_headers = _auth_headers(client, "local-default@test.com")
     other = client.get("/api/settings", headers=other_headers)
     assert other.status_code == 200
     assert other.json()["preferred_provider"] == "auto"
+    assert {"ollama", "lmstudio"} <= set(other.json()["disabled_providers"])
+
+
+def test_local_provider_opt_in_is_per_user(client):
+    opted_in = _auth_headers(client, "local-enabled@test.com")
+    default = _auth_headers(client, "local-disabled@test.com")
+
+    saved = client.patch(
+        "/api/settings",
+        headers=opted_in,
+        json={"enabled_local_providers": ["ollama"]},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["enabled_local_providers"] == ["ollama"]
+    assert "ollama" not in saved.json()["disabled_providers"]
+    assert "lmstudio" in saved.json()["disabled_providers"]
+
+    enabled_status = client.get("/api/providers", headers=opted_in).json()
+    default_status = client.get("/api/providers", headers=default).json()
+    assert enabled_status["providers"]["ollama"]["disabled"] is False
+    assert default_status["providers"]["ollama"]["disabled"] is True
+    assert default_status["providers"]["lmstudio"]["disabled"] is True

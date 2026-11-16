@@ -17,7 +17,7 @@ from app.database.session import SessionLocal
 from app.errors import ToolResult
 from app.models.user import User
 from app.services import credential_store, sandbox
-from app.services.provider_state import normalize_disabled
+from app.services.provider_state import disabled_for_preferences
 from app.services.tool_execution import invoke_registered_tool
 from app.services.tool_preflight import validate_tool_arguments
 from app.tools import coding_tools as _coding_tools
@@ -52,7 +52,7 @@ def provider_status(user: User) -> dict[str, dict[str, Any]]:
     copilot_installed = importlib.util.find_spec("copilot") is not None
     codex_installed = importlib.util.find_spec("openai_codex") is not None
     codex_key_available = bool(keys.get("codex") or keys.get("openai") or settings.openai_api_key)
-    disabled = set(normalize_disabled((user.prefs or {}).get("disabled_providers")))
+    disabled = set(disabled_for_preferences(user.prefs))
     return {
         "copilot": {
             "sdk_installed": copilot_installed,
@@ -72,7 +72,7 @@ def _agent_key(user_id: str, provider: str) -> str | None:
         user = db.get(User, user_id)
         if user is None:
             return None
-        if provider in normalize_disabled((user.prefs or {}).get("disabled_providers")):
+        if provider in disabled_for_preferences(user.prefs):
             return None
         keys = _user_keys(user)
     if provider == "copilot":

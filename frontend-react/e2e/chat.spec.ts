@@ -445,9 +445,29 @@ test.describe('Chat & streaming', () => {
     const pageErrors: string[] = [];
     authenticatedPage.on('pageerror', error => pageErrors.push(error.message));
     await authenticatedPage.route('**/api/settings', async route => {
-      const response = await route.fetch();
-      const settings = await response.json();
-      await route.fulfill({ response, json: { ...settings, timezone: 'UTC+3' } });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        json: {
+          autonomy: 0,
+          tool_policies: {},
+          notifications_enabled: false,
+          notification_sound: false,
+          schedule_alerts: true,
+          approval_alerts: true,
+          memory_enabled: true,
+          locale: 'en',
+          voice: { enabled: false, auto_speak: true, continuous: false, voice: '' },
+          tools: [],
+          response_length: 'balanced',
+          tone: 'professional',
+          timezone: 'UTC+3',
+          preferred_provider: 'auto',
+          disabled_providers: [],
+          enabled_local_providers: [],
+          provider_keys: [],
+        },
+      });
     });
     await authenticatedPage.route('**/api/chat', async route => {
       await route.fulfill({

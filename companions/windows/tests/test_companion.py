@@ -4,6 +4,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+
 from jalora_windows_companion import executor as executor_module
 from jalora_windows_companion import protocol, security
 from jalora_windows_companion.executor import WindowsExecutor
@@ -395,6 +396,24 @@ def test_windows_executor_click_requires_and_verifies_exact_accessible_control(
     assert missing[2] == "WINDOWS_CONTROL_NOT_UNIQUE"
 
 
+def test_windows_executor_blocks_clicks_while_password_field_is_visible(
+    monkeypatch, tmp_path
+):
+    executor, applications, window = _fake_windows(monkeypatch, tmp_path)
+    executor.execute("windows.app.launch", {"app_id": "test-app"}, applications)
+    window.controls[0].password = True
+
+    result = executor.execute(
+        "windows.screen.click",
+        {"app_id": "test-app", "name": "Submit", "automation_id": ""},
+        applications,
+    )
+
+    assert result[0] == "failed"
+    assert result[2] == "WINDOWS_AUTHENTICATION_REQUIRED"
+    assert window.controls[1].clicked is False
+
+
 def test_windows_executor_scroll_requires_observed_accessibility_change(
     monkeypatch, tmp_path
 ):
@@ -498,7 +517,7 @@ def test_windows_executor_never_types_into_password_fields(monkeypatch, tmp_path
     )
 
     assert result[0] == "failed"
-    assert result[2] == "WINDOWS_PASSWORD_INPUT_BLOCKED"
+    assert result[2] == "WINDOWS_AUTHENTICATION_REQUIRED"
     assert sent == []
 
 

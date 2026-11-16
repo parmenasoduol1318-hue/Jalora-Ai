@@ -265,3 +265,15 @@ Use the eight organizations named in the request and a deterministic fake search
 | `git diff --check` on the task-scoped changes | Passed for this implementation slice; unrelated pre-existing whitespace warnings remain elsewhere in the working tree |
 
 **Remaining verification boundary:** The localhost task suite covers the authenticated task/approval queue with mocked provider behavior, not live delivery. No live email provider send/reconciliation, physical-device action, or full cross-entrypoint task lifecycle was completed. Real provider/device acceptance remains external and unverified.
+
+## Latest audit and local verification (2026-11-16)
+
+- Project chat now adds a bounded history of the owner's five latest tasks to the active project context, labels historical results, and has an ownership regression preventing another user's tasks from leaking into that context.
+- Deep Research now distributes its bounded source budget across planner-provided subquestions. Regression coverage verifies source distribution and relevant-source handling, including the unrelated Mombasa query.
+- Voice conversation messages now receive strictly increasing timestamps when the clock returns the same instant, preserving spoken-turn order in chat history. A frozen-clock regression reproduces the collision.
+- The invalid-timezone browser test uses deterministic settings data rather than a pending proxied `route.fetch`; the full browser run no longer leaves a route callback outstanding.
+- Test dependencies are defined in `backend/requirements-test.txt` and installed by CI so Chroma-backed coverage runs instead of being skipped. Windows external-directory-link tests use a junction-compatible fixture.
+- Latest complete validation: backend **1,862 passed, zero skipped, 14 warnings**, with local Ollama evaluation enabled and Redis DB 15 configured; full Chromium Playwright **51 passed**; Windows companion **18 passed**; frontend TypeScript/production build, backend `compileall`, `git diff --check`, and `pip check` passed. The focused project/research/memory/sandbox batch passed **115 tests**.
+- Android build validation remains unavailable in this environment: Java, Gradle, ADB, and an Android Gradle wrapper are absent. No physical phone/Windows device action, live email/provider send, provider-sandbox acceptance, production rollback/load rehearsal, or independent security review was performed.
+
+Stages 10 and 11 remain **partially verified**: broader durable context/memory evaluation, representative OCR quality, broader research corroboration, and authorized live-provider testing are still open. Stages 7, 12, 14, and 15 retain provider, native-device, security, and production acceptance gates as recorded in the [master roadmap](./JALORA-MASTER-IMPLEMENTATION-ROADMAP.md).

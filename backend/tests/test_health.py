@@ -57,7 +57,7 @@ def test_providers_never_leak_secrets(client, auth_headers):
     assert "api_key" not in body.lower() or '"api_key": null' not in body.lower()
     data = resp.json()
     providers = data["providers"]
-    assert data["disabled_providers"] == []
+    assert set(data["disabled_providers"]) == {"ollama", "lmstudio"}
     for name, info in providers.items():
         assert set(info.keys()) == {"configured", "model", "keyless", "disabled", "usable", "logo"}
         for key in ("configured", "keyless", "disabled", "usable"):

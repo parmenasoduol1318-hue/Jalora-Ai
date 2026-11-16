@@ -112,6 +112,10 @@ def test_mock_roundtrip_transcript_and_audio(client, auth_headers, monkeypatch):
 
 
 def test_voice_turns_are_persisted_in_the_bound_conversation(client, auth_headers, monkeypatch):
+    from datetime import datetime, timezone
+
+    from app.services import voice_session
+
     headers = auth_headers("voice-conversation@test.com")
     user_id = _first_user_id()
     with SessionLocal() as db:
@@ -120,6 +124,13 @@ def test_voice_turns_are_persisted_in_the_bound_conversation(client, auth_header
         db.commit()
         db.refresh(conversation)
         conversation_id = conversation.id
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 16, tzinfo=tz or timezone.utc)
+
+    monkeypatch.setattr(voice_session, "datetime", FrozenDateTime)
 
     async def fake_stream(self, messages):
         return AIMessage(content="Voice reply"), "stub"

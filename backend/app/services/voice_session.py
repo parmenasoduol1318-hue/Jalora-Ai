@@ -27,7 +27,7 @@ import asyncio
 import base64
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 import numpy as np
@@ -1322,11 +1322,28 @@ class VoiceSession:
                 ):
                     conversation = db.get(Conversation, self.conversation_id)
                     if conversation is not None and conversation.user_id == self.user_id:
+                        created_at = datetime.now(timezone.utc)
+                        latest_message_at = db.scalar(
+                            select(Message.created_at)
+                            .where(Message.conversation_id == conversation.id)
+                            .order_by(Message.created_at.desc(), Message.id.desc())
+                            .limit(1)
+                        )
+                        if latest_message_at is not None:
+                            if latest_message_at.tzinfo is None:
+                                latest_message_at = latest_message_at.replace(
+                                    tzinfo=timezone.utc
+                                )
+                            if created_at <= latest_message_at:
+                                created_at = latest_message_at + timedelta(
+                                    microseconds=1
+                                )
                         db.add(Message(
                             conversation_id=conversation.id,
                             role="assistant" if role == "agent" else "user",
                             content=text,
                             meta={"source": "voice", "call_id": self.call_id},
+                            created_at=created_at,
                         ))
                         conversation.updated_at = datetime.now(timezone.utc)
                         db.commit()

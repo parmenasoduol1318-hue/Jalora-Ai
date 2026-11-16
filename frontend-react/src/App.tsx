@@ -1,28 +1,31 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
-  api, clearToken, getToken, setToken, setUnauthorizedHandler,
+  api, logoutSession, restoreSession, setToken, setUnauthorizedHandler,
 } from "./lib/api";
 import { translator, readStoredLocale, type Locale } from "./lib/i18n";
 import type { Conversation, Task, User, ViewName, ThemeName, OllamaRouteEvent } from "./lib/types";
-import { ChatView } from "./views/ChatView";
-import { DashboardView } from "./views/DashboardView";
-import { TasksView } from "./views/TasksView";
-import { MemoryView } from "./views/MemoryView";
-import { DocumentsView } from "./views/DocumentsView";
-import { SettingsView } from "./views/SettingsView";
-import { WorkspaceView } from "./views/WorkspaceView";
-import { IntegrationsView } from "./views/IntegrationsView";
-import { RecentsView } from "./views/RecentsView";
-import { SchedulesView } from "./views/SchedulesView";
-import { CalendarView } from "./views/CalendarView";
-import { CreativeStudioView } from "./views/CreativeStudioView";
-import { PeopleView } from "./views/PeopleView";
-import { IdeaProjectsView } from "./views/IdeaProjectsView";
-import { DevicesView } from "./views/DevicesView";
 import { NotificationBell } from "./components/NotificationBell";
 import { RightSidebar } from "./components/RightSidebar";
 import { navIcons } from "./components/SidebarIcons";
-import { RemoteDeviceCompanion } from "./components/RemoteDeviceCompanion";
+
+const ChatView = lazy(() => import("./views/ChatView").then((m) => ({ default: m.ChatView })));
+const DashboardView = lazy(() => import("./views/DashboardView").then((m) => ({ default: m.DashboardView })));
+const TasksView = lazy(() => import("./views/TasksView").then((m) => ({ default: m.TasksView })));
+const MemoryView = lazy(() => import("./views/MemoryView").then((m) => ({ default: m.MemoryView })));
+const DocumentsView = lazy(() => import("./views/DocumentsView").then((m) => ({ default: m.DocumentsView })));
+const SettingsView = lazy(() => import("./views/SettingsView").then((m) => ({ default: m.SettingsView })));
+const WorkspaceView = lazy(() => import("./views/WorkspaceView").then((m) => ({ default: m.WorkspaceView })));
+const IntegrationsView = lazy(() => import("./views/IntegrationsView").then((m) => ({ default: m.IntegrationsView })));
+const RecentsView = lazy(() => import("./views/RecentsView").then((m) => ({ default: m.RecentsView })));
+const SchedulesView = lazy(() => import("./views/SchedulesView").then((m) => ({ default: m.SchedulesView })));
+const CalendarView = lazy(() => import("./views/CalendarView").then((m) => ({ default: m.CalendarView })));
+const CreativeStudioView = lazy(() => import("./views/CreativeStudioView").then((m) => ({ default: m.CreativeStudioView })));
+const PeopleView = lazy(() => import("./views/PeopleView").then((m) => ({ default: m.PeopleView })));
+const IdeaProjectsView = lazy(() => import("./views/IdeaProjectsView").then((m) => ({ default: m.IdeaProjectsView })));
+const DevicesView = lazy(() => import("./views/DevicesView").then((m) => ({ default: m.DevicesView })));
+const RemoteDeviceCompanion = lazy(() =>
+  import("./components/RemoteDeviceCompanion").then((m) => ({ default: m.RemoteDeviceCompanion })),
+);
 
 type NavIconKey = keyof typeof navIcons;
 
@@ -85,17 +88,27 @@ export default function App() {
     toastTimer.current = window.setTimeout(() => setToastMsg(null), 3800);
   }, []);
 
-  const logout = useCallback(() => {
-    clearToken();
+  const clearUserSession = useCallback(() => {
     setUser(null);
     setConversations([]);
+    setTasks([]);
     setActive(null);
     setNavOpen(false);
   }, []);
 
+  const logout = useCallback(async () => {
+    const revokeSession = logoutSession();
+    clearUserSession();
+    try {
+      await revokeSession;
+    } catch (error) {
+      toast(`Signed out locally, but server session revocation failed: ${(error as Error).message}`, true);
+    }
+  }, [clearUserSession, toast]);
+
   useEffect(() => {
-    setUnauthorizedHandler(() => setUser(null));
-  }, []);
+    setUnauthorizedHandler(clearUserSession);
+  }, [clearUserSession]);
 
   useEffect(() => {
     document.body.setAttribute("data-theme", theme);
@@ -108,17 +121,15 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      if (!getToken()) {
-        setBooted(true);
-        return;
-      }
       try {
-        const me = await api<User>("/api/auth/me");
-        setUser(me);
+        if (await restoreSession()) {
+          setUser(await api<User>("/api/auth/me"));
+        }
       } catch {
-        /* token invalid — api() already cleared it */
+        /* Invalid credentials are cleared by api(); transient failures keep them for retry. */
+      } finally {
+        setBooted(true);
       }
-      setBooted(true);
     })();
   }, []);
 
@@ -151,7 +162,7 @@ export default function App() {
       }
     };
     void probe();
-    const timer = window.setInterval(() => { void probe(); }, 5000);
+    const timer = window.setInterval(() => { void probe(); }, 30000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -316,10 +327,21 @@ export default function App() {
     setNavOpen(false);
   };
 
-  if (!booted) return null;
+  if (!booted) {
+    return (
+      <div className="startup-loading" role="status">
+        <span className="startup-spinner" aria-hidden="true" />
+        <span>Restoring your Jalora session…</span>
+      </div>
+    );
+  }
 
   if (window.location.pathname === "/device-companion") {
-    return <RemoteDeviceCompanion onExit={() => { window.location.href = "/"; }} />;
+    return (
+      <Suspense fallback={<div className="view-loading" role="status">Loading device companion…</div>}>
+        <RemoteDeviceCompanion onExit={() => { window.location.href = "/"; }} />
+      </Suspense>
+    );
   }
 
   if (!user) {
@@ -465,6 +487,7 @@ export default function App() {
         </header>
 
         <div className="content">
+        <Suspense fallback={<div className="view-loading" role="status">Loading your workspace…</div>}>
         {view === "chat" && (
           <ChatView
             key={`chat:${chatKey}:${chatReset}`}
@@ -508,7 +531,9 @@ export default function App() {
             onOpenTask={focusTask}
           />
         )}
-        {view === "calendar" && <CalendarView t={t} onToast={toast} />}
+        {view === "calendar" && (
+          <CalendarView t={t} onToast={toast} onOpenTask={focusTask} />
+        )}
         {view === "memory" && <MemoryView t={t} onToast={toast} />}
         {view === "documents" && <DocumentsView t={t} onToast={toast} />}
         {view === "workspace" && (
@@ -559,6 +584,7 @@ export default function App() {
           <SettingsView t={t} locale={locale} onLocale={changeLocale} onToast={toast} theme={theme} toggleTheme={toggleTheme} />
         )}
         {view === "creative" && <CreativeStudioView toast={toast} />}
+        </Suspense>
       </div>
       </main>
 

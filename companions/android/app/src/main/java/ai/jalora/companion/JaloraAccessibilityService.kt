@@ -50,6 +50,15 @@ class JaloraAccessibilityService : AccessibilityService() {
             )
         }
         return try {
+            if (
+                operation in AUTHENTICATION_GUARDED_OPERATIONS &&
+                hasVisibleAuthenticationInput(root)
+            ) {
+                return ActionResult.failed(
+                    "ANDROID_AUTHENTICATION_REQUIRED",
+                    "A password, PIN, or verification-code field is visible. Enter credentials and complete this step directly on the device.",
+                )
+            }
             when (operation) {
                 "android.screen.inspect" -> inspect(root, app.optString("name"))
                 "android.screen.back" -> back(root)
@@ -106,6 +115,37 @@ class JaloraAccessibilityService : AccessibilityService() {
                 .put("accessible_controls", controls),
             null,
         )
+    }
+
+    private fun hasVisibleAuthenticationInput(root: AccessibilityNodeInfo): Boolean {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var visited = 0
+        while (queue.isNotEmpty() && visited < MAX_NODES) {
+            val node = queue.removeFirst()
+            visited += 1
+            val labels = listOf(
+                node.hintText?.toString().orEmpty(),
+                node.contentDescription?.toString().orEmpty(),
+                node.viewIdResourceName.orEmpty(),
+            ).joinToString(" ")
+            val sensitive = node.isVisibleToUser && (
+                node.isPassword ||
+                    (node.isEditable && node.isFocused &&
+                        AUTHENTICATION_LABEL_PATTERN.containsMatchIn(labels))
+            )
+            for (index in 0 until node.childCount) {
+                node.getChild(index)?.let(queue::addLast)
+            }
+            if (node !== root) node.recycle()
+            if (sensitive) {
+                queue.forEach { it.recycle() }
+                return true
+            }
+        }
+        val scanIncomplete = queue.isNotEmpty()
+        queue.forEach { it.recycle() }
+        return scanIncomplete
     }
 
     private fun click(root: AccessibilityNodeInfo, arguments: JSONObject): ActionResult {
@@ -288,13 +328,24 @@ class JaloraAccessibilityService : AccessibilityService() {
         return values
     }
 
-    private fun nodeName(node: AccessibilityNodeInfo): String =
-        node.text?.toString()?.takeIf { it.isNotBlank() }
+    private fun nodeName(node: AccessibilityNodeInfo): String {
+        if (node.isPassword) return "Secure input"
+        return node.text?.toString()?.takeIf { it.isNotBlank() }
             ?: node.contentDescription?.toString().orEmpty()
+    }
 
     companion object {
         private const val MAX_NODES = 300
         private const val MAX_CONTROLS = 40
+        private val AUTHENTICATION_GUARDED_OPERATIONS = setOf(
+            "android.screen.click",
+            "android.screen.scroll",
+            "android.screen.type",
+        )
+        private val AUTHENTICATION_LABEL_PATTERN = Regex(
+            """\b(pin|m[- ]?pin|passcode|password|one[- ]time|otp|verification code|security code)\b""",
+            RegexOption.IGNORE_CASE,
+        )
 
         @Volatile
         var instance: JaloraAccessibilityService? = null

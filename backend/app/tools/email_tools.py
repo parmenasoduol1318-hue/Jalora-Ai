@@ -19,7 +19,7 @@ from app.errors import ToolResult
 from app.models.user import User
 from app.models.autoreply import AutoReplyRule
 from app.services import email as email_service
-from app.services.provider_state import normalize_disabled
+from app.services.provider_state import disabled_for_preferences
 from app.schemas import RuleCreate, RuleOut, RulePatch
 from app.tools.base import PermissionLevel, registry
 
@@ -72,7 +72,7 @@ async def draft_email_reply(email_id: str, instruction: str) -> ToolResult:
             prefer_private=True,
             provider_override=preferences.get("model_provider"),
             model_override=preferences.get("model_name"),
-            disabled=normalize_disabled(preferences.get("disabled_providers")),
+            disabled=disabled_for_preferences(preferences),
         )
         model = model_router.get_model(route)
     except Exception as exc:

@@ -23,6 +23,12 @@ export function setUnauthorizedHandler(fn: () => void) {
 export function getToken() {
   return token;
 }
+export async function restoreSession(): Promise<boolean> {
+  if (!token && refreshToken) {
+    await refreshAccessToken();
+  }
+  return Boolean(token);
+}
 export function setToken(value: string, refreshValue?: string | null) {
   token = value;
   localStorage.setItem("jalora_token", value);
@@ -40,6 +46,36 @@ export function clearToken() {
   refreshToken = "";
   localStorage.removeItem("jalora_token");
   localStorage.removeItem("jalora_refresh_token");
+}
+
+export async function logoutSession(): Promise<void> {
+  const savedRefreshToken = refreshToken;
+  clearToken();
+  if (!savedRefreshToken) return;
+
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch("/api/auth/logout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: savedRefreshToken }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({})) as {
+        error?: { code?: string; details?: string };
+        message?: string;
+      };
+      throw new ApiError(
+        data.error?.code || "LOGOUT_FAILED",
+        data.error?.details || data.message || "Could not revoke the server session.",
+        response.status,
+      );
+    }
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 /* Append the Bearer token as a `?token=` query parameter to a media URL so

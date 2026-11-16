@@ -179,7 +179,7 @@ async def research(
         search = search or search_web
         opener = opener or open_url
 
-    candidates: list[dict[str, str]] = []
+    candidate_groups: list[list[dict[str, str]]] = []
     errors: list[dict[str, str]] = []
     seen_urls: set[str] = set()
     timed_out = False
@@ -208,6 +208,7 @@ async def research(
         results = data.get("results") or []
         if not isinstance(results, list):
             continue
+        query_candidates: list[dict[str, str]] = []
         for item in results:
             if not isinstance(item, dict):
                 continue
@@ -216,16 +217,27 @@ async def research(
             if not canonical or canonical in seen_urls:
                 continue
             seen_urls.add(canonical)
-            candidates.append({
+            query_candidates.append({
                 "url": raw_url,
                 "canonical_url": canonical,
                 "title": str(item.get("title") or "")[:500],
                 "snippet": str(item.get("snippet") or "")[:500],
             })
-            if len(candidates) >= source_limit:
-                break
-        if len(candidates) >= source_limit:
+        candidate_groups.append(query_candidates)
+
+    candidates: list[dict[str, str]] = []
+    candidate_index = 0
+    while len(candidates) < source_limit:
+        added = False
+        for group in candidate_groups:
+            if candidate_index < len(group):
+                candidates.append(group[candidate_index])
+                added = True
+                if len(candidates) >= source_limit:
+                    break
+        if not added:
             break
+        candidate_index += 1
 
     sources: list[dict[str, Any]] = []
     content_chars = 0

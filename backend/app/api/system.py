@@ -17,7 +17,7 @@ from app.services import calendar as calendar_service
 from app.services.direct_action import execute_direct_action
 from app.services.model_router import ModelRouter
 from app.services.policy import decide_for_user
-from app.services.provider_state import normalize_disabled, overview
+from app.services.provider_state import disabled_for_preferences, overview
 from app.tools import registry
 
 router = APIRouter(prefix="/api", tags=["system"])
@@ -95,7 +95,7 @@ def providers(user: User = Depends(get_current_user)):
     preference, which is what routing actually honours.
     """
     settings = get_settings()
-    disabled = normalize_disabled((user.prefs or {}).get("disabled_providers"))
+    disabled = disabled_for_preferences(user.prefs)
     provider_status = overview(settings, disabled)
     stored_keys = (user.prefs or {}).get("provider_keys") or {}
     for name, label in (("copilot", "GitHub Copilot SDK"), ("codex", "OpenAI Codex SDK")):

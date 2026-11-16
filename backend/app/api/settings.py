@@ -31,7 +31,13 @@ from app.services.policy import (
     normalize_autonomy,
     normalize_tool_policies,
 )
-from app.services.provider_state import PROVIDER_NAMES, normalize_disabled
+from app.services.provider_state import (
+    LOCAL_PROVIDER_NAMES,
+    PROVIDER_NAMES,
+    disabled_for_preferences,
+    enabled_local_for_preferences,
+    normalize_disabled,
+)
 from app.services.provider_extensions import (
     set_active_user_keys,
     set_active_user_key_values,
@@ -98,7 +104,8 @@ def _settings_out(prefs: dict) -> SettingsOut:
         tone=str(prefs.get("tone", "professional")),
         timezone=str(prefs.get("timezone", "Africa/Nairobi")),
         preferred_provider=str(prefs.get("preferred_provider", "auto")),
-        disabled_providers=normalize_disabled(prefs.get("disabled_providers")),
+        disabled_providers=disabled_for_preferences(prefs),
+        enabled_local_providers=enabled_local_for_preferences(prefs),
         provider_keys=provider_keys,
     )
 
@@ -170,7 +177,35 @@ def patch_settings(body: SettingsPatch, user: User = Depends(get_current_user),
             raise BadRequestError(
                 f"Unknown provider(s): {', '.join(unknown)}.", "UNKNOWN_PROVIDER"
             )
-        prefs["disabled_providers"] = normalize_disabled(body.disabled_providers)
+        prefs["disabled_providers"] = [
+            name for name in normalize_disabled(body.disabled_providers)
+            if name not in LOCAL_PROVIDER_NAMES
+        ]
+
+    if body.enabled_local_providers is not None:
+        requested = {
+            str(item).strip().lower()
+            for item in body.enabled_local_providers
+        }
+        unknown = requested - LOCAL_PROVIDER_NAMES
+        if unknown:
+            raise BadRequestError(
+                f"Unknown local provider(s): {', '.join(sorted(unknown))}.",
+                "INVALID_LOCAL_PROVIDER",
+            )
+        prefs["enabled_local_providers"] = [
+            name for name in ("ollama", "lmstudio") if name in requested
+        ]
+
+    if (
+        body.preferred_provider in LOCAL_PROVIDER_NAMES
+        and body.enabled_local_providers is None
+    ):
+        enabled = set(enabled_local_for_preferences(prefs))
+        enabled.add(body.preferred_provider)
+        prefs["enabled_local_providers"] = [
+            name for name in ("ollama", "lmstudio") if name in enabled
+        ]
 
     user.prefs = prefs
     db.commit()
@@ -318,7 +353,7 @@ def provider_availability_for_user(
     set_active_user_key_values(_load_keys)
     try:
         from app.services.provider_state import overview as _overview
-        disabled = normalize_disabled(prefs.get("disabled_providers", []))
+        disabled = disabled_for_preferences(prefs)
         result = _overview(settings, disabled)
         # Inject per-user key availability flags
         stored_keys = prefs.get("provider_keys") or {}

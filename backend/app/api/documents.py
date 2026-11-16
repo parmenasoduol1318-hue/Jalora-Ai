@@ -27,7 +27,7 @@ from app.services.document_service import (
 )
 from app.services.model_router import ModelRouter
 from app.services.policy import decide_for_user
-from app.services.provider_state import normalize_disabled
+from app.services.provider_state import disabled_for_preferences
 from app.tools import registry
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
@@ -215,7 +215,7 @@ async def query_document(document_id: str, payload: dict,
     ]
     route = model_router.route(
         message=question, complexity="complex",
-        disabled=normalize_disabled((user.prefs or {}).get("disabled_providers")),
+        disabled=disabled_for_preferences(user.prefs),
     )
     model = model_router.get_model(route)
     result = await model.ainvoke(messages)

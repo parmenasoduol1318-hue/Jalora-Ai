@@ -5,6 +5,7 @@ from datetime import timedelta
 
 import pytest
 from langchain_core.messages import AIMessage
+from sqlalchemy import select
 
 from app.api import devices as devices_api
 from app.database.session import SessionLocal
@@ -13,7 +14,6 @@ from app.models.device import DeviceConnection, DeviceMessage
 from app.models.task import Task, TaskStep
 from app.models.user import utcnow
 from app.services import local_device_control
-from sqlalchemy import select
 
 
 def _approve_direct_action(client, headers, response):
@@ -632,6 +632,70 @@ def test_local_inspection_and_accessible_click_require_confirmation(
     assert clicks[0][2:] == ("Send", "send-button")
 
 
+def test_local_accessible_click_stops_when_password_field_is_visible(monkeypatch):
+    class FakeProcess:
+        pid = 123
+
+        def poll(self):
+            return None
+
+    class FakeControl:
+        def __init__(self, *, password=False, name="Password"):
+            self.clicked = False
+            self.element_info = type("Info", (), {
+                "name": name,
+                "automation_id": "auth-field",
+                "control_type": "Edit",
+                "enabled": True,
+                "visible": True,
+                "element": type(
+                    "Element",
+                    (),
+                    {"CurrentIsPassword": password},
+                )(),
+            })()
+
+        def is_visible(self):
+            return self.element_info.visible
+
+        def is_enabled(self):
+            return self.element_info.enabled
+
+        def click_input(self):
+            self.clicked = True
+
+    password = FakeControl(password=True)
+    target = FakeControl(password=False, name="Continue")
+    window = type(
+        "Window",
+        (),
+        {"descendants": lambda _self: [password, target]},
+    )()
+    monkeypatch.setattr(
+        local_device_control,
+        "os",
+        type("OS", (), {"name": "nt"})(),
+    )
+    monkeypatch.setattr(
+        local_device_control,
+        "_launched_processes",
+        {("owner", "app"): FakeProcess()},
+    )
+    monkeypatch.setattr(
+        local_device_control,
+        "_foreground_app_window",
+        lambda _pid: (None, 55, None),
+    )
+    monkeypatch.setattr(local_device_control, "_uia_window", lambda _pid, _hwnd: window)
+
+    with pytest.raises(ConflictError, match="Enter credentials"):
+        local_device_control.click_accessible_control(
+            "owner", "app", name="Continue"
+        )
+
+    assert target.clicked is False
+
+
 def test_local_app_process_tracker_only_closes_owned_process(monkeypatch):
     class FakeProcess:
         pid = 1234
@@ -757,6 +821,20 @@ def test_local_input_is_limited_to_foreground_owned_app(monkeypatch):
     )
     monkeypatch.setattr(
         local_device_control,
+        "_uia_window",
+        lambda _pid, _hwnd: type(
+            "Window",
+            (),
+            {"descendants": lambda _self: []},
+        )(),
+    )
+    monkeypatch.setattr(
+        local_device_control,
+        "_ensure_no_authentication_field",
+        lambda _window: None,
+    )
+    monkeypatch.setattr(
+        local_device_control,
         "_ensure_foreground_window",
         lambda process_id, hwnd: (
             None if (process_id, hwnd) == (1234, 55) else pytest.fail("Wrong app window")
@@ -766,6 +844,23 @@ def test_local_input_is_limited_to_foreground_owned_app(monkeypatch):
         local_device_control,
         "_send_inputs",
         lambda _user32, inputs: sent_batches.append(inputs),
+    )
+
+    def reject_authentication(_window):
+        raise ConflictError("Authentication input is visible.")
+
+    monkeypatch.setattr(
+        local_device_control, "_ensure_no_authentication_field", reject_authentication
+    )
+    with pytest.raises(ConflictError, match="Authentication input is visible"):
+        local_device_control.interact_with_local_app(
+            "owner", "app", action="click", x=100, y=120
+        )
+    assert sent_batches == []
+    monkeypatch.setattr(
+        local_device_control,
+        "_ensure_no_authentication_field",
+        lambda _window: None,
     )
 
     click = local_device_control.interact_with_local_app(

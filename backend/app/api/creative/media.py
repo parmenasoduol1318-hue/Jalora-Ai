@@ -257,8 +257,8 @@ async def ai_edit(req: AiEditRequest, db: Session = Depends(get_db),
         owned_project(db, user, req.project_id)
     disabled = None
     if hasattr(user, "prefs") and user.prefs:
-        from app.services.provider_state import normalize_disabled
-        disabled = normalize_disabled(user.prefs.get("disabled_providers"))
+        from app.services.provider_state import disabled_for_preferences
+        disabled = disabled_for_preferences(user.prefs)
     plan = await ai_editor.plan_edits(req.instruction, disabled=disabled,
                                       provider_override=req.provider, model_override=req.model)
     response: dict = {"success": True, "plan": plan}
