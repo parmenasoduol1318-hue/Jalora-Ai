@@ -164,6 +164,7 @@ def test_deep_research_tool_preserves_opened_page_citation_metadata(monkeypatch)
             "retrieved_at": "2026-11-15T00:00:00+00:00",
             "published_at": "2026-11-14",
             "freshness": "current",
+            "queries": ["coastal humidity"],
         }],
         "claims": [{"claim_id": "C1", "text": "Mombasa temperatures remain high."}],
     }
@@ -180,6 +181,7 @@ def test_deep_research_tool_preserves_opened_page_citation_metadata(monkeypatch)
     assert sources[0]["snippet"] == "Mombasa temperatures remain high."
     assert sources[0]["publisher"] == "climate.example"
     assert sources[0]["retrieved_at"] == "2026-11-15T00:00:00+00:00"
+    assert sources[0]["queries"] == ["coastal humidity"]
 
 
 def test_duplicate_urls_across_queries_are_opened_once():
@@ -407,3 +409,112 @@ def test_caller_limits_can_be_stricter_than_service_defaults():
     assert result["limits"]["timeout_seconds"] == 0
     assert result["limits"]["max_page_chars"] == 20
     assert result["sources"] == []
+
+
+def test_subquestion_specific_sources_report_query_coverage():
+    subquestions = [
+        "coastal humidity and night cooling",
+        "urban heat island mitigation methods",
+    ]
+
+    async def search(query, max_results):
+        row = (
+            {
+                "title": "Coastal humidity and cooling",
+                "url": "https://coast.example/climate",
+                "snippet": "",
+            }
+            if query.startswith("coastal")
+            else {
+                "title": "Urban heat island mitigation",
+                "url": "https://city.example/heat",
+                "snippet": "",
+            }
+        )
+        return ToolResult.ok("ok", {"results": [row]})
+
+    async def open_page(url):
+        if "coast.example" in url:
+            text = "Coastal humidity slows night cooling near Mombasa's shore."
+        else:
+            text = "Urban heat islands trap warmth in cities; tree cover reduces temperatures."
+        return _opened_page(url, text)
+
+    result = asyncio.run(research(
+        "Explain these two distinct conditions.",
+        subquestions=subquestions,
+        max_sources=2,
+        search_fn=search,
+        open_fn=open_page,
+    ))
+
+    assert result["status"] == "completed"
+    assert [item["status"] for item in result["query_coverage"]] == [
+        "sourced", "sourced",
+    ]
+    assert [source["queries"] for source in result["sources"]] == [
+        [result["subquestions"][0]], [result["subquestions"][1]],
+    ]
+    assert [claim["queries"] for claim in result["claims"]] == [
+        [result["subquestions"][0]], [result["subquestions"][1]],
+    ]
+
+
+def test_missing_subquestion_evidence_makes_research_partial():
+    subquestions = ["coastal humidity and night cooling", "urban heat mitigation"]
+    row = {
+        "title": "Mombasa coastal temperatures",
+        "url": "https://coast.example/climate",
+        "snippet": "",
+    }
+
+    async def search(query, max_results):
+        return ToolResult.ok(
+            "ok",
+            {"results": [row] if query.startswith("coastal") else []},
+        )
+
+    async def open_page(url):
+        return _opened_page(
+            url,
+            "Coastal humidity keeps Mombasa temperatures high by slowing night cooling.",
+        )
+
+    result = asyncio.run(research(
+        "Why are Mombasa temperatures high?",
+        subquestions=subquestions,
+        search_fn=search,
+        open_fn=open_page,
+    ))
+
+    assert result["status"] == "partial"
+    assert [item["status"] for item in result["query_coverage"]] == [
+        "sourced", "insufficient_evidence",
+    ]
+    assert any("No opened-page evidence covered" in item for item in result["report"]["limitations"])
+
+
+def test_corroboration_requires_matching_claims_from_distinct_publishers():
+    rows = [
+        {"title": "Report A", "url": "https://a.example/one", "snippet": ""},
+        {"title": "Report A copy", "url": "https://a.example/two", "snippet": ""},
+        {"title": "Report B", "url": "https://b.example/report", "snippet": ""},
+    ]
+
+    async def open_page(url):
+        return _opened_page(
+            url,
+            "The policy rate is 5 percent according to the central bank's latest report.",
+        )
+
+    result = asyncio.run(research(
+        "policy rate",
+        search_fn=_search_results(*rows),
+        open_fn=open_page,
+    ))
+
+    assert len(result["corroborations"]) == 1
+    corroboration = result["corroborations"][0]
+    assert corroboration["distinct_publisher_count"] == 2
+    assert corroboration["publishers"] == ["a.example", "b.example"]
+    assert len(corroboration["citation_ids"]) == 2

@@ -5226,6 +5226,7 @@ def _extract_sources(tool_name: str, data: dict[str, Any]) -> list[dict[str, Any
                 "retrieved_at": source.get("retrieved_at"),
                 "published_at": source.get("published_at"),
                 "freshness": source.get("freshness"),
+                "queries": source.get("queries", []),
             })
     elif tool_name in {"search_web", "search_scientific_sources"}:
         for r in data.get("results", []):

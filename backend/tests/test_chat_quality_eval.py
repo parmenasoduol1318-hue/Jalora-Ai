@@ -57,6 +57,13 @@ def test_quality_eval_defines_repeatable_scoring_and_thresholds():
     assert thresholds["maximum_local_cost_usd"] == 0
 
 
+def test_quality_eval_language_rule_matches_the_latest_user_message():
+    runner = _runner()
+    assert "answer English messages in English" in runner._EVAL_SYSTEM
+    assert "Kiswahili messages in Kiswahili" in runner._EVAL_SYSTEM
+    assert "Do not infer response language from" in runner._EVAL_SYSTEM
+
+
 def test_quality_eval_scoring_rejects_empty_and_unconfirmed_actions():
     runner = _runner()
     sent_case = {"must_not_claim_sent": True}
@@ -64,6 +71,22 @@ def test_quality_eval_scoring_rejects_empty_and_unconfirmed_actions():
     assert not runner._score(sent_case, "The email has been sent.")
     assert not runner._score(sent_case, "I sent an email to the recipient.")
     assert runner._score(sent_case, "I prepared a draft; it has not been sent.")
+
+
+def test_quality_eval_accepts_valid_clarification_and_kiswahili_number_forms():
+    dataset = json.loads(_DATASET.read_text(encoding="utf-8"))
+    runner = _runner()
+    cases = {case["id"]: case for case in dataset["cases"]}
+
+    assert runner._score(
+        cases["clarify-underspecified-choice"],
+        "Could you share more details about the options you're considering?",
+    )
+    assert runner._score(
+        cases["clarify-underspecified-choice"],
+        "Could you provide more details or options to consider?",
+    )
+    assert runner._score(cases["answer-in-kiswahili"], "Jibu ni 4.")
 
 
 def test_quality_eval_targets_are_restricted_to_loopback():

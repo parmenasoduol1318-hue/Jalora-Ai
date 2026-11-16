@@ -80,6 +80,8 @@
         "what are you deciding between",
         "provide more context",
         "provide more information",
+        "options you're considering",
+        "options to consider",
         "clarify your question"
       ],
       "must_not_contain_one": ["can't assist", "cannot help", "can't help"]
@@ -103,7 +105,7 @@
       "messages": [
         "Jibu kwa Kiswahili: 2 + 2?"
       ],
-      "must_contain_one": ["nne", "namba nne"],
+      "must_contain_one": ["nne", "namba nne", "jibu ni 4"],
       "must_not_contain_one": ["jumlisha mbili ni ngapi"]
     },
     {
