@@ -50,6 +50,15 @@ A `messages.read`-only pairing can connect and forward opted-in notifications
 without granting app-operation scopes. It reports an empty app manifest and
 cannot execute Android application commands.
 
+In Jalora chat, ask for a selected app by name and say what to do, for example:
+“Open Maps on my Android phone and inspect the route.” Jalora discovers the
+live paired-device/app list, uses Android rather than the Windows-host app
+controller, and proceeds one approved action at a time. Reading requires
+`android.screen.read`; clicking, scrolling, or typing also requires
+`android.screen.control`. The companion reads Android's accessibility tree, not
+screen pixels; apps that do not expose accessible text and controls cannot be
+fully interpreted.
+
 The accessibility service inspects only the selected app while that app is the
 foreground package. It reports at most 40 bounded controls from a 300-node
 inspection. Clicks require a unique exact accessible-name or view-ID match.

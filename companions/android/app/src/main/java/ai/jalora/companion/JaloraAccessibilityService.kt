@@ -21,6 +21,15 @@ class JaloraAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
+    fun isAppForeground(packageName: String): Boolean {
+        val root = rootInActiveWindow ?: return false
+        return try {
+            root.packageName?.toString() == packageName
+        } finally {
+            root.recycle()
+        }
+    }
+
     fun execute(operation: String, arguments: JSONObject, apps: JSONArray): ActionResult {
         val appId = arguments.optString("app_id")
         val app = (0 until apps.length())
@@ -59,19 +68,24 @@ class JaloraAccessibilityService : AccessibilityService() {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         queue.add(root)
         var visited = 0
+        var controlsTruncated = false
         while (queue.isNotEmpty() && visited < MAX_NODES) {
             val node = queue.removeFirst()
             visited += 1
             val name = nodeName(node)
             if (name.isNotBlank() || node.isClickable || node.isEditable) {
-                controls.put(
-                    JSONObject()
-                        .put("name", name.take(100))
-                        .put("control_type", node.className?.toString()?.take(80) ?: "")
-                        .put("automation_id", node.viewIdResourceName?.take(100) ?: "")
-                        .put("enabled", node.isEnabled)
-                        .put("visible", node.isVisibleToUser),
-                )
+                if (controls.length() < MAX_CONTROLS) {
+                    controls.put(
+                        JSONObject()
+                            .put("name", name.take(100))
+                            .put("control_type", node.className?.toString()?.take(80) ?: "")
+                            .put("automation_id", node.viewIdResourceName?.take(100) ?: "")
+                            .put("enabled", node.isEnabled)
+                            .put("visible", node.isVisibleToUser),
+                    )
+                } else {
+                    controlsTruncated = true
+                }
             }
             for (index in 0 until node.childCount) {
                 node.getChild(index)?.let(queue::addLast)
@@ -84,7 +98,7 @@ class JaloraAccessibilityService : AccessibilityService() {
             .put("app_name", appName)
             .put("status", "inspected")
             .put("control_count", visited)
-            .put("truncated", visited >= MAX_NODES)
+            .put("truncated", visited >= MAX_NODES || controlsTruncated)
         return ActionResult(
             "succeeded",
             JSONObject()
@@ -280,6 +294,7 @@ class JaloraAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val MAX_NODES = 300
+        private const val MAX_CONTROLS = 40
 
         @Volatile
         var instance: JaloraAccessibilityService? = null

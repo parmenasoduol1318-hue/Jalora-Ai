@@ -52,6 +52,25 @@ _REMOTE_DEVICE_REQUEST = re.compile(
     r"(?:(?:android|iphone)\s+)?(?:phone|tablet|device|android|iphone|computer|laptop)\b",
     re.I,
 )
+_MOBILE_DEVICE_ACTION = re.compile(
+    r"\b(?:open|launch|start|use|check|inspect|read|look at|click|tap|type|"
+    r"search|play|browse|go to|scroll|fill|select|write|create|send|reply|"
+    r"post|upload|update|save|delete|share)\b"
+    r".{0,180}\b(?:on|in|from|using|through)\s+"
+    r"(?:(?:my|the|another|paired|remote)\s+){0,2}"
+    r"(?:(?:android|mobile)\s+)?"
+    r"(?:phone|tablet|device|android|iphone|ipad|ios)\b",
+    re.I,
+)
+_ANDROID_DEVICE_TARGET = re.compile(r"\b(?:android|phone|tablet|mobile)\b", re.I)
+_IOS_DEVICE_TARGET = re.compile(r"\b(?:iphone|ipad|ios)\b", re.I)
+_WINDOWS_DEVICE_TARGET = re.compile(
+    r"\b(?:windows|pc|desktop|laptop|computer)\b", re.I
+)
+_REMOTE_BROWSER_ACTION = re.compile(
+    r"\b(?:youtube|song|video|link|website|site|url|browser|browse|visit|go to)\b",
+    re.I,
+)
 _WINDOWS_COMPANION_REQUEST = re.compile(
     r"\b(?:on|to|using|through)\s+"
     r"(?:(?:my|the|another|paired|remote)\s+){0,3}"
@@ -165,9 +184,17 @@ def route_request(
     or maintaining a separate domain-to-tool allowlist.
     """
     request_text = text or ""
+    mobile_device_action = _MOBILE_DEVICE_ACTION.search(request_text)
+    if (
+        mobile_device_action
+        and _DEVICE_MESSAGE_REPLY_REQUEST.search(request_text)
+        and not re.search(r"\b(?:open|launch|start|use)\b", request_text, re.I)
+    ):
+        mobile_device_action = None
     result: IntentResult = classify_intent(request_text)
     remote_device_request = (
         _REMOTE_DEVICE_REQUEST.search(request_text)
+        or mobile_device_action
         or _WINDOWS_COMPANION_REQUEST.search(request_text)
     )
     app_command = (
@@ -243,14 +270,37 @@ def route_request(
             spec.name for spec in registry.all()
             if spec.always_available and spec.permission == PermissionLevel.AUTO
         }
-        if registry.get("request_remote_url") is not None:
-            selected.add("request_remote_url")
-        if registry.get("request_remote_windows_action") is not None:
-            selected.add("request_remote_windows_action")
-        if registry.get("request_remote_android_action") is not None:
-            selected.add("request_remote_android_action")
+        if registry.get("discover_available_device_capabilities") is not None:
+            selected.add("discover_available_device_capabilities")
         if registry.get("get_remote_device_action_status") is not None:
             selected.add("get_remote_device_action_status")
+        if (
+            _REMOTE_BROWSER_ACTION.search(request_text)
+            and registry.get("request_remote_url") is not None
+        ):
+            selected.add("request_remote_url")
+        android_target = (
+            _ANDROID_DEVICE_TARGET.search(request_text)
+            and not _IOS_DEVICE_TARGET.search(request_text)
+        )
+        windows_target = _WINDOWS_DEVICE_TARGET.search(request_text)
+        if (
+            android_target
+            and registry.get("request_remote_android_action") is not None
+        ):
+            selected.add("request_remote_android_action")
+        elif (
+            not _IOS_DEVICE_TARGET.search(request_text)
+            and registry.get("request_remote_windows_action") is not None
+        ):
+            selected.add("request_remote_windows_action")
+        if (
+            not android_target
+            and not windows_target
+            and not _IOS_DEVICE_TARGET.search(request_text)
+            and registry.get("request_remote_android_action") is not None
+        ):
+            selected.add("request_remote_android_action")
         tool_names = sorted(selected)
     if _GENERIC_LOCAL_APP_COMMAND.fullmatch(request_text):
         tool_names = [

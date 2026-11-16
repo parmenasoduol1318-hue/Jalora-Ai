@@ -291,9 +291,45 @@ def test_remote_device_command_tool_is_confirmation_gated_and_routed():
     )
     assert "remote_device_control" in windows_routing.signals
     assert "request_remote_windows_action" in (windows_routing.tool_names or [])
+    assert "request_remote_android_action" not in (windows_routing.tool_names or [])
 
     android_routing = route_request(
         "Open the Maps app on my paired Android phone."
     )
     assert "remote_device_control" in android_routing.signals
     assert "request_remote_android_action" in (android_routing.tool_names or [])
+    assert "request_remote_windows_action" not in (android_routing.tool_names or [])
+    assert "discover_available_device_capabilities" in (
+        android_routing.tool_names or []
+    )
+
+
+def test_phone_app_task_routes_to_android_discovery_and_actions():
+    from app.tools.routing import route_request
+
+    for request in (
+        "Open WhatsApp on my phone and read the latest message.",
+        "Open WhatsApp in my phone and read the latest message.",
+    ):
+        routing = route_request(request)
+
+        assert "remote_device_control" in routing.signals
+        assert "discover_available_device_capabilities" in (
+            routing.tool_names or []
+        )
+        assert "request_remote_android_action" in (routing.tool_names or [])
+        assert "request_remote_windows_action" not in (
+            routing.tool_names or []
+        )
+        assert "open_local_app" not in (routing.tool_names or [])
+
+
+def test_iphone_requests_do_not_bind_android_or_windows_controls():
+    from app.tools.routing import route_request
+
+    routing = route_request("Open Safari on my iPhone and read the page.")
+
+    assert "remote_device_control" in routing.signals
+    assert "discover_available_device_capabilities" in (routing.tool_names or [])
+    assert "request_remote_android_action" not in (routing.tool_names or [])
+    assert "request_remote_windows_action" not in (routing.tool_names or [])

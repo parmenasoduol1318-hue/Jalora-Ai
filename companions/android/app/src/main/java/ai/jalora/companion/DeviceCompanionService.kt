@@ -238,8 +238,29 @@ class DeviceCompanionService : Service() {
                 val launch = packageManager.getLaunchIntentForPackage(packageName)
                     ?: return ActionResult.failed("ANDROID_APP_UNAVAILABLE", "Android could not find a launchable activity for this app.")
                 launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                startActivity(launch)
-                ActionResult.succeeded("launch_requested", verified = false)
+                try {
+                    startActivity(launch)
+                } catch (_: Exception) {
+                    return ActionResult.failed(
+                        "ANDROID_LAUNCH_FAILED",
+                        "Android did not allow the selected app to open.",
+                    )
+                }
+                val accessibility = JaloraAccessibilityService.instance
+                    ?: return ActionResult.uncertain(
+                        "ANDROID_LAUNCH_UNVERIFIED",
+                        "Android accepted the launch request, but the foreground app cannot be verified without the accessibility service.",
+                    )
+                repeat(20) {
+                    if (accessibility.isAppForeground(packageName)) {
+                        return ActionResult.succeeded("app_opened", verified = true)
+                    }
+                    Thread.sleep(250)
+                }
+                ActionResult.uncertain(
+                    "ANDROID_LAUNCH_UNVERIFIED",
+                    "Android accepted the launch request, but the selected app did not become the verified foreground app.",
+                )
             }
             "android.screen.inspect",
             "android.screen.back",
