@@ -237,6 +237,50 @@ def test_local_app_command_does_not_capture_a_translation_workflow():
     ) is None
 
 
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Open Calculator on my laptop.",
+        "Read the screen on my Windows computer.",
+        "Click Continue on my Windows desktop.",
+        "Open Notepad on my Windows laptop and type hello.",
+    ],
+)
+def test_explicit_windows_device_actions_route_to_companion_and_local_controls(prompt):
+    routing = route_request(prompt)
+
+    assert "remote_device_control" in routing.signals
+    assert "request_remote_windows_action" in (routing.tool_names or [])
+    assert "discover_available_device_capabilities" in (routing.tool_names or [])
+    assert {
+        "open_local_app",
+        "inspect_local_app",
+        "click_local_app_control",
+        "type_local_app_text",
+        "press_local_app_key",
+    } <= set(routing.tool_names or [])
+    assert "request_remote_android_action" not in (routing.tool_names or [])
+
+
+def test_android_app_screen_workflow_routes_to_paired_android_companion():
+    routing = route_request(
+        "Open WhatsApp on my phone and summarize the family group messages."
+    )
+
+    assert "remote_device_control" in routing.signals
+    assert "discover_available_device_capabilities" in (routing.tool_names or [])
+    assert "request_remote_android_action" in (routing.tool_names or [])
+    assert "request_remote_windows_action" not in (routing.tool_names or [])
+
+
+def test_untargeted_local_app_request_keeps_same_host_route():
+    routing = route_request("Open Calculator")
+
+    assert "local_app_control" in routing.signals
+    assert "open_local_app" in (routing.tool_names or [])
+    assert "request_remote_windows_action" not in (routing.tool_names or [])
+
+
 def test_exact_local_app_close_routes_to_confirmed_close_tool():
     routing = route_request("close Calculator")
 

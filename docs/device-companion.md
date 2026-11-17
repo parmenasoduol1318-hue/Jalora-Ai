@@ -28,6 +28,12 @@ approval, and interactions are restricted to the foreground window of the app
 Jalora launched. A fresh Agent Tasks request does not inherit unrelated older
 conversation turns.
 
+Requests that explicitly target a Windows laptop, computer, or desktop are
+routed through live device-capability discovery. The agent can choose an
+available paired Windows companion or, when the backend is running on that
+same Windows computer, the same-host allowlist. It must not treat the cloud
+backend host as the user's desktop.
+
 Jalora can request a graceful `WM_CLOSE` only for the process it started in
 the current backend session. It cannot force-close apps that the user started.
 Jalora waits briefly for that process to exit and reports the close as complete

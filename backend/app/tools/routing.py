@@ -74,8 +74,14 @@ _REMOTE_BROWSER_ACTION = re.compile(
 _WINDOWS_COMPANION_REQUEST = re.compile(
     r"\b(?:on|to|using|through)\s+"
     r"(?:(?:my|the|another|paired|remote)\s+){0,3}"
-    r"(?:windows\s+(?:pc|computer|desktop|laptop|companion)|"
+    r"(?:windows(?:\s+(?:pc|computer|desktop|laptop))?|"
+    r"(?:pc|computer|desktop|laptop)|"
     r"(?:windows|pc|desktop|laptop)\s+companion)\b",
+    re.I,
+)
+_WINDOWS_DEVICE_ACTION = re.compile(
+    r"\b(?:open|launch|start|close|quit|exit|inspect|read|look at|check|"
+    r"view|click|tap|type|press|scroll|control|interact with|use)\b",
     re.I,
 )
 _DEVICE_MESSAGE_REPLY_REQUEST = re.compile(
@@ -192,10 +198,14 @@ def route_request(
     ):
         mobile_device_action = None
     result: IntentResult = classify_intent(request_text)
+    windows_device_request = (
+        _WINDOWS_COMPANION_REQUEST.search(request_text)
+        and _WINDOWS_DEVICE_ACTION.search(request_text)
+    )
     remote_device_request = (
         _REMOTE_DEVICE_REQUEST.search(request_text)
         or mobile_device_action
-        or _WINDOWS_COMPANION_REQUEST.search(request_text)
+        or windows_device_request
     )
     app_command = (
         None
@@ -301,6 +311,19 @@ def route_request(
             and registry.get("request_remote_android_action") is not None
         ):
             selected.add("request_remote_android_action")
+        if windows_device_request:
+            selected.update(
+                name for name in (
+                    "open_local_app",
+                    "close_local_app",
+                    "inspect_local_app",
+                    "click_local_app_control",
+                    "click_local_app_coordinates",
+                    "type_local_app_text",
+                    "press_local_app_key",
+                )
+                if registry.get(name) is not None
+            )
         tool_names = sorted(selected)
     if _GENERIC_LOCAL_APP_COMMAND.fullmatch(request_text):
         tool_names = [
