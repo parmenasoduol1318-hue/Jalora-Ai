@@ -41,6 +41,7 @@ from langchain_core.messages import (
 )
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
+
 from app.agents.intent import (
     classify_intent,
     explicitly_requests_email_send,
@@ -50,6 +51,7 @@ from app.agents.intent import (
 from app.agents.prompts import MAX_STEPS_NUDGE, STOP_NUDGE
 from app.errors import ModelEmptyResponseError, ToolResult
 from app.events import emit
+from app.services.device_command_protocol import android_action_requires_user_approval
 from app.services.model_router import JaloraChatModel
 from app.services.tool_execution import decode_tool_result
 from app.services.tool_preflight import validate_tool_arguments
@@ -2796,8 +2798,20 @@ def build_graph(
                 continue
 
             # --- user action policy (autonomy + per-tool policies) --------
+            effective_permission = spec.permission
+            if (
+                name == "request_remote_android_action"
+                and android_action_requires_user_approval(
+                    str(args.get("action") or ""),
+                    args,
+                )
+            ):
+                effective_permission = max(
+                    effective_permission,
+                    PermissionLevel.CONFIRM,
+                )
             decision = decide(
-                permission=spec.permission,
+                permission=effective_permission,
                 autonomy=(
                     min(autonomy, 2)
                     if state.get("trigger_kind") == "schedule" and autonomy < 4
@@ -2996,7 +3010,7 @@ def build_graph(
                 approval = await _create_approval(
                     user_id=user_id, run_id=run_id, call_id=call_id,
                     tool_name=name, arguments=approval_arguments,
-                    level=int(spec.permission), kind=kind,
+                    level=int(effective_permission), kind=kind,
                     task_id=task_id,
                     task_step_index=plan_step,
                     plan_step_id=(
@@ -3010,7 +3024,7 @@ def build_graph(
                     "run_id": run_id,
                     "tool_name": name,
                     "arguments": args,
-                    "level": int(spec.permission),
+                    "level": int(effective_permission),
                     "call_id": call_id,
                     "kind": kind,
                 }
@@ -3022,7 +3036,7 @@ def build_graph(
                     "run_id": run_id,
                     "tool_name": name,
                     "arguments": args,
-                    "level": int(spec.permission),
+                    "level": int(effective_permission),
                     "kind": kind,
                     "message": (
                         "Jalora needs your answer before this task can continue."

@@ -25,7 +25,7 @@ DEVICE_ACCESS_TTL = timedelta(minutes=5)
 DELIVERY_LEASE = timedelta(seconds=45)
 EXECUTION_LEASE = timedelta(minutes=2)
 MAX_DELIVERY_BATCH = 20
-MAX_RECEIPT_BYTES = 16_384
+MAX_RECEIPT_BYTES = 98_304
 
 _OPERATION_SCOPES = {
     "browser.open_url": "remote.browser.open_url",
@@ -38,9 +38,11 @@ _OPERATION_SCOPES = {
     "windows.screen.type": "windows.screen.control",
     "windows.screen.key": "windows.screen.control",
     "android.app.launch": "android.apps.launch",
+    "android.launcher.open": "android.apps.launch",
     "android.screen.inspect": "android.screen.read",
     "android.screen.back": "android.screen.control",
     "android.screen.click": "android.screen.control",
+    "android.screen.tap": "android.screen.control",
     "android.screen.scroll": "android.screen.control",
     "android.screen.type": "android.screen.control",
 }
@@ -57,7 +59,15 @@ _EVIDENCE_KEYS = {
     "operation_result",
     "accessible_controls",
     "screen_ocr_text",
+    "screen_ocr_status",
+    "screen_ocr_reason",
 }
+_SENSITIVE_ANDROID_CONTROL = re.compile(
+    r"\b(send|delete|remove|clear|empty|pay|purchase|buy|transfer|post|"
+    r"publish|share|submit|confirm|order|checkout|place\s+order|allow|grant|"
+    r"enable)\b",
+    re.IGNORECASE,
+)
 
 
 class DeviceProtocolError(ValueError):
@@ -66,6 +76,25 @@ class DeviceProtocolError(ValueError):
 
 class DeviceIdempotencyConflict(DeviceProtocolError):
     """An idempotency key was reused with a different command payload."""
+
+
+def android_action_requires_user_approval(
+    action: str,
+    arguments: dict[str, Any],
+) -> bool:
+    """Require confirmation for coordinate taps and sensitive named controls."""
+    if action == "android.screen.tap":
+        return True
+    if action == "android.screen.click":
+        target = " ".join(
+            value
+            for value in (arguments.get("name"), arguments.get("automation_id"))
+            if isinstance(value, str)
+        )
+        target = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", target)
+        target = re.sub(r"[_\-.]+", " ", target)
+        return _SENSITIVE_ANDROID_CONTROL.search(target) is not None
+    return False
 
 
 def issue_device_access_token(device_id: str) -> tuple[str, datetime]:
@@ -100,6 +129,111 @@ def _timestamp(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value
+
+
+def _normalize_android_screen_command(
+    action: str,
+    arguments: dict[str, Any],
+    device: DeviceConnection,
+    app_id: str | None,
+) -> tuple[str, dict[str, Any]]:
+    if action != "android.screen.inspect" and (
+        "android.screen.read" not in (device.scopes or [])
+    ):
+        raise DeviceProtocolError(
+            "Android screen control requires the screen-read pairing scope."
+        )
+
+    safe_arguments: dict[str, Any] = {}
+    if app_id:
+        safe_arguments["app_id"] = app_id
+    if action in {"android.screen.inspect", "android.screen.back"}:
+        if set(arguments) - {"app_id"}:
+            raise DeviceProtocolError(
+                "The Android screen command has unexpected arguments."
+            )
+        return _OPERATION_SCOPES[action], safe_arguments
+    if action == "android.screen.tap":
+        if set(arguments) - {"app_id", "x", "y"}:
+            raise DeviceProtocolError(
+                "The Android tap command has unexpected arguments."
+            )
+        coordinates = {}
+        for key in ("x", "y"):
+            coordinate = arguments.get(key)
+            if (
+                not isinstance(coordinate, int)
+                or isinstance(coordinate, bool)
+                or not 0 <= coordinate <= 10_000
+            ):
+                raise DeviceProtocolError("Android tap coordinates are invalid.")
+            coordinates[key] = coordinate
+        safe_arguments.update(coordinates)
+        return _OPERATION_SCOPES[action], safe_arguments
+
+    is_scroll = action == "android.screen.scroll"
+    if action in {"android.screen.click", "android.screen.scroll"}:
+        allowed_arguments = {"app_id", "name", "automation_id"}
+        if is_scroll:
+            allowed_arguments.add("direction")
+        if set(arguments) - allowed_arguments:
+            error = "scroll" if is_scroll else "click"
+            raise DeviceProtocolError(f"The Android {error} has unexpected arguments.")
+        name = arguments.get("name", "")
+        automation_id = arguments.get("automation_id", "")
+        if (
+            not isinstance(name, str)
+            or len(name) > 300
+            or not isinstance(automation_id, str)
+            or len(automation_id) > 200
+            or (
+                not is_scroll
+                and not (name.strip() or automation_id.strip())
+            )
+        ):
+            raise DeviceProtocolError(
+                "The Android control action requires a control name or ID."
+            )
+        if name.strip():
+            safe_arguments["name"] = name.strip()
+        if automation_id.strip():
+            safe_arguments["automation_id"] = automation_id.strip()
+        if is_scroll:
+            direction = arguments.get("direction")
+            if not isinstance(direction, str) or direction not in {"up", "down"}:
+                raise DeviceProtocolError(
+                    "The Android scroll direction must be 'up' or 'down'."
+                )
+            safe_arguments["direction"] = direction
+        return _OPERATION_SCOPES[action], safe_arguments
+    if action == "android.screen.type":
+        if set(arguments) - {"app_id", "text", "name", "automation_id"}:
+            raise DeviceProtocolError(
+                "The Android typing command has unexpected arguments."
+            )
+        text = arguments.get("text")
+        name = arguments.get("name", "")
+        automation_id = arguments.get("automation_id", "")
+        if (
+            not isinstance(text, str)
+            or not text
+            or len(text) > 2000
+            or not isinstance(name, str)
+            or len(name) > 300
+            or not isinstance(automation_id, str)
+            or len(automation_id) > 200
+            or not (name.strip() or automation_id.strip())
+        ):
+            raise DeviceProtocolError(
+                "The Android typing command requires text and a target control."
+            )
+        safe_arguments.update({
+            "text": text,
+            "name": name.strip(),
+            "automation_id": automation_id.strip(),
+        })
+        return _OPERATION_SCOPES[action], safe_arguments
+    raise DeviceProtocolError("This Android screen operation is not supported.")
 
 
 def _validate_task_context(
@@ -144,7 +278,7 @@ def _normalized_command(
     action: str,
     arguments: dict[str, Any],
     device: DeviceConnection | None = None,
-) -> tuple[str, dict[str, str]]:
+) -> tuple[str, dict[str, Any]]:
     required_scope = _OPERATION_SCOPES.get(action)
     if required_scope is None:
         raise DeviceProtocolError("This device operation is not supported.")
@@ -162,6 +296,28 @@ def _normalized_command(
         raise DeviceProtocolError("This device operation is not supported.")
     if device is None or device.platform != platform:
         raise DeviceProtocolError(f"A paired {platform.title()} companion is required.")
+
+    if action == "android.launcher.open":
+        if set(arguments) != {"app_name"}:
+            raise DeviceProtocolError(
+                "The Android launcher command requires only an app name."
+            )
+        app_name = arguments.get("app_name")
+        if (
+            not isinstance(app_name, str)
+            or not app_name.strip()
+            or len(app_name) > 120
+            or any(ord(character) < 32 or ord(character) == 127 for character in app_name)
+        ):
+            raise DeviceProtocolError("The requested Android app name is invalid.")
+        return required_scope, {"app_name": app_name.strip()}
+
+    if action.startswith("android.screen.") and not arguments.get("app_id"):
+        if "app_id" in arguments and arguments["app_id"] != "":
+            raise DeviceProtocolError(
+                "The Android screen app ID is invalid."
+            )
+        return _normalize_android_screen_command(action, arguments, device, None)
 
     manifest = device.capability_manifest or {}
     if not isinstance(manifest, dict):
@@ -193,6 +349,7 @@ def _normalized_command(
         "android.screen.inspect": "screen.accessibility.inspect",
         "android.screen.back": "screen.control",
         "android.screen.click": "screen.control",
+        "android.screen.tap": "screen.control",
         "android.screen.scroll": "screen.control",
         "android.screen.type": "screen.control",
     }.get(action)
@@ -204,6 +361,7 @@ def _normalized_command(
         "windows.screen.type",
         "windows.screen.key",
         "android.screen.click",
+        "android.screen.tap",
         "android.screen.scroll",
         "android.screen.type",
         "android.screen.back",
@@ -212,8 +370,12 @@ def _normalized_command(
         or "screen.accessibility.inspect" not in app.get("capabilities", [])
     ):
         raise DeviceProtocolError(
-            f"{platform.title()} screen control requires screen-read permission and capability."
+            f"{platform.title()} screen control requires screen-read permission "
+            "and capability."
         )
+
+    if action.startswith("android.screen."):
+        return _normalize_android_screen_command(action, arguments, device, app_id)
 
     if action in {
         "windows.app.launch",
@@ -306,12 +468,20 @@ def _expected_evidence(action: str) -> list[str]:
     if action == "browser.open_url":
         return ["target_approval", "browser_open_receipt"]
     expected = ["target_approval", "operation_result"]
-    if action in {
-        "windows.screen.inspect", "windows.screen.ocr", "android.screen.inspect"
-    }:
+    if (
+        action in {"windows.screen.inspect", "windows.screen.ocr"}
+        or action.startswith("android.screen.")
+        or action == "android.launcher.open"
+    ):
         expected.append("accessible_controls")
-    if action == "windows.screen.ocr":
+    if (
+        action == "windows.screen.ocr"
+        or action.startswith("android.screen.")
+        or action == "android.launcher.open"
+    ):
         expected.append("screen_ocr_text")
+        expected.append("screen_ocr_status")
+        expected.append("screen_ocr_reason")
     return expected
 
 
@@ -470,14 +640,17 @@ def claim_device_commands(
         supported_operations = (
             "browser.open_url",
             "android.app.launch",
+            "android.launcher.open",
             "android.screen.inspect",
             "android.screen.back",
             "android.screen.click",
+            "android.screen.tap",
             "android.screen.scroll",
             "android.screen.type",
         )
     else:
         return []
+    batch_limit = 1 if client_type == "android" else MAX_DELIVERY_BATCH
     now = datetime.now(timezone.utc)
     db.execute(
         update(DeviceRemoteCommand)
@@ -521,9 +694,9 @@ def claim_device_commands(
             DeviceRemoteCommand.expires_at > now,
         )
         .order_by(DeviceRemoteCommand.created_at)
-        .limit(MAX_DELIVERY_BATCH)
+        .limit(batch_limit)
     ).all()
-    remaining_slots = MAX_DELIVERY_BATCH - len(active_deliveries)
+    remaining_slots = batch_limit - len(active_deliveries)
     candidates = (
         db.scalars(
             select(DeviceRemoteCommand)
@@ -609,7 +782,7 @@ def claim_device_commands(
             DeviceRemoteCommand.expires_at > now,
         )
         .order_by(DeviceRemoteCommand.created_at)
-        .limit(MAX_DELIVERY_BATCH)
+        .limit(batch_limit)
         .execution_options(populate_existing=True)
     ).all()
     return [command_envelope(command, device) for command in commands]
@@ -735,6 +908,9 @@ def _normalize_receipt(
             "characters",
             "key",
             "reason",
+            "screen_width",
+            "screen_height",
+            "ocr_status",
         }
         if not isinstance(result, dict) or set(result) - allowed_result_keys:
             raise DeviceProtocolError("The operation result has unsupported fields.")
@@ -774,6 +950,19 @@ def _normalize_receipt(
             not isinstance(result["reason"], str) or len(result["reason"]) > 500
         ):
             raise DeviceProtocolError("The operation result reason is too long.")
+        for key in ("screen_width", "screen_height"):
+            if key in result and (
+                not isinstance(result[key], int)
+                or isinstance(result[key], bool)
+                or not 1 <= result[key] <= 10_000
+            ):
+                raise DeviceProtocolError("The reported screen dimensions are invalid.")
+        if "ocr_status" in result and result["ocr_status"] not in {
+            "available",
+            "unavailable",
+            "redacted",
+        }:
+            raise DeviceProtocolError("The reported OCR status is invalid.")
     if "accessible_controls" in evidence:
         controls = evidence["accessible_controls"]
         if (
@@ -791,6 +980,8 @@ def _normalize_receipt(
                 "visible",
                 "value",
                 "value_status",
+                "scrollable",
+                "bounds",
             }:
                 raise DeviceProtocolError("An accessible control has unsupported fields.")
             if any(
@@ -805,9 +996,24 @@ def _normalize_receipt(
                 raise DeviceProtocolError("An accessible control field is invalid.")
             if any(
                 key in control and not isinstance(control[key], bool)
-                for key in ("enabled", "visible")
+                for key in ("enabled", "visible", "scrollable")
             ):
                 raise DeviceProtocolError("An accessible control flag is invalid.")
+            if "bounds" in control:
+                bounds = control["bounds"]
+                if (
+                    not isinstance(bounds, dict)
+                    or set(bounds) != {"left", "top", "right", "bottom"}
+                    or any(
+                        not isinstance(bounds.get(key), int)
+                        or isinstance(bounds.get(key), bool)
+                        or not 0 <= bounds[key] <= 10_000
+                        for key in ("left", "top", "right", "bottom")
+                    )
+                    or bounds["left"] > bounds["right"]
+                    or bounds["top"] > bounds["bottom"]
+                ):
+                    raise DeviceProtocolError("An accessible control's bounds are invalid.")
             if "value" in control and (
                 not isinstance(control["value"], str)
                 or len(control["value"]) > 500
@@ -820,18 +1026,38 @@ def _normalize_receipt(
             }:
                 raise DeviceProtocolError("An accessible control value status is invalid.")
     expected = set(command.expected_evidence or [])
-    for key in ("operation_result", "accessible_controls", "screen_ocr_text"):
+    for key in (
+        "operation_result",
+        "accessible_controls",
+        "screen_ocr_text",
+        "screen_ocr_status",
+        "screen_ocr_reason",
+    ):
         if key in evidence and key not in expected:
             raise DeviceProtocolError("The operation evidence was not requested.")
     if command.action.startswith(("windows.", "android.")) and status == "succeeded":
         if not isinstance(evidence.get("operation_result"), dict):
             raise DeviceProtocolError("A successful native receipt needs an operation result.")
-        if command.action in {
-            "windows.screen.inspect", "windows.screen.ocr", "android.screen.inspect"
-        } and not isinstance(
-            evidence.get("accessible_controls"), list
+        if (
+            command.action in {"windows.screen.inspect", "windows.screen.ocr"}
+            or command.action.startswith("android.screen.")
+            or command.action == "android.launcher.open"
         ):
-            raise DeviceProtocolError("A screen inspection needs accessible controls.")
+            if not isinstance(
+                evidence.get("accessible_controls"), list
+            ):
+                raise DeviceProtocolError("A screen action needs refreshed accessible controls.")
+        if (
+            command.action.startswith("android.screen.")
+            or command.action == "android.launcher.open"
+        ) and (
+            not isinstance(evidence.get("screen_ocr_text"), str)
+            or evidence.get("screen_ocr_status")
+            not in {"available", "unavailable", "redacted"}
+        ):
+            raise DeviceProtocolError(
+                "An Android screen action needs refreshed OCR status and text evidence."
+            )
         if command.action == "windows.screen.ocr" and not isinstance(
             evidence.get("screen_ocr_text"), str
         ):
@@ -841,6 +1067,17 @@ def _normalize_receipt(
         or len(evidence["screen_ocr_text"]) > 10_000
     ):
         raise DeviceProtocolError("The OCR text is invalid or too long.")
+    if "screen_ocr_status" in evidence and evidence["screen_ocr_status"] not in {
+        "available",
+        "unavailable",
+        "redacted",
+    }:
+        raise DeviceProtocolError("The OCR status is invalid.")
+    if "screen_ocr_reason" in evidence and (
+        not isinstance(evidence["screen_ocr_reason"], str)
+        or len(evidence["screen_ocr_reason"]) > 500
+    ):
+        raise DeviceProtocolError("The OCR status explanation is invalid.")
     if "opened_url_host" in evidence:
         host = evidence["opened_url_host"]
         if not isinstance(host, str) or len(host) > 253:

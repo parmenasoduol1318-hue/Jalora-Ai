@@ -91,8 +91,8 @@ async def test_open_local_app_uses_paired_android_when_backend_is_not_windows(mo
 
     queued = []
 
-    async def queue_launch(device_id, action, app_id, *, platform):
-        queued.append((device_id, action, app_id, platform))
+    async def queue_launch(device_id, action, app_id, *, platform, app_name):
+        queued.append((device_id, action, app_id, platform, app_name))
         return device_tools.ToolResult.ok(
             "Queued Android launch.",
             {"command_id": "command-1", "status": "pending"},
@@ -115,12 +115,12 @@ async def test_open_local_app_uses_paired_android_when_backend_is_not_windows(mo
         "device_name": "My Android",
     }
     assert queued == [
-        ("phone-1", "android.app.launch", "whatsapp-app", "android")
+        ("phone-1", "android.launcher.open", "", "android", "WhatsApp")
     ]
 
 
 @pytest.mark.asyncio
-async def test_open_local_app_reports_when_android_app_is_not_installed(monkeypatch):
+async def test_open_local_app_searches_launcher_without_manifest_match(monkeypatch):
     device = SimpleNamespace(
         id="phone-1",
         name="My Android",
@@ -141,18 +141,29 @@ async def test_open_local_app_reports_when_android_app_is_not_installed(monkeypa
         def scalars(self, _statement):
             return SimpleNamespace(all=lambda: [device])
 
+    queued = []
+
+    async def queue_launch(device_id, action, app_id, *, platform, app_name):
+        queued.append((device_id, action, app_id, platform, app_name))
+        return device_tools.ToolResult.ok(
+            "Queued Android launcher search.",
+            {"command_id": "command-2", "status": "pending"},
+        )
+
     monkeypatch.setattr(device_tools.sys, "platform", "linux")
     monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
+    monkeypatch.setattr(device_tools, "_request_remote_native_action", queue_launch)
     set_tool_context(ToolContext(user_id="user-1"))
     try:
         result = await device_tools.open_local_app("WhatsApp")
     finally:
         set_tool_context(None)
 
-    assert not result.success
-    assert result.error is not None
-    assert result.error.code == "ANDROID_APP_UNAVAILABLE"
-    assert "No launchable app named" in result.error.details
+    assert result.success
+    assert result.data["app"] == "WhatsApp"
+    assert queued == [
+        ("phone-1", "android.launcher.open", "", "android", "WhatsApp")
+    ]
 
 
 def test_local_app_agent_tools_respect_permission_levels():

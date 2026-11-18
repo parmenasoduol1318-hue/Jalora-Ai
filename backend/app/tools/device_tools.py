@@ -8,7 +8,7 @@ import uuid
 import webbrowser
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from app.context import get_tool_context, get_tool_model_router
 from app.database.session import SessionLocal
@@ -94,8 +94,6 @@ async def _open_android_app(app_name: str) -> ToolResult:
     validated_name = _validated_app_name(app_name)
     if isinstance(validated_name, ToolResult):
         return validated_name
-    requested_name = _normalized_app_name(validated_name)
-
     context = get_tool_context()
     with SessionLocal() as db:
         devices = db.scalars(
@@ -114,70 +112,60 @@ async def _open_android_app(app_name: str) -> ToolResult:
         )
 
     now = datetime.now(timezone.utc)
-    online_matches = []
-    offline_match = False
+    authorized_devices = []
+    online_devices = []
+    offline_authorized_device = False
     for device in devices:
-        manifest = device.capability_manifest
-        if not isinstance(manifest, dict):
+        if "android.apps.launch" not in (device.scopes or []):
             continue
-        applications = manifest.get("applications", [])
-        if not isinstance(applications, list):
-            continue
-        app_matches = [
-            app
-            for app in applications
-            if isinstance(app, dict)
-            and isinstance(app.get("name"), str)
-            and _normalized_app_name(app["name"]) == requested_name
-            and isinstance(app.get("capabilities"), list)
-            and "application.launch" in app["capabilities"]
-            and isinstance(app.get("id"), str)
-        ]
-        if not app_matches:
-            continue
+        authorized_devices.append(device)
         last_seen = device.last_seen_at
         if last_seen is not None and last_seen.tzinfo is None:
             last_seen = last_seen.replace(tzinfo=timezone.utc)
         if last_seen is None or last_seen < now - timedelta(seconds=30):
-            offline_match = True
+            offline_authorized_device = True
             continue
-        for app in app_matches:
-            online_matches.append((device, app))
+        online_devices.append(device)
 
-    if len(online_matches) > 1:
-        device_names = ", ".join(sorted({
-            device.name for device, _app in online_matches
-        }))
+    if len(online_devices) > 1:
+        device_names = ", ".join(sorted(device.name for device in online_devices))
         return ToolResult.fail(
-            "ANDROID_APP_AMBIGUOUS",
-            f"More than one paired phone has an available '{validated_name}' app "
+            "ANDROID_DEVICE_AMBIGUOUS",
+            f"More than one paired phone is available for opening '{validated_name}' "
             f"({device_names}). Specify the phone in your request and retry.",
         )
-    if not online_matches:
-        if offline_match:
+    if not online_devices:
+        if offline_authorized_device:
             return ToolResult.fail(
                 "ANDROID_DEVICE_OFFLINE",
                 f"The paired phone is offline. Reconnect it and try opening "
                 f"'{validated_name}' again.",
             )
+        if authorized_devices:
+            return ToolResult.fail(
+                "ANDROID_DEVICE_OFFLINE",
+                "The paired Android phone has not checked in recently. Reconnect it "
+                "and try again.",
+            )
         return ToolResult.fail(
-            "ANDROID_APP_UNAVAILABLE",
-            f"No launchable app named '{validated_name}' was found on the paired phone. "
-            "Check the app name and make sure it is installed.",
+            "ANDROID_SCOPE_REQUIRED",
+            "The paired phone was not granted app-launch permission. Update its "
+            "pairing scopes before Jalora can open apps.",
         )
 
-    device, app = online_matches[0]
+    device = online_devices[0]
     result = await _request_remote_native_action(
         device.id,
-        "android.app.launch",
-        app["id"],
+        "android.launcher.open",
+        "",
         platform="android",
+        app_name=validated_name,
     )
     if not result.success:
         return result
     return ToolResult.ok(
-        f"Opening '{validated_name}' on {device.name}; completion is confirmed "
-        "after the phone reports its result.",
+        f"Searching the Android launcher for '{validated_name}' on {device.name}; "
+        "completion is confirmed after the phone reports its result.",
         {
             **result.data,
             "app": validated_name,
@@ -224,7 +212,7 @@ async def open_local_app(app_name: str) -> ToolResult:
 
 
 async def open_paired_android_app(app_name: str) -> ToolResult:
-    """Open an installed Android app on the user's paired phone."""
+    """Find and open an Android app from the paired phone's launcher UI."""
     return await _open_android_app(app_name)
 
 
@@ -504,6 +492,9 @@ async def _request_remote_native_action(
     direction: str = "down",
     *,
     platform: Literal["windows", "android"],
+    app_name: str = "",
+    x: int | None = None,
+    y: int | None = None,
 ) -> ToolResult:
     """Queue one scoped operation for an explicitly paired native device.
 
@@ -537,8 +528,12 @@ async def _request_remote_native_action(
                 f"The {platform.title()} companion is currently offline.",
             )
 
-        arguments: dict[str, str] = {"app_id": app_id}
-        if action in {"windows.screen.click", "android.screen.click"}:
+        arguments: dict[str, Any] = {"app_id": app_id} if app_id else {}
+        if action == "android.launcher.open":
+            arguments = {"app_name": app_name}
+        elif action == "android.screen.tap":
+            arguments.update({"x": x, "y": y})
+        elif action in {"windows.screen.click", "android.screen.click"}:
             arguments.update({"name": name, "automation_id": automation_id})
         elif action in {"windows.screen.scroll", "android.screen.scroll"}:
             arguments.update({
@@ -638,17 +633,22 @@ async def request_remote_android_action(
     device_id: str,
     action: Literal[
         "android.app.launch",
+        "android.launcher.open",
         "android.screen.inspect",
         "android.screen.back",
         "android.screen.click",
+        "android.screen.tap",
         "android.screen.scroll",
         "android.screen.type",
     ],
-    app_id: str,
+    app_id: str = "",
     name: str = "",
     automation_id: str = "",
     text: str = "",
     direction: Literal["up", "down"] = "down",
+    app_name: str = "",
+    x: int | None = None,
+    y: int | None = None,
 ) -> ToolResult:
     """Queue an Android action authorized by the phone's pairing scopes."""
     return await _request_remote_native_action(
@@ -660,6 +660,9 @@ async def request_remote_android_action(
         text,
         direction=direction,
         platform="android",
+        app_name=app_name,
+        x=x,
+        y=y,
     )
 
 

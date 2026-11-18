@@ -97,18 +97,21 @@ user-selected local allowlist, local per-command approval, UI Automation,
 foreground-only OCR, visible session history, pause/stop, and bounded receipts.
 The Android source companion supports device pairing, app selection, Android
 Keystore-encrypted credentials, a foreground service, notification approval,
-scoped Accessibility Service operations, and a separate notification listener
-gated by `messages.read`. Notification-only Android pairings can connect without
-application-control scopes. Device receipts are linked back to task-step
-evidence. The Android project has not been built in this environment.
-Both native companions now accept one target-scoped up/down scroll action per
-approved command under their existing screen-control and screen-read grants.
-They report success only when the accessibility tree changes; otherwise the
-result is uncertain. Protocol tests cover scope and direction validation for
-both platforms; Windows executor tests cover accessibility-change verification
-and uncertain outcomes. Android source has not been built or device-tested.
-Android also supports an explicitly approved global back action and reports an
-uncertain result if it cannot verify the resulting foreground UI.
+scoped Accessibility Service operations, manifest-independent launcher search,
+active-screen accessibility inspection, on-device OCR on Android 11+, bounded
+coordinate taps, and a separate notification listener gated by `messages.read`.
+Notification-only Android pairings can connect without application-control
+scopes. Android commands are serialized one per poll; sensitive named controls
+and coordinate taps require Jalora approval. Device receipts are linked back to
+task-step evidence. The Android project has not been built in this environment.
+Both native companions accept one bounded up/down scroll action per command
+under their existing screen-control and screen-read grants. They report success
+only when the accessibility tree changes; otherwise the result is uncertain.
+Protocol tests cover scope and direction validation for both platforms;
+Windows executor tests cover accessibility-change verification and uncertain
+outcomes. Android source has not been built or device-tested.
+Android also supports global back navigation and reports an uncertain result
+if it cannot verify the resulting foreground UI.
 
 Windows automated tests use mocked API responses and do not send real external
 actions. The remaining Windows acceptance requires a signed distribution,

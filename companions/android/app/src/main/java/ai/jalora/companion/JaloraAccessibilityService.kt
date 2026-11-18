@@ -3,18 +3,27 @@ package ai.jalora.companion
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.app.KeyguardManager
+import android.graphics.Bitmap
+import android.graphics.ColorSpace
 import android.graphics.Path
 import android.graphics.Rect
+import android.hardware.HardwareBuffer
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.DisplayMetrics
+import android.view.Display
 import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.ArrayDeque
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 
 class JaloraAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent?) = Unit
@@ -30,16 +39,7 @@ class JaloraAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
-    fun isAppForeground(packageName: String): Boolean {
-        val root = rootInActiveWindow ?: return false
-        return try {
-            root.packageName?.toString() == packageName
-        } finally {
-            root.recycle()
-        }
-    }
-
-    fun launchAppThroughLauncher(packageName: String, appName: String): ActionResult {
+    fun launchAppThroughLauncher(appName: String): ActionResult {
         val keyguard = getSystemService(KEYGUARD_SERVICE) as? KeyguardManager
         if (keyguard?.isKeyguardLocked == true) {
             return ActionResult.failed(
@@ -48,19 +48,23 @@ class JaloraAccessibilityService : AccessibilityService() {
             )
         }
         if (appName.isBlank()) {
-            return ActionResult.failed("ANDROID_APP_UNAVAILABLE", "The installed app name is unavailable.")
+            return ActionResult.failed("ANDROID_APP_NAME_INVALID", "Enter an app name to search for.")
         }
-        if (isAppForeground(packageName)) return launchReceipt(appName)
         if (!performGlobalAction(GLOBAL_ACTION_HOME)) {
             return ActionResult.failed("ANDROID_HOME_UNAVAILABLE", "Android could not open the home screen.")
         }
 
         Thread.sleep(LAUNCHER_SETTLE_MS)
+        val launcherPackage = activePackage()
+            ?: return ActionResult.failed(
+                "ANDROID_LAUNCHER_UNAVAILABLE",
+                "Android did not expose the launcher screen to accessibility.",
+            )
         var appDrawerOpened = false
         var searchAttempted = false
         var searchButtonOpened = false
         repeat(MAX_LAUNCHER_SWIPES + 1) {
-            if (isAppForeground(packageName)) return launchReceipt(appName)
+            if (hasLeftLauncher(launcherPackage)) return launchReceipt(appName)
             val root = rootInActiveWindow
             if (root != null) {
                 val appNode = findExactLabel(root, appName)
@@ -70,12 +74,12 @@ class JaloraAccessibilityService : AccessibilityService() {
                         || tapBounds(bounds)
                     if (appNode !== root) appNode.recycle()
                     root.recycle()
-                    if (clicked && waitForForeground(packageName)) {
+                    if (clicked && waitForForegroundChange(launcherPackage)) {
                         return launchReceipt(appName)
                     }
-                    return ActionResult.failed(
+                    return ActionResult.uncertain(
                         "ANDROID_LAUNCH_UNVERIFIED",
-                        "The launcher icon was activated, but Android did not show $appName in the foreground.",
+                        "The launcher item for $appName was activated, but the foreground screen did not change.",
                     )
                 }
 
@@ -97,7 +101,7 @@ class JaloraAccessibilityService : AccessibilityService() {
                         root.recycle()
                         if (entered) {
                             Thread.sleep(LAUNCHER_SETTLE_MS)
-                            if (isAppForeground(packageName)) return launchReceipt(appName)
+                            if (hasLeftLauncher(launcherPackage)) return launchReceipt(appName)
                             val results = rootInActiveWindow
                             if (results != null) {
                                 val resultNode = findExactLabel(results, appName)
@@ -108,12 +112,12 @@ class JaloraAccessibilityService : AccessibilityService() {
                                     ) || tapBounds(bounds)
                                     if (resultNode !== results) resultNode.recycle()
                                     results.recycle()
-                                    if (clicked && waitForForeground(packageName)) {
+                                    if (clicked && waitForForegroundChange(launcherPackage)) {
                                         return launchReceipt(appName)
                                     }
-                                    return ActionResult.failed(
+                                    return ActionResult.uncertain(
                                         "ANDROID_LAUNCH_UNVERIFIED",
-                                        "The launcher search result was activated, but Android did not show $appName in the foreground.",
+                                        "The launcher search result for $appName was activated, but the foreground screen did not change.",
                                     )
                                 }
                                 results.recycle()
@@ -157,28 +161,49 @@ class JaloraAccessibilityService : AccessibilityService() {
         }
         return ActionResult.failed(
             "ANDROID_APP_NOT_FOUND",
-            "The app was not visible, searchable, or reachable in the Android launcher.",
+            "The launcher did not expose an app named $appName on the home screen, in the app drawer, or in search.",
         )
     }
 
-    private fun launchReceipt(appName: String): ActionResult =
-        ActionResult(
-            "succeeded",
+    private fun launchReceipt(appName: String): ActionResult {
+        val screen = inspectActiveScreen()
+        if (screen.status != "succeeded") {
+            return ActionResult.uncertain(
+                "ANDROID_LAUNCH_SCREEN_UNAVAILABLE",
+                "The launcher opened $appName, but Jalora could not verify the resulting screen.",
+            )
+        }
+        val evidence = JSONObject(screen.evidence.toString())
+        evidence.put(
+            "operation_result",
             JSONObject()
-                .put(
-                    "operation_result",
-                    JSONObject()
-                        .put("ok", true)
-                        .put("status", "app_opened")
-                        .put("app_name", appName)
-                        .put("verified", true),
-                ),
-            null,
+                .put("ok", true)
+                .put("status", "app_opened")
+                .put("app_name", appName)
+                .put("verified", true),
         )
+        return ActionResult("succeeded", evidence, null)
+    }
 
-    private fun waitForForeground(packageName: String): Boolean {
+    private fun activePackage(): String? {
+        val root = rootInActiveWindow ?: return null
+        return try {
+            root.packageName?.toString()
+        } finally {
+            root.recycle()
+        }
+    }
+
+    private fun hasLeftLauncher(launcherPackage: String): Boolean {
+        val current = activePackage()
+        return current != null &&
+            current != launcherPackage &&
+            current != packageName
+    }
+
+    private fun waitForForegroundChange(launcherPackage: String): Boolean {
         repeat(20) {
-            if (isAppForeground(packageName)) return true
+            if (hasLeftLauncher(launcherPackage)) return true
             Thread.sleep(250)
         }
         return false
@@ -195,8 +220,12 @@ class JaloraAccessibilityService : AccessibilityService() {
         while (queue.isNotEmpty() && visited < MAX_NODES) {
             val node = queue.removeFirst()
             visited += 1
+            val parent = node.parent
+            val hasClickableTarget = node.isClickable || parent?.isClickable == true
+            parent?.recycle()
             if (
                 node.isVisibleToUser &&
+                hasClickableTarget &&
                 (normalize(node.text?.toString()) == expected ||
                     normalize(node.contentDescription?.toString()) == expected)
             ) {
@@ -287,9 +316,11 @@ class JaloraAccessibilityService : AccessibilityService() {
 
     private fun tapBounds(bounds: Rect): Boolean {
         if (bounds.isEmpty) return false
+        val centerX = bounds.exactCenterX()
+        val centerY = bounds.exactCenterY()
         val path = Path().apply {
-            moveTo(bounds.exactCenterX(), bounds.exactCenterY())
-            lineTo(bounds.exactCenterX() + 1f, bounds.exactCenterY() + 1f)
+            moveTo(centerX, centerY)
+            lineTo(centerX + 1f, centerY + 1f)
         }
         val completed = CountDownLatch(1)
         var succeeded = false
@@ -325,9 +356,28 @@ class JaloraAccessibilityService : AccessibilityService() {
         if (packageName.isBlank()) {
             return ActionResult.failed("ANDROID_APP_UNAVAILABLE", "The installed app package is unavailable.")
         }
+        return executeOnActiveScreen(operation, arguments, packageName, app.optString("name"))
+    }
+
+    fun executeActive(operation: String, arguments: JSONObject): ActionResult =
+        executeOnActiveScreen(operation, arguments, null, "")
+
+    private fun executeOnActiveScreen(
+        operation: String,
+        arguments: JSONObject,
+        expectedPackage: String?,
+        appName: String,
+    ): ActionResult {
+        val keyguard = getSystemService(KEYGUARD_SERVICE) as? KeyguardManager
+        if (keyguard?.isKeyguardLocked == true) {
+            return ActionResult.failed(
+                "ANDROID_DEVICE_LOCKED",
+                "Unlock the phone before asking Jalora to control its screen.",
+            )
+        }
         val root = rootInActiveWindow
             ?: return ActionResult.failed("ANDROID_SCREEN_UNAVAILABLE", "Android did not expose an active accessibility tree.")
-        if (root.packageName?.toString() != packageName) {
+        if (expectedPackage != null && root.packageName?.toString() != expectedPackage) {
             root.recycle()
             return ActionResult.failed(
                 "ANDROID_FOREGROUND_APP_CHANGED",
@@ -344,13 +394,19 @@ class JaloraAccessibilityService : AccessibilityService() {
                     "A password, PIN, or verification-code field is visible. Enter credentials and complete this step directly on the device.",
                 )
             }
-            when (operation) {
-                "android.screen.inspect" -> inspect(root, app.optString("name"))
+            val action = when (operation) {
+                "android.screen.inspect" -> inspect(root, appName)
                 "android.screen.back" -> back(root)
                 "android.screen.click" -> click(root, arguments)
+                "android.screen.tap" -> tap(root, arguments)
                 "android.screen.scroll" -> scroll(root, arguments)
                 "android.screen.type" -> type(root, arguments)
                 else -> ActionResult.failed("ANDROID_OPERATION_UNSUPPORTED", "This Android operation is not supported.")
+            }
+            if (operation == "android.screen.inspect" || action.status == "failed") {
+                action
+            } else {
+                withRefreshedScreen(action, appName)
             }
         } finally {
             root.recycle()
@@ -368,14 +424,17 @@ class JaloraAccessibilityService : AccessibilityService() {
             visited += 1
             val name = nodeName(node)
             if (name.isNotBlank() || node.isClickable || node.isEditable) {
-                if (controls.length() < MAX_CONTROLS) {
+                if (controls.length() < ACCESSIBILITY_CONTROL_LIMIT) {
+                    val bounds = Rect().also(node::getBoundsInScreen)
                     controls.put(
                         JSONObject()
-                            .put("name", name.take(100))
-                            .put("control_type", node.className?.toString()?.take(80) ?: "")
-                            .put("automation_id", node.viewIdResourceName?.take(100) ?: "")
+                            .put("name", name.take(80))
+                            .put("control_type", node.className?.toString()?.take(40) ?: "")
+                            .put("automation_id", node.viewIdResourceName?.take(60) ?: "")
                             .put("enabled", node.isEnabled)
-                            .put("visible", node.isVisibleToUser),
+                            .put("visible", node.isVisibleToUser)
+                            .put("scrollable", node.isScrollable)
+                            .put("bounds", normalizedBounds(bounds)),
                     )
                 } else {
                     controlsTruncated = true
@@ -387,19 +446,280 @@ class JaloraAccessibilityService : AccessibilityService() {
             if (node !== root) node.recycle()
         }
         queue.forEach { it.recycle() }
+        val screenOcr = if (hasVisibleAuthenticationInput(root)) {
+            ScreenOcr(
+                "",
+                emptyList(),
+                "redacted",
+                "Visible authentication input prevents OCR capture.",
+                false,
+            )
+        } else {
+            recognizeScreenText()
+        }
+        var ocrControlsTruncated = screenOcr.truncated
+        screenOcr.controls.forEach { control ->
+            if (controls.length() < MAX_CONTROLS) {
+                controls.put(control)
+            } else {
+                ocrControlsTruncated = true
+            }
+        }
+        val metrics = resources.displayMetrics
         val result = JSONObject()
             .put("ok", true)
             .put("app_name", appName)
             .put("status", "inspected")
             .put("control_count", visited)
-            .put("truncated", visited >= MAX_NODES || controlsTruncated)
+            .put(
+                "truncated",
+                visited >= MAX_NODES || controlsTruncated || ocrControlsTruncated,
+            )
+            .put("screen_width", metrics.widthPixels.coerceIn(1, MAX_SCREEN_DIMENSION))
+            .put("screen_height", metrics.heightPixels.coerceIn(1, MAX_SCREEN_DIMENSION))
+            .put("ocr_status", screenOcr.status)
         return ActionResult(
             "succeeded",
             JSONObject()
                 .put("operation_result", result)
-                .put("accessible_controls", controls),
+                .put("accessible_controls", controls)
+                .put("screen_ocr_text", screenOcr.text)
+                .put("screen_ocr_status", screenOcr.status)
+                .put("screen_ocr_reason", screenOcr.reason),
             null,
         )
+    }
+
+    private fun normalizedBounds(bounds: Rect): JSONObject {
+        val width = resources.displayMetrics.widthPixels.coerceIn(1, MAX_SCREEN_DIMENSION)
+        val height = resources.displayMetrics.heightPixels.coerceIn(1, MAX_SCREEN_DIMENSION)
+        val left = bounds.left.coerceIn(0, width)
+        val top = bounds.top.coerceIn(0, height)
+        return JSONObject()
+            .put("left", left)
+            .put("top", top)
+            .put("right", bounds.right.coerceIn(left, width))
+            .put("bottom", bounds.bottom.coerceIn(top, height))
+    }
+
+    private fun withRefreshedScreen(action: ActionResult, appName: String): ActionResult {
+        val screen = inspectActiveScreen()
+        if (screen.status != "succeeded") {
+            return ActionResult.uncertain(
+                "ANDROID_POST_ACTION_SCREEN_UNAVAILABLE",
+                "The action was attempted, but Jalora could not inspect the resulting screen.",
+            )
+        }
+        val evidence = JSONObject(action.evidence.toString())
+        for (key in listOf(
+            "accessible_controls",
+            "screen_ocr_text",
+            "screen_ocr_status",
+            "screen_ocr_reason",
+        )) {
+            if (screen.evidence.has(key)) {
+                evidence.put(key, screen.evidence.get(key))
+            }
+        }
+        val actionResult = evidence.optJSONObject("operation_result")
+        actionResult?.put("app_name", appName)
+        return ActionResult(action.status, evidence, action.errorCode)
+    }
+
+    private fun inspectActiveScreen(): ActionResult {
+        val root = rootInActiveWindow
+            ?: return ActionResult.failed(
+                "ANDROID_SCREEN_UNAVAILABLE",
+                "Android did not expose an active accessibility tree.",
+            )
+        return try {
+            inspect(root, "")
+        } finally {
+            root.recycle()
+        }
+    }
+
+    private fun recognizeScreenText(): ScreenOcr {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return ScreenOcr(
+                "",
+                emptyList(),
+                "unavailable",
+                "Android screenshot capture requires Android 11 or later.",
+                false,
+            )
+        }
+        val captured = captureScreenshot()
+        val bitmap = captured.first
+            ?: return ScreenOcr("", emptyList(), "unavailable", captured.second, false)
+        val recognizer = try {
+            TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        } catch (error: IllegalStateException) {
+            return ScreenOcr(
+                "",
+                emptyList(),
+                "unavailable",
+                "On-device text recognition could not start: ${error.message.orEmpty()}".take(
+                    MAX_OCR_REASON_CHARS,
+                ),
+                false,
+            )
+        }
+        return try {
+            val completed = CountDownLatch(1)
+            var recognized: com.google.mlkit.vision.text.Text? = null
+            var failure: String? = null
+            recognizer.process(InputImage.fromBitmap(bitmap, 0))
+                .addOnSuccessListener {
+                    recognized = it
+                    completed.countDown()
+                }
+                .addOnFailureListener {
+                    failure = "On-device text recognition failed."
+                    completed.countDown()
+                }
+            if (!completed.await(OCR_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                return ScreenOcr(
+                    "",
+                    emptyList(),
+                    "unavailable",
+                    "On-device text recognition timed out.",
+                    false,
+                )
+            }
+            val text = recognized
+                ?: return ScreenOcr(
+                    "",
+                    emptyList(),
+                    "unavailable",
+                    failure ?: "On-device text recognition returned no result.",
+                    false,
+                )
+            val allControls = text.textBlocks
+                .flatMap { it.lines }
+                .mapNotNull { line ->
+                    val bounds = line.boundingBox ?: return@mapNotNull null
+                    if (line.text.isBlank()) return@mapNotNull null
+                    JSONObject()
+                        .put("name", line.text.take(80))
+                        .put("control_type", "OCRText")
+                        .put("automation_id", "")
+                        .put("enabled", true)
+                        .put("visible", true)
+                        .put("scrollable", false)
+                        .put("bounds", normalizedBounds(bounds))
+                }
+            val controls = allControls.take(MAX_OCR_CONTROLS)
+            ScreenOcr(
+                text.text.take(MAX_OCR_CHARS),
+                controls,
+                "available",
+                "",
+                text.text.length > MAX_OCR_CHARS ||
+                    allControls.size > MAX_OCR_CONTROLS,
+            )
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            ScreenOcr(
+                "",
+                emptyList(),
+                "unavailable",
+                "On-device text recognition was interrupted.",
+                false,
+            )
+        } catch (error: IllegalArgumentException) {
+            ScreenOcr(
+                "",
+                emptyList(),
+                "unavailable",
+                "On-device text recognition rejected the screenshot: ${error.message.orEmpty()}"
+                    .take(MAX_OCR_REASON_CHARS),
+                false,
+            )
+        } catch (error: IllegalStateException) {
+            ScreenOcr(
+                "",
+                emptyList(),
+                "unavailable",
+                "On-device text recognition failed: ${error.message.orEmpty()}"
+                    .take(MAX_OCR_REASON_CHARS),
+                false,
+            )
+        } finally {
+            recognizer.close()
+            bitmap.recycle()
+        }
+    }
+
+    private fun captureScreenshot(): Pair<Bitmap?, String> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return null to "Android screenshot capture requires Android 11 or later."
+        }
+        val completed = CountDownLatch(1)
+        var bitmap: Bitmap? = null
+        var failure = "Android did not return a screenshot."
+        try {
+            takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                Executor { runnable -> runnable.run() },
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: ScreenshotResult) {
+                        val hardwareBuffer: HardwareBuffer = screenshot.hardwareBuffer
+                        try {
+                            val hardwareBitmap = Bitmap.wrapHardwareBuffer(
+                                hardwareBuffer,
+                                screenshot.colorSpace as ColorSpace?,
+                            )
+                            bitmap = hardwareBitmap?.copy(Bitmap.Config.ARGB_8888, false)
+                            hardwareBitmap?.recycle()
+                            if (bitmap == null) failure = "Android returned an unusable screenshot."
+                        } catch (error: IllegalArgumentException) {
+                            failure = (
+                                "Android returned an unusable screenshot: ${error.message.orEmpty()}"
+                            ).take(MAX_OCR_REASON_CHARS)
+                        } catch (error: SecurityException) {
+                            failure = (
+                                "Android denied screenshot access: ${error.message.orEmpty()}"
+                            ).take(MAX_OCR_REASON_CHARS)
+                        } catch (error: IllegalStateException) {
+                            failure = (
+                                "Android screenshot capture is unavailable: ${error.message.orEmpty()}"
+                            ).take(MAX_OCR_REASON_CHARS)
+                        } finally {
+                            hardwareBuffer.close()
+                            completed.countDown()
+                        }
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        failure = "Android screenshot capture failed (code $errorCode)."
+                        completed.countDown()
+                    }
+                },
+            )
+        } catch (error: SecurityException) {
+            return null to (
+                "Android denied screenshot access: ${error.message.orEmpty()}"
+            ).take(MAX_OCR_REASON_CHARS)
+        } catch (error: IllegalStateException) {
+            return null to (
+                "Android screenshot capture is unavailable: ${error.message.orEmpty()}"
+            ).take(MAX_OCR_REASON_CHARS)
+        } catch (error: IllegalArgumentException) {
+            return null to (
+                "Android screenshot request is invalid: ${error.message.orEmpty()}"
+            ).take(MAX_OCR_REASON_CHARS)
+        }
+        val completedInTime = try {
+            completed.await(SCREENSHOT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return null to "Android screenshot capture was interrupted."
+        }
+        if (!completedInTime) {
+            return null to "Android screenshot capture timed out."
+        }
+        return bitmap to failure
     }
 
     private fun hasVisibleAuthenticationInput(root: AccessibilityNodeInfo): Boolean {
@@ -461,6 +781,63 @@ class JaloraAccessibilityService : AccessibilityService() {
             ActionResult.uncertain("ANDROID_CLICK_UNVERIFIED", "The click was accepted, but no accessibility state change was observed.")
         } else {
             ActionResult.succeeded("clicked", verified = true)
+        }
+    }
+
+    private fun tap(root: AccessibilityNodeInfo, arguments: JSONObject): ActionResult {
+        val rawX = arguments.opt("x")
+        val rawY = arguments.opt("y")
+        if (rawX !is Number || rawY !is Number) {
+            return ActionResult.failed(
+                "ANDROID_TAP_COORDINATES_INVALID",
+                "Coordinate tapping requires integer screen coordinates.",
+            )
+        }
+        val x = rawX.toInt()
+        val y = rawY.toInt()
+        val metrics = resources.displayMetrics
+        if (
+            rawX.toDouble() != x.toDouble() ||
+            rawY.toDouble() != y.toDouble() ||
+            x !in 0 until metrics.widthPixels ||
+            y !in 0 until metrics.heightPixels
+        ) {
+            return ActionResult.failed(
+                "ANDROID_TAP_COORDINATES_INVALID",
+                "The requested tap point is outside the current screen.",
+            )
+        }
+        val before = signature(root)
+        if (!tapBounds(Rect(x, y, x + 1, y + 1))) {
+            return ActionResult.failed(
+                "ANDROID_TAP_FAILED",
+                "Android did not accept the coordinate tap.",
+            )
+        }
+        Thread.sleep(250)
+        val afterRoot = rootInActiveWindow
+            ?: return ActionResult.uncertain(
+                "ANDROID_TAP_UNVERIFIED",
+                "Android accepted the tap, but the resulting screen is unavailable.",
+            )
+        val after = try {
+            if (afterRoot.packageName != root.packageName) {
+                return ActionResult.uncertain(
+                    "ANDROID_FOREGROUND_APP_CHANGED",
+                    "The tap changed the foreground app; the result is uncertain.",
+                )
+            }
+            signature(afterRoot)
+        } finally {
+            afterRoot.recycle()
+        }
+        return if (before == after) {
+            ActionResult.uncertain(
+                "ANDROID_TAP_UNVERIFIED",
+                "Android accepted the tap, but no accessibility state change was observed.",
+            )
+        } else {
+            ActionResult.succeeded("tapped", verified = true)
         }
     }
 
@@ -530,6 +907,11 @@ class JaloraAccessibilityService : AccessibilityService() {
     }
 
     private fun scroll(root: AccessibilityNodeInfo, arguments: JSONObject): ActionResult {
+        val name = arguments.optString("name")
+        val automationId = arguments.optString("automation_id")
+        if (name.isBlank() && automationId.isBlank()) {
+            return swipeScreen(root, arguments.optString("direction"))
+        }
         val target = uniqueNode(root, arguments)
             ?: return ActionResult.failed("ANDROID_CONTROL_NOT_UNIQUE", "The target must match exactly one accessible control.")
         if (!target.isEnabled || !target.isVisibleToUser || !target.isScrollable) {
@@ -564,6 +946,81 @@ class JaloraAccessibilityService : AccessibilityService() {
         }
         return if (before == after) {
             ActionResult.uncertain("ANDROID_SCROLL_UNVERIFIED", "The scroll was accepted, but no accessibility state change was observed.")
+        } else {
+            ActionResult.succeeded("scrolled", verified = true)
+        }
+    }
+
+    private fun swipeScreen(root: AccessibilityNodeInfo, direction: String): ActionResult {
+        val startRatio: Float
+        val endRatio: Float
+        when (direction) {
+            "down" -> {
+                startRatio = 0.30f
+                endRatio = 0.75f
+            }
+            "up" -> {
+                startRatio = 0.75f
+                endRatio = 0.30f
+            }
+            else -> return ActionResult.failed(
+                "ANDROID_SCROLL_DIRECTION_INVALID",
+                "The scroll direction must be up or down.",
+            )
+        }
+        val metrics: DisplayMetrics = resources.displayMetrics
+        val x = metrics.widthPixels * 0.5f
+        val path = Path().apply {
+            moveTo(x, metrics.heightPixels * startRatio)
+            lineTo(x, metrics.heightPixels * endRatio)
+        }
+        val before = signature(root)
+        val completed = CountDownLatch(1)
+        var succeeded = false
+        val dispatched = dispatchGesture(
+            GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, SWIPE_DURATION_MS))
+                .build(),
+            object : GestureResultCallback() {
+                override fun onCompleted(gesture: GestureDescription?) {
+                    succeeded = true
+                    completed.countDown()
+                }
+
+                override fun onCancelled(gesture: GestureDescription?) {
+                    completed.countDown()
+                }
+            },
+            Handler(Looper.getMainLooper()),
+        )
+        if (!dispatched || !completed.await(GESTURE_TIMEOUT_MS, TimeUnit.MILLISECONDS) || !succeeded) {
+            return ActionResult.failed(
+                "ANDROID_SCROLL_FAILED",
+                "Android did not accept the screen swipe.",
+            )
+        }
+        Thread.sleep(250)
+        val afterRoot = rootInActiveWindow
+            ?: return ActionResult.uncertain(
+                "ANDROID_SCROLL_UNVERIFIED",
+                "Android accepted the swipe, but the resulting screen is unavailable.",
+            )
+        val after = try {
+            if (afterRoot.packageName != root.packageName) {
+                return ActionResult.uncertain(
+                    "ANDROID_FOREGROUND_APP_CHANGED",
+                    "The swipe changed the foreground app; the result is uncertain.",
+                )
+            }
+            signature(afterRoot)
+        } finally {
+            afterRoot.recycle()
+        }
+        return if (before == after) {
+            ActionResult.uncertain(
+                "ANDROID_SCROLL_UNVERIFIED",
+                "Android accepted the swipe, but no accessibility state change was observed.",
+            )
         } else {
             ActionResult.succeeded("scrolled", verified = true)
         }
@@ -622,6 +1079,13 @@ class JaloraAccessibilityService : AccessibilityService() {
     companion object {
         private const val MAX_NODES = 300
         private const val MAX_CONTROLS = 40
+        private const val ACCESSIBILITY_CONTROL_LIMIT = 24
+        private const val MAX_OCR_CONTROLS = 16
+        private const val MAX_OCR_CHARS = 5_000
+        private const val MAX_OCR_REASON_CHARS = 400
+        private const val MAX_SCREEN_DIMENSION = 10_000
+        private const val SCREENSHOT_TIMEOUT_MS = 5_000L
+        private const val OCR_TIMEOUT_MS = 8_000L
         private const val MAX_LAUNCHER_SWIPES = 8
         private const val LAUNCHER_SETTLE_MS = 500L
         private const val SEARCH_SETTLE_MS = 300L
@@ -630,6 +1094,7 @@ class JaloraAccessibilityService : AccessibilityService() {
         private const val GESTURE_TIMEOUT_MS = 2_000L
         private val AUTHENTICATION_GUARDED_OPERATIONS = setOf(
             "android.screen.click",
+            "android.screen.tap",
             "android.screen.scroll",
             "android.screen.type",
         )
@@ -643,6 +1108,14 @@ class JaloraAccessibilityService : AccessibilityService() {
             private set
     }
 }
+
+private data class ScreenOcr(
+    val text: String,
+    val controls: List<JSONObject>,
+    val status: String,
+    val reason: String,
+    val truncated: Boolean,
+)
 
 data class ActionResult(
     val status: String,

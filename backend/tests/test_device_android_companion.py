@@ -5,10 +5,15 @@ from app.context import ToolContext, bind_tool_execution
 from app.database.session import SessionLocal
 from app.models.agent import AgentRun
 from app.models.conversation import Conversation
+from app.models.device import DeviceRemoteCommand
 from app.models.task import Task, TaskStep, TaskStepAttempt
 from app.models.user import User
+from app.services.device_command_protocol import (
+    android_action_requires_user_approval,
+)
 from app.tools.device_tools import (
     get_remote_device_action_status,
+    open_paired_android_app,
     request_remote_android_action,
 )
 
@@ -352,6 +357,8 @@ def test_android_companion_uses_pairing_scopes_and_receipt_lifecycle(
                     "status": "inspected",
                     "control_count": 1,
                 },
+                "screen_ocr_text": "Continue",
+                "screen_ocr_status": "available",
                 "accessible_controls": [{
                     "name": "Continue",
                     "control_type": "Button",
@@ -380,6 +387,8 @@ def test_android_companion_uses_pairing_scopes_and_receipt_lifecycle(
                     "status": "inspected",
                     "control_count": 1,
                 },
+                "screen_ocr_text": "Continue",
+                "screen_ocr_status": "available",
                 "accessible_controls": [{
                     "name": "Continue",
                     "control_type": "Button",
@@ -489,6 +498,203 @@ def test_android_companion_rejects_mismatched_scopes_and_unapproved_app(
     assert unknown_app.error.code == "DEVICE_COMMAND_INVALID"
 
 
+def test_android_visual_commands_do_not_require_manifest_and_are_serialized(
+    client, auth_headers
+):
+    owner_headers = auth_headers("android-visual-no-manifest@test.com")
+    paired = _paired_android_device(client, owner_headers)
+    device = paired["device"]
+    session = client.post(
+        "/api/devices/protocol/v1/session",
+        headers={"Authorization": f"Bearer {paired['device_token']}"},
+    )
+    assert session.status_code == 200, session.text
+    capabilities = client.get(
+        "/api/devices/capabilities",
+        headers=owner_headers,
+    )
+    android_device = next(
+        item
+        for item in capabilities.json()["devices"]
+        if item["id"] == device["id"]
+    )
+    launcher_capability = next(
+        item
+        for item in android_device["companion_capabilities"]
+        if item["operation"] == "application.launch"
+    )
+    assert launcher_capability["status"] == "available"
+    assert "launcher" in launcher_capability["label"].lower()
+    assert {
+        item["operation"]: item["status"]
+        for item in android_device["companion_capabilities"]
+    }["screen.accessibility.inspect"] == "available"
+    access_headers = {
+        "Authorization": f"Bearer {session.json()['access_token']}"
+    }
+
+    with SessionLocal() as db:
+        user = db.query(User).filter_by(
+            email="android-visual-no-manifest@test.com"
+        ).one()
+        contexts = [
+            ToolContext(
+                user_id=user.id,
+                idempotency_key=f"android-visual-{index}",
+            )
+            for index in range(4)
+        ]
+
+    with bind_tool_execution(contexts[0]):
+        launched = asyncio.run(open_paired_android_app("App missing from manifest"))
+    assert launched.success
+    assert launched.data["action"] == "android.launcher.open"
+
+    with bind_tool_execution(contexts[1]):
+        inspected = asyncio.run(request_remote_android_action(
+            device["id"],
+            "android.screen.inspect",
+        ))
+    with bind_tool_execution(contexts[2]):
+        tapped = asyncio.run(request_remote_android_action(
+            device["id"],
+            "android.screen.tap",
+            x=120,
+            y=240,
+        ))
+    with bind_tool_execution(contexts[3]):
+        scrolled = asyncio.run(request_remote_android_action(
+            device["id"],
+            "android.screen.scroll",
+            direction="down",
+        ))
+    assert inspected.success and tapped.success and scrolled.success
+    with bind_tool_execution(ToolContext(
+        user_id=contexts[0].user_id,
+        idempotency_key="android-visual-invalid-tap",
+    )):
+        invalid_tap = asyncio.run(request_remote_android_action(
+            device["id"],
+            "android.screen.tap",
+            x=10_001,
+            y=240,
+        ))
+    assert not invalid_tap.success
+    assert invalid_tap.error.code == "DEVICE_COMMAND_INVALID"
+
+    with SessionLocal() as db:
+        commands = db.query(DeviceRemoteCommand).filter_by(
+            device_id=device["id"]
+        ).order_by(DeviceRemoteCommand.created_at).all()
+        assert [command.action for command in commands] == [
+            "android.launcher.open",
+            "android.screen.inspect",
+            "android.screen.tap",
+            "android.screen.scroll",
+        ]
+        assert commands[0].arguments == {"app_name": "App missing from manifest"}
+        assert commands[1].arguments == {}
+        assert commands[2].arguments == {"x": 120, "y": 240}
+        assert commands[3].arguments == {"direction": "down"}
+        assert "screen_ocr_text" in commands[1].expected_evidence
+        assert "screen_ocr_status" in commands[1].expected_evidence
+
+    first_poll = client.get(
+        "/api/devices/protocol/v1/commands?wait_seconds=0&client_type=android",
+        headers=access_headers,
+    )
+    assert first_poll.status_code == 200, first_poll.text
+    assert len(first_poll.json()["commands"]) == 1
+    first_command = first_poll.json()["commands"][0]
+    assert first_command["operation"] == "android.launcher.open"
+    decision = client.post(
+        f"/api/devices/protocol/v1/commands/{first_command['command_id']}/decision",
+        headers=access_headers,
+        json={"nonce": first_command["nonce"], "approve": True},
+    )
+    assert decision.status_code == 200
+    receipt = client.post(
+        f"/api/devices/protocol/v1/commands/{first_command['command_id']}/receipt",
+        headers=access_headers,
+        json={
+            "nonce": first_command["nonce"],
+            "status": "succeeded",
+            "evidence": {
+                "operation_result": {
+                    "ok": True,
+                    "status": "app_opened",
+                    "app_name": "App missing from manifest",
+                    "verified": True,
+                },
+                "accessible_controls": [],
+                "screen_ocr_text": "",
+                "screen_ocr_status": "available",
+                "screen_ocr_reason": "",
+            },
+        },
+    )
+    assert receipt.status_code == 200, receipt.text
+    assert receipt.json()["status"] == "succeeded"
+
+
+def test_android_sensitive_named_control_requires_jalora_approval(
+    client, auth_headers, fake_router
+):
+    from langchain_core.messages import AIMessage
+
+    owner_headers = auth_headers("android-sensitive-click@test.com")
+    paired = _paired_android_device(client, owner_headers)
+    device_id = paired["device"]["id"]
+    fake_router.script.append(AIMessage(
+        content="",
+        tool_calls=[{
+            "name": "request_remote_android_action",
+            "args": {
+                "device_id": device_id,
+                "action": "android.screen.click",
+                "name": "Send",
+            },
+            "id": "android-sensitive-send",
+            "type": "tool_call",
+        }],
+    ))
+    fake_router.script.append(AIMessage(content="The phone action was approved."))
+
+    response = client.post(
+        "/api/chat",
+        headers=owner_headers,
+        json={"message": "Tap Send in WhatsApp on my paired Android phone."},
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["status"] == "paused_approval", result
+    assert result["approval"]["tool_name"] == "request_remote_android_action"
+    assert result["approval"]["level"] >= 3
+    with SessionLocal() as db:
+        assert db.query(DeviceRemoteCommand).filter_by(
+            device_id=device_id
+        ).count() == 0
+
+
+def test_android_coordinate_and_permission_controls_are_sensitive():
+    assert android_action_requires_user_approval(
+        "android.screen.tap",
+        {"x": 20, "y": 40},
+    )
+    assert android_action_requires_user_approval(
+        "android.screen.click",
+        {"automation_id": "btnAllowPermission"},
+    )
+    assert android_action_requires_user_approval(
+        "android.screen.click",
+        {"name": "Send message"},
+    )
+    assert not android_action_requires_user_approval(
+        "android.screen.click",
+        {"name": "Chats"},
+    )
+
+
 def test_mocked_multi_app_commands_record_receipts_on_shared_task_steps(
     client, auth_headers
 ):
@@ -567,14 +773,16 @@ def test_mocked_multi_app_commands_record_receipts_on_shared_task_steps(
         queued_commands.append(queued.data["command_id"])
     assert len(set(queued_commands)) == 2
 
-    poll = client.get(
-        "/api/devices/protocol/v1/commands?wait_seconds=0&client_type=android",
-        headers=access_headers,
-    )
-    assert poll.status_code == 200, poll.text
-    commands = poll.json()["commands"]
-    assert {item["command_id"] for item in commands} == set(queued_commands)
-    for command in commands:
+    for expected_command_id in queued_commands:
+        poll = client.get(
+            "/api/devices/protocol/v1/commands?wait_seconds=0&client_type=android",
+            headers=access_headers,
+        )
+        assert poll.status_code == 200, poll.text
+        commands = poll.json()["commands"]
+        assert len(commands) == 1
+        command = commands[0]
+        assert command["command_id"] == expected_command_id
         assert command["operation"] == "android.app.launch"
         decision = client.post(
             f"/api/devices/protocol/v1/commands/{command['command_id']}/decision",
@@ -683,6 +891,31 @@ def test_android_scroll_is_queued_for_one_approved_accessible_target(
         "automation_id": "content",
         "direction": "up",
     }
+    decision = client.post(
+        f"/api/devices/protocol/v1/commands/{command['command_id']}/decision",
+        headers=access_headers,
+        json={"nonce": command["nonce"], "approve": True},
+    )
+    assert decision.status_code == 200, decision.text
+    receipt = client.post(
+        f"/api/devices/protocol/v1/commands/{command['command_id']}/receipt",
+        headers=access_headers,
+        json={
+            "nonce": command["nonce"],
+            "status": "succeeded",
+            "evidence": {
+                "operation_result": {
+                    "ok": True,
+                    "status": "scrolled",
+                    "verified": True,
+                },
+                "accessible_controls": [],
+                "screen_ocr_text": "",
+                "screen_ocr_status": "available",
+            },
+        },
+    )
+    assert receipt.status_code == 200, receipt.text
 
     back_context = ToolContext(
         user_id=context.user_id,

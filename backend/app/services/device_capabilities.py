@@ -119,7 +119,11 @@ def discover_device_capabilities(
         for operation, label, scope in (
             (
                 "application.launch",
-                "Launch installed applications",
+                (
+                    "Search the Android launcher and open apps"
+                    if device.platform == "android"
+                    else "Launch installed applications"
+                ),
                 f"{native_prefix}.apps.launch",
             ),
             (
@@ -129,12 +133,20 @@ def discover_device_capabilities(
             ),
             (
                 "screen.accessibility.inspect",
-                "Inspect accessible application controls",
+                (
+                    "Inspect the active Android screen"
+                    if device.platform == "android"
+                    else "Inspect accessible application controls"
+                ),
                 f"{native_prefix}.screen.read",
             ),
             (
                 "screen.control",
-                "Control application screens",
+                (
+                    "Control the active Android screen"
+                    if device.platform == "android"
+                    else "Control application screens"
+                ),
                 f"{native_prefix}.screen.control",
             ),
         ):

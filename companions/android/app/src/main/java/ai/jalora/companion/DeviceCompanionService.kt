@@ -220,12 +220,50 @@ class DeviceCompanionService : Service() {
                 )
             }
         }
+        if (operation == "android.launcher.open") {
+            if (!hasScope(state, "android.apps.launch")) {
+                return ActionResult.failed("ANDROID_SCOPE_REQUIRED", "App-launch permission was not granted.")
+            }
+            val accessibility = JaloraAccessibilityService.instance
+                ?: return ActionResult.uncertain(
+                    "ANDROID_ACCESSIBILITY_REQUIRED",
+                    "Enable Jalora Accessibility in Android Settings to search the launcher and open apps.",
+                )
+            return accessibility.launchAppThroughLauncher(arguments.optString("app_name"))
+        }
+        if (operation.startsWith("android.screen.")) {
+            val requiredScope = if (operation == "android.screen.inspect") {
+                "android.screen.read"
+            } else {
+                "android.screen.control"
+            }
+            if (!hasScope(state, requiredScope)) {
+                return ActionResult.failed("ANDROID_SCOPE_REQUIRED", "This screen permission was not granted.")
+            }
+            if (operation != "android.screen.inspect" &&
+                !hasScope(state, "android.screen.read")
+            ) {
+                return ActionResult.failed(
+                    "ANDROID_SCOPE_REQUIRED",
+                    "Screen control requires the screen-read pairing permission.",
+                )
+            }
+            val service = JaloraAccessibilityService.instance
+                ?: return ActionResult.failed(
+                    "ANDROID_ACCESSIBILITY_REQUIRED",
+                    "Enable the Jalora accessibility service in Android Settings.",
+                )
+            return if (arguments.optString("app_id").isBlank()) {
+                service.executeActive(operation, arguments)
+            } else {
+                service.execute(operation, arguments, apps)
+            }
+        }
         val appId = arguments.optString("app_id")
         val app = (0 until apps.length())
             .map { apps.getJSONObject(it) }
             .firstOrNull { it.optString("id") == appId }
             ?: return ActionResult.failed("ANDROID_APP_UNAVAILABLE", "This app is not installed or no longer launchable.")
-        val packageName = app.optString("package_name")
         return when (operation) {
             "android.app.launch" -> {
                 if (!hasScope(state, "android.apps.launch")) {
@@ -236,27 +274,7 @@ class DeviceCompanionService : Service() {
                         "ANDROID_ACCESSIBILITY_REQUIRED",
                         "Enable Jalora Accessibility in Android Settings to find and open the app from the launcher.",
                     )
-                accessibility.launchAppThroughLauncher(
-                    packageName,
-                    app.optString("name"),
-                )
-            }
-            "android.screen.inspect",
-            "android.screen.back",
-            "android.screen.click",
-            "android.screen.scroll",
-            "android.screen.type" -> {
-                val requiredScope = if (operation == "android.screen.inspect") {
-                    "android.screen.read"
-                } else {
-                    "android.screen.control"
-                }
-                if (!hasScope(state, requiredScope)) {
-                    return ActionResult.failed("ANDROID_SCOPE_REQUIRED", "This screen permission was not granted.")
-                }
-                val service = JaloraAccessibilityService.instance
-                    ?: return ActionResult.failed("ANDROID_ACCESSIBILITY_REQUIRED", "Enable the Jalora accessibility service in Android Settings.")
-                service.execute(operation, arguments, apps)
+                accessibility.launchAppThroughLauncher(app.optString("name"))
             }
             else -> ActionResult.failed("ANDROID_OPERATION_UNSUPPORTED", "This Android operation is not supported.")
         }

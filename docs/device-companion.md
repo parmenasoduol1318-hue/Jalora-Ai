@@ -34,13 +34,13 @@ conversation turns.
 
 When Jalora's backend is not running on Windows, an exact Chat or Agent Tasks
 request such as `open WhatsApp` can use one online paired Android companion
-instead. The companion discovers installed launcher apps automatically; app
-launch and screen control do not require manually selecting each app. The
-pairing must grant the relevant scopes, and Jalora reports completion only
-after the companion returns a receipt. Reading and controlling the Android
-screen still requires the owner to enable Android's Accessibility Service in
-system settings. If multiple paired phones have the app, specify the target
-phone. iPhone app launching is not supported by this companion.
+instead. The companion searches the launcher/home screen and app drawer by the
+requested visible app name; an installed-app manifest is not required for
+launch. The pairing must grant the relevant scopes, and Jalora reports
+completion only after the companion returns a receipt. Reading and controlling
+the Android screen still requires the owner to enable Android's Accessibility
+Service in system settings. If multiple paired phones are online, specify the
+target phone. iPhone app launching is not supported by this companion.
 
 Requests that explicitly target a Windows laptop, computer, or desktop are
 routed through live device-capability discovery. The agent can choose an
@@ -169,29 +169,35 @@ idempotency key, expected evidence, and delivery lease. Protocol v1 allows
 `windows.screen.click`, `windows.screen.scroll`, `windows.screen.type`, and
 `windows.screen.key`), and
 bounded Android operations (`android.app.launch`, `android.screen.inspect`,
-`android.screen.back`, `android.screen.click`, `android.screen.scroll`, and
-`android.screen.type`). Browser clients poll with
+`android.launcher.open`, `android.screen.back`, `android.screen.click`,
+`android.screen.tap`, `android.screen.scroll`, and `android.screen.type`).
+Android clients receive at most one command per poll so tasks targeting a phone
+cannot concurrently control its screen. Browser clients poll with
 the default `client_type=browser`; native clients use `client_type=windows` or
 `client_type=android` and are accepted only for matching paired devices. Raw
-shell commands, arbitrary code, screenshot uploads, and generic coordinate
-clicks are not accepted.
+shell commands, arbitrary code, and screenshot uploads are not accepted.
 
 The Windows and Android clients report authenticated manifests to
-`PUT /api/devices/protocol/v1/manifest`. It contains only apps the Windows user
-or Android user selected locally, app display names/IDs, and capabilities
-permitted by the pairing scopes. Windows executable paths and hashes, and
-Android package names, remain on the device. Command creation and delivery
-both verify that the operation is in the current manifest. Input actions
-require screen-read permission as well as screen control, and are limited to
-one uniquely identified accessible control at a time. Scroll requests perform
-one bounded UI scroll and report success only when the accessibility tree
-changes; otherwise their outcome remains uncertain.
+`PUT /api/devices/protocol/v1/manifest`. It contains launcher-app metadata
+reported by Android and capabilities permitted by the pairing scopes. Windows
+executable paths and hashes, and Android package names, remain on the device.
+Windows and legacy app-specific Android commands verify the current manifest.
+The Android launcher-search and active-screen commands instead rely on the
+phone's granted `android.apps.launch`, `android.screen.read`, and
+`android.screen.control` scopes, and do not require an app to appear in the
+manifest. Input actions require screen-read permission as well as screen
+control. Android scrolls use an accessible scrollable node or a bounded screen
+swipe; coordinate taps are bounded by screen dimensions.
 
-Before performing the operation, the target must submit its explicit decision
-to `POST /api/devices/protocol/v1/commands/{command_id}/decision` with the
-envelope nonce. Only the first successful approval returns `execute: true` and
-the URL; replayed approvals never return an executable URL. Rejection cancels
-the command. A device submits a bounded receipt to
+Before performing a native operation, the companion submits its scoped
+authorization decision to
+`POST /api/devices/protocol/v1/commands/{command_id}/decision` with the envelope
+nonce. This is not a request for the phone owner to approve each action: the
+pairing scopes authorize ordinary operations. In Jalora's task runner, named
+sensitive controls, app-permission grants, and coordinate taps pause for
+explicit user approval before they are queued. Only the first successful
+decision returns `execute: true`; replayed decisions cannot execute an action
+again. A device submits a bounded receipt to
 `POST /api/devices/protocol/v1/commands/{command_id}/receipt`; repeated
 identical receipts are idempotent and conflicting replays are rejected.
 
@@ -225,19 +231,22 @@ foreground window in memory and sends bounded OCR text, not an image. It
 requires Pillow, pytesseract, the Tesseract executable, `windows.screen.read`,
 and local per-command approval.
 
-The Android client is under `companions/android`. It discovers installed
-launcher apps and uses the owner-enabled Accessibility Service to find and
-click an app icon from the home screen or app drawer and verify the foreground
-package. Screen contents are returned only by a separate inspection command
-when the phone granted `android.screen.read`. The service also provides bounded
-foreground-app inspection, back navigation, and accessible control. The
-`remote.browser.open_url` scope can open public links
+The Android client is under `companions/android`. It uses the owner-enabled
+Accessibility Service to search for and click an app name from the home screen
+or app drawer without requiring a manifest/package match, then inspects the
+resulting foreground screen. Screen inspection returns a bounded accessibility
+tree and on-device OCR text/bounds from an in-memory screenshot on Android 11+;
+the image itself is not sent to Jalora. The service also provides back
+navigation, accessible clicks, coordinate-tap fallback, typing, and accessible
+or gesture-based scrolling. Every control action returns a refreshed screen
+snapshot. The `remote.browser.open_url` scope can open public links
 through Android's default handler. Android notification access is separate and
 forwards only notifications from selected apps when `messages.read` is granted.
-Scroll uses an accessible scrollable control and reports success only when the
-accessibility tree changes. Back navigation is reported as uncertain if the
-foreground app changes or no accessibility change can be observed. Secure
-windows, password controls, hidden apps, and unsupported app surfaces remain
+Screenshots are not OCR'd on Android versions older than 11 or when capture is
+unavailable; accessible controls remain available and the receipt states why
+OCR was omitted. Back navigation is reported as uncertain if the foreground
+app changes or no accessibility change can be observed. Secure windows,
+password controls, hidden apps, and unsupported app surfaces remain
 inaccessible. Neither native client is signed for production distribution or
 accepted on a physical device yet. Pairing scopes authorize only the listed
 operations; they do not enable Android's system Accessibility permission.
@@ -253,18 +262,20 @@ Available scopes:
 | `windows.apps.launch` | Launch an app explicitly added to the Windows companion allowlist |
 | `windows.screen.read` | Read accessible controls or OCR text from an approved Windows app |
 | `windows.screen.control` | Click or scroll accessible controls, or type into an approved app |
-| `android.apps.launch` | Launch an installed Android app discovered by the companion |
-| `android.screen.read` | Read accessibility controls from a foreground Android app |
-| `android.screen.control` | Click or scroll unique accessible controls, or enter text in non-password fields |
+| `android.apps.launch` | Search the Android launcher by visible app name and open the result |
+| `android.screen.read` | Read accessibility controls and available on-device OCR from the active screen |
+| `android.screen.control` | Click/scroll accessible controls, use coordinate taps, or enter text in non-password fields |
 
 `messages.send` requires `messages.read`. Each provider-based reply send
 requires a separate user-approved action in Jalora; pairing does not authorize
 provider-based sends. Windows screen reading requires `windows.apps.launch`.
 Windows screen control requires both `windows.apps.launch` and
-`windows.screen.read`. Android screen reading requires `android.apps.launch`;
-Android screen control requires both `android.apps.launch` and
+`windows.screen.read`. Android screen reading requires `android.screen.read`;
+Android screen control requires both `android.screen.control` and
 `android.screen.read`. Android commands covered by granted pairing scopes do
-not require a separate phone approval for each action.
+not require a separate phone-side approval for each action. Jalora's task
+runner separately requires explicit confirmation for sensitive named controls,
+app-permission grants, and coordinate taps.
 
 ## Companion protocol
 
@@ -331,9 +342,10 @@ instructions, system-permission explanations, and known restrictions are in
 Android 8.0+, JDK 17, Android SDK Platform 35, and Android Studio or compatible
 Gradle. Accessibility and notification access are separate owner-enabled
 Android settings. Notification contents from selected apps are forwarded only
-with `messages.read`; native UI commands require per-command approval. This
-workspace has no Android build tools or test device, so the APK has not been
-built or device-tested here.
+with `messages.read`; ordinary UI commands use the granted pairing scopes,
+while sensitive named controls and coordinate taps require Jalora approval.
+This workspace has no Android build tools or test device, so the APK has not
+been built or device-tested here.
 
 Keep message content only as long as needed. The signed-in user can remove
 individual messages from the device messages panel. A native client must
