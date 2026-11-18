@@ -1,4 +1,4 @@
-"""Consent-gated tools for explicitly approved local desktop apps."""
+"""Consent-gated tools for approved local and paired-device app actions."""
 from __future__ import annotations
 
 import logging
@@ -59,10 +59,10 @@ def _normalized_app_name(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold()
 
 
-def _local_app_identity(app_name: str) -> tuple[str, str] | ToolResult:
-    requested_name = _normalized_app_name(app_name)
+def _validated_app_name(app_name: str) -> str | ToolResult:
+    normalized_name = _normalized_app_name(app_name)
     if (
-        not requested_name
+        not normalized_name
         or len(app_name) > 120
         or any(ord(character) < 32 or ord(character) == 127 for character in app_name)
     ):
@@ -70,6 +70,13 @@ def _local_app_identity(app_name: str) -> tuple[str, str] | ToolResult:
             "INVALID_APP_NAME",
             "Enter an app name between 1 and 120 printable characters.",
         )
+    return app_name.strip()
+
+
+def _local_app_identity(app_name: str) -> tuple[str, str] | ToolResult:
+    validated_name = _validated_app_name(app_name)
+    if isinstance(validated_name, ToolResult):
+        return validated_name
     if sys.platform != "win32":
         return ToolResult.fail(
             "LOCAL_APP_CONTROL_UNSUPPORTED",
@@ -78,9 +85,109 @@ def _local_app_identity(app_name: str) -> tuple[str, str] | ToolResult:
     context = get_tool_context()
     app_id = uuid.uuid5(
         uuid.NAMESPACE_URL,
-        f"jalora:screen-app:{context.user_id}:{requested_name}",
+        f"jalora:screen-app:{context.user_id}:{_normalized_app_name(validated_name)}",
     ).hex
-    return app_id, app_name.strip()
+    return app_id, validated_name
+
+
+async def _open_android_app(app_name: str) -> ToolResult:
+    validated_name = _validated_app_name(app_name)
+    if isinstance(validated_name, ToolResult):
+        return validated_name
+    requested_name = _normalized_app_name(validated_name)
+
+    context = get_tool_context()
+    with SessionLocal() as db:
+        devices = db.scalars(
+            select(DeviceConnection).where(
+                DeviceConnection.user_id == context.user_id,
+                DeviceConnection.platform == "android",
+                DeviceConnection.status == "active",
+            )
+        ).all()
+
+    if not devices:
+        return ToolResult.fail(
+            "ANDROID_DEVICE_NOT_AVAILABLE",
+            "This backend cannot launch desktop apps, and no Android phone is paired. "
+            "Pair your Android phone in Integrations, then try again.",
+        )
+
+    now = datetime.now(timezone.utc)
+    online_matches = []
+    offline_match = False
+    for device in devices:
+        manifest = device.capability_manifest
+        if not isinstance(manifest, dict):
+            continue
+        applications = manifest.get("applications", [])
+        if not isinstance(applications, list):
+            continue
+        app_matches = [
+            app
+            for app in applications
+            if isinstance(app, dict)
+            and isinstance(app.get("name"), str)
+            and _normalized_app_name(app["name"]) == requested_name
+            and isinstance(app.get("capabilities"), list)
+            and "application.launch" in app["capabilities"]
+            and isinstance(app.get("id"), str)
+        ]
+        if not app_matches:
+            continue
+        last_seen = device.last_seen_at
+        if last_seen is not None and last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=timezone.utc)
+        if (
+            last_seen is None
+            or last_seen < now - timedelta(seconds=30)
+            or "android.apps.launch" not in (device.scopes or [])
+        ):
+            offline_match = True
+            continue
+        for app in app_matches:
+            online_matches.append((device, app))
+
+    if len(online_matches) > 1:
+        device_names = ", ".join(sorted({
+            device.name for device, _app in online_matches
+        }))
+        return ToolResult.fail(
+            "ANDROID_APP_AMBIGUOUS",
+            f"More than one paired phone has an available '{validated_name}' app "
+            f"({device_names}). Specify the phone in your request and retry.",
+        )
+    if not online_matches:
+        if offline_match:
+            return ToolResult.fail(
+                "ANDROID_DEVICE_OFFLINE",
+                f"The selected '{validated_name}' app is on a phone that is offline "
+                "or has not granted app-launch permission. Reconnect the phone and retry.",
+            )
+        return ToolResult.fail(
+            "ANDROID_APP_NOT_SELECTED",
+            f"Select '{validated_name}' in the Android companion and grant its "
+            "app-launch permission before asking Jalora to open it.",
+        )
+
+    device, app = online_matches[0]
+    result = await _request_remote_native_action(
+        device.id,
+        "android.app.launch",
+        app["id"],
+        platform="android",
+    )
+    if not result.success:
+        return result
+    return ToolResult.ok(
+        f"Requested opening '{validated_name}' on {device.name}. "
+        "Approve the launch on the phone; completion is confirmed only after its receipt.",
+        {
+            **result.data,
+            "app": validated_name,
+            "device_name": device.name,
+        },
+    )
 
 
 def _run_local_app_action(
@@ -107,11 +214,15 @@ def _run_local_app_action(
 
 
 async def open_local_app(app_name: str) -> ToolResult:
-    """Find and open an installed Windows app through visible Start-menu search.
+    """Open an app on this Windows computer or a paired Android phone.
 
-    The user approves the launch action in Chat; adding the app to Integrations
+    Windows uses visible Start-menu search; other backends require a single
+    online Android companion with the app selected and app-launch permission.
+    The user approves the launch action; adding a Windows app to Integrations
     is not required.
     """
+    if sys.platform != "win32":
+        return await _open_android_app(app_name)
     return _run_local_app_action(
         app_name,
         local_device_control.launch_app_from_start_menu,

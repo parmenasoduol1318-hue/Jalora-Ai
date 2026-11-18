@@ -32,6 +32,15 @@ approval, and interactions are restricted to the foreground window of the app
 Jalora launched. A fresh Agent Tasks request does not inherit unrelated older
 conversation turns.
 
+When Jalora's backend is not running on Windows, an exact Chat or Agent Tasks
+request such as `open WhatsApp` can use one online paired Android companion
+instead. The app must be selected on that phone and its `android.apps.launch`
+permission granted. Jalora queues the launch through shared task approval and
+the phone's separate approval notification; it reports completion only after
+the companion returns a receipt. If multiple paired phones have the app,
+specify the target phone. iPhone app launching is not supported by this
+companion.
+
 Requests that explicitly target a Windows laptop, computer, or desktop are
 routed through live device-capability discovery. The agent can choose an
 available paired Windows companion or, when the backend is running on that

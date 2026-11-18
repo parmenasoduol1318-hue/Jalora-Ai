@@ -266,11 +266,20 @@ def test_agent_generates_word_document_and_returns_downloadable_artifact(
     import docx
 
     generated = docx.Document(io.BytesIO(download.content))
+    from docx.enum.section import WD_ORIENT
+    from docx.oxml.ns import qn
+
     paragraphs = [paragraph.text for paragraph in generated.paragraphs]
     assert "Project Review" in paragraphs
     assert "Decisions" in paragraphs
     assert "- Approve the revised timeline." in paragraphs
+    assert generated.sections[0].orientation == WD_ORIENT.PORTRAIT
     assert len(generated.tables) == 1
+    header_shading = generated.tables[0].rows[0].cells[0]._tc.tcPr.find(
+        qn("w:shd")
+    )
+    assert header_shading is not None
+    assert header_shading.get(qn("w:fill")) == "17365D"
     assert [
         [cell.text for cell in row.cells] for row in generated.tables[0].rows
     ] == [
@@ -316,8 +325,16 @@ def test_supplied_rate_loan_request_generates_complete_docx_without_model(
     import docx
 
     document = docx.Document(io.BytesIO(download.content))
+    from docx.enum.section import WD_ORIENT
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+
     assert len(document.tables) == 1
-    rows = [[cell.text for cell in row.cells] for row in document.tables[0].rows]
+    schedule_table = document.tables[0]
+    assert document.sections[0].orientation == WD_ORIENT.LANDSCAPE
+    assert schedule_table.autofit is False
+    assert schedule_table.rows[0]._tr.trPr.find(qn("w:tblHeader")) is not None
+    rows = [[cell.text for cell in row.cells] for row in schedule_table.rows]
     assert len(rows) == 38
     assert rows[0] == [
         "Month",
@@ -331,6 +348,12 @@ def test_supplied_rate_loan_request_generates_complete_docx_without_model(
     assert rows[-2][0] == "36"
     assert rows[-2][-1] == "0.00"
     assert rows[-1][0] == "Total"
+    assert schedule_table.rows[1].cells[2].paragraphs[0].alignment == (
+        WD_ALIGN_PARAGRAPH.RIGHT
+    )
+    total_shading = schedule_table.rows[-1].cells[0]._tc.tcPr.find(qn("w:shd"))
+    assert total_shading is not None
+    assert total_shading.get(qn("w:fill")) == "D9EAF7"
     assert "Total interest payable: KES" in "\n".join(
         paragraph.text for paragraph in document.paragraphs
     )

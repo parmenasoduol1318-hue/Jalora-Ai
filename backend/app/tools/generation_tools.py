@@ -14,8 +14,11 @@ from pathlib import Path
 
 from app.context import get_tool_context
 from app.errors import ToolResult
+from app.services.content_validation import (
+    validate_artifact_file,
+    validate_generated_text,
+)
 from app.tools.base import PermissionLevel, registry
-from app.services.content_validation import validate_artifact_file, validate_generated_text
 
 _SAFE = re.compile(r"[^A-Za-z0-9._\- ]+")
 
@@ -95,7 +98,7 @@ async def create_pdf(content: str = "", filename: str = "", title: str = "") -> 
 
 
 async def create_docx(content: str = "", filename: str = "", title: str = "") -> ToolResult:
-    """Generate a Word (.docx) file from text and return a download link. Lines become paragraphs; blank lines create spacing."""
+    """Generate a Word file; Markdown tables become formatted native Word tables."""
     content_errors = validate_generated_text(content, field="content")
     if content_errors:
         return ToolResult.fail("INVALID_ARTIFACT_CONTENT", "Generated content is incomplete or contains unresolved placeholders.", message=content_errors[0])
@@ -128,16 +131,13 @@ async def create_docx(content: str = "", filename: str = "", title: str = "") ->
             column_count = max(map(len, table_rows))
             table = document.add_table(rows=0, cols=column_count)
             table.style = "Table Grid"
-            for row_index, values in enumerate(table_rows):
+            for values in table_rows:
                 cells = table.add_row().cells
                 for column_index, cell in enumerate(cells):
                     cell.text = (
                         values[column_index] if column_index < len(values) else ""
                     )
-                    if row_index == 0:
-                        for paragraph in cell.paragraphs:
-                            for run in paragraph.runs:
-                                run.bold = True
+            _format_docx_table(document, table, table_rows)
             continue
 
         line = lines[index]
@@ -153,6 +153,122 @@ async def create_docx(content: str = "", filename: str = "", title: str = "") ->
     fmt = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     info = _artifact(path, fmt)
     return ToolResult.ok(f"Created DOCX '{path.name}'.", {"artifact": info})
+
+
+def _format_docx_table(document, table, rows: list[list[str]]) -> None:
+    from docx.enum.section import WD_ORIENT
+    from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Inches, Pt, RGBColor
+
+    column_count = len(table.columns)
+    wide_table = column_count >= 5
+    if wide_table:
+        for section in document.sections:
+            if section.orientation != WD_ORIENT.LANDSCAPE:
+                page_width, page_height = section.page_height, section.page_width
+                section.orientation = WD_ORIENT.LANDSCAPE
+                section.page_width = page_width
+                section.page_height = page_height
+            section.left_margin = Inches(0.55)
+            section.right_margin = Inches(0.55)
+
+    section = document.sections[-1]
+    available_width = (
+        section.page_width - section.left_margin - section.right_margin
+    )
+    column_weights = []
+    for column_index in range(column_count):
+        longest_cell = max(
+            (
+                len(row[column_index])
+                for row in rows
+                if column_index < len(row)
+            ),
+            default=0,
+        )
+        column_weights.append(max(8, min(32, longest_cell)))
+    weight_total = sum(column_weights)
+    column_widths = [
+        int(available_width * weight / weight_total)
+        for weight in column_weights
+    ]
+
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.autofit = False
+    for column_index, width in enumerate(column_widths):
+        table.columns[column_index].width = width
+        for row in table.rows:
+            row.cells[column_index].width = width
+
+    header_color = "17365D"
+    stripe_color = "F2F6FA"
+    total_color = "D9EAF7"
+    numeric_pattern = re.compile(
+        r"^(?:KES\s*)?[-+]?\(?\d[\d,]*(?:\.\d+)?%?\)?$",
+        re.I,
+    )
+    numeric_columns = {
+        column_index
+        for column_index in range(column_count)
+        if (values := [
+            row[column_index].strip()
+            for row in rows[1:]
+            if column_index < len(row) and row[column_index].strip()
+        ])
+        and all(numeric_pattern.fullmatch(value) for value in values)
+    }
+
+    header_properties = table.rows[0]._tr.get_or_add_trPr()
+    if header_properties.find(qn("w:tblHeader")) is None:
+        repeated_header = OxmlElement("w:tblHeader")
+        repeated_header.set(qn("w:val"), "true")
+        header_properties.append(repeated_header)
+
+    for row_index, row in enumerate(table.rows):
+        row_properties = row._tr.get_or_add_trPr()
+        if row_properties.find(qn("w:cantSplit")) is None:
+            row_properties.append(OxmlElement("w:cantSplit"))
+        row_values = rows[row_index] if row_index < len(rows) else []
+        is_total = (
+            row_index > 0
+            and bool(row_values)
+            and row_values[0].strip().casefold() in {"total", "grand total"}
+        )
+        fill = (
+            header_color
+            if row_index == 0
+            else total_color
+            if is_total
+            else stripe_color
+            if row_index % 2 == 0
+            else None
+        )
+        for column_index, cell in enumerate(row.cells):
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+            if fill:
+                cell_properties = cell._tc.get_or_add_tcPr()
+                shading = cell_properties.find(qn("w:shd"))
+                if shading is None:
+                    shading = OxmlElement("w:shd")
+                    cell_properties.append(shading)
+                shading.set(qn("w:fill"), fill)
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.space_before = Pt(0)
+                paragraph.paragraph_format.space_after = Pt(0)
+                if row_index == 0:
+                    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                elif column_index in numeric_columns:
+                    paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                for run in paragraph.runs:
+                    run.font.size = Pt(8.5 if wide_table else 9)
+                    if row_index == 0:
+                        run.bold = True
+                        run.font.color.rgb = RGBColor(255, 255, 255)
+                    elif is_total:
+                        run.bold = True
 
 
 def _markdown_table_cells(line: str) -> list[str]:
