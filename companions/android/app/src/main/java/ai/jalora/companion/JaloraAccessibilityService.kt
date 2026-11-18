@@ -35,10 +35,10 @@ class JaloraAccessibilityService : AccessibilityService() {
         val app = (0 until apps.length())
             .map { apps.getJSONObject(it) }
             .firstOrNull { it.optString("id") == appId }
-            ?: return ActionResult.failed("ANDROID_APP_NOT_ALLOWLISTED", "This app is not selected on this device.")
+            ?: return ActionResult.failed("ANDROID_APP_UNAVAILABLE", "This app is not installed or no longer launchable.")
         val packageName = app.optString("package_name")
         if (packageName.isBlank()) {
-            return ActionResult.failed("ANDROID_APP_NOT_ALLOWLISTED", "The selected app package is unavailable.")
+            return ActionResult.failed("ANDROID_APP_UNAVAILABLE", "The installed app package is unavailable.")
         }
         val root = rootInActiveWindow
             ?: return ActionResult.failed("ANDROID_SCREEN_UNAVAILABLE", "Android did not expose an active accessibility tree.")
@@ -46,7 +46,7 @@ class JaloraAccessibilityService : AccessibilityService() {
             root.recycle()
             return ActionResult.failed(
                 "ANDROID_FOREGROUND_APP_CHANGED",
-                "The foreground app is not the selected app. Jalora stopped without interacting.",
+                "The foreground app changed. Jalora stopped without interacting.",
             )
         }
         return try {

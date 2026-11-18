@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 
 from app.agents.intent import (
@@ -221,6 +222,8 @@ def route_request(
         tool_name = "close_local_app" if action == "close" else (
             "open_youtube"
             if app_name.casefold() in {"youtube", "youtube.com"}
+            else "open_paired_android_app"
+            if sys.platform != "win32"
             else "open_local_app"
         )
         if registry.get(tool_name) is not None:
@@ -284,16 +287,19 @@ def route_request(
             selected.add("discover_available_device_capabilities")
         if registry.get("get_remote_device_action_status") is not None:
             selected.add("get_remote_device_action_status")
-        if (
-            _REMOTE_BROWSER_ACTION.search(request_text)
-            and registry.get("request_remote_url") is not None
-        ):
-            selected.add("request_remote_url")
         android_target = (
             _ANDROID_DEVICE_TARGET.search(request_text)
             and not _IOS_DEVICE_TARGET.search(request_text)
         )
         windows_target = _WINDOWS_DEVICE_TARGET.search(request_text)
+        if _REMOTE_BROWSER_ACTION.search(request_text):
+            browser_tool = (
+                "request_remote_android_url"
+                if android_target
+                else "request_remote_url"
+            )
+            if registry.get(browser_tool) is not None:
+                selected.add(browser_tool)
         if (
             android_target
             and registry.get("request_remote_android_action") is not None

@@ -34,12 +34,13 @@ conversation turns.
 
 When Jalora's backend is not running on Windows, an exact Chat or Agent Tasks
 request such as `open WhatsApp` can use one online paired Android companion
-instead. The app must be selected on that phone and its `android.apps.launch`
-permission granted. Jalora queues the launch through shared task approval and
-the phone's separate approval notification; it reports completion only after
-the companion returns a receipt. If multiple paired phones have the app,
-specify the target phone. iPhone app launching is not supported by this
-companion.
+instead. The companion discovers installed launcher apps automatically; app
+launch and screen control do not require manually selecting each app. The
+pairing must grant the relevant scopes, and Jalora reports completion only
+after the companion returns a receipt. Reading and controlling the Android
+screen still requires the owner to enable Android's Accessibility Service in
+system settings. If multiple paired phones have the app, specify the target
+phone. iPhone app launching is not supported by this companion.
 
 Requests that explicitly target a Windows laptop, computer, or desktop are
 routed through live device-capability discovery. The agent can choose an
@@ -140,10 +141,12 @@ browser companion connection; it does not grant Windows app or filesystem
 access. The companion's current scope is limited to opening approved public
 HTTP(S) links in that browser.
 
-The browser companion supports target-approved external HTTP(S) links. Each
-request requires confirmation by the sending user and a separate approval on
-the target. Private/internal destinations are rejected. Opening a link is not
-proof that it loaded or that an action in the destination completed.
+The browser extension companion supports target-approved external HTTP(S)
+links. Private/internal destinations are rejected. The Android companion can
+open a public link through the phone's default handler when
+`remote.browser.open_url` was granted at pairing; it does not ask for a
+separate approval on each link. Opening a link confirms the handoff, not that
+the page finished loading or that an action in the destination completed.
 
 ### Versioned outbound command protocol
 
@@ -222,17 +225,19 @@ foreground window in memory and sends bounded OCR text, not an image. It
 requires Pillow, pytesseract, the Tesseract executable, `windows.screen.read`,
 and local per-command approval.
 
-The Android client is under `companions/android`. It uses intents for
-user-selected app launch and an owner-enabled Accessibility Service for bounded
-foreground-app inspection, back navigation, and accessible control. Android
-notification access is requested separately and forwards only notifications
-from selected apps when `messages.read` is granted. Scroll uses an accessible
-scrollable control and reports success only when the accessibility tree
-changes. Back navigation is reported as uncertain if the foreground app
-changes or no accessibility change can be observed. Secure windows, password
-controls, hidden apps, and unsupported app surfaces remain inaccessible. Neither native client
-is signed for production distribution or accepted on a physical device yet.
-Do not treat pairing or a browser token as authorization for arbitrary actions.
+The Android client is under `companions/android`. It discovers installed
+launcher apps and uses intents to launch them; an owner-enabled Accessibility
+Service provides bounded foreground-app inspection, back navigation, and
+accessible control. The `remote.browser.open_url` scope can open public links
+through Android's default handler. Android notification access is separate and
+forwards only notifications from selected apps when `messages.read` is granted.
+Scroll uses an accessible scrollable control and reports success only when the
+accessibility tree changes. Back navigation is reported as uncertain if the
+foreground app changes or no accessibility change can be observed. Secure
+windows, password controls, hidden apps, and unsupported app surfaces remain
+inaccessible. Neither native client is signed for production distribution or
+accepted on a physical device yet. Pairing scopes authorize only the listed
+operations; they do not enable Android's system Accessibility permission.
 
 Available scopes:
 
@@ -241,21 +246,22 @@ Available scopes:
 | `messages.read` | Companion submits message notifications |
 | `messages.draft` | Jalora prepares an editable reply draft |
 | `messages.send` | Companion retrieves a reply only after the user explicitly approves it |
-| `remote.browser.open_url` | Target approves opening public web links in its browser |
+| `remote.browser.open_url` | Open public web links in the paired device's default browser/handler |
 | `windows.apps.launch` | Launch an app explicitly added to the Windows companion allowlist |
 | `windows.screen.read` | Read accessible controls or OCR text from an approved Windows app |
 | `windows.screen.control` | Click or scroll accessible controls, or type into an approved app |
-| `android.apps.launch` | Launch an app explicitly selected in the Android companion |
-| `android.screen.read` | Read accessibility controls from a selected foreground Android app |
+| `android.apps.launch` | Launch an installed Android app discovered by the companion |
+| `android.screen.read` | Read accessibility controls from a foreground Android app |
 | `android.screen.control` | Click or scroll unique accessible controls, or enter text in non-password fields |
 
-`messages.send` requires `messages.read`. Each send requires a separate
-user-approved action in Jalora; merely pairing a device never authorizes
-sending. Windows screen reading requires `windows.apps.launch`. Windows screen
-control requires both `windows.apps.launch` and `windows.screen.read`. Android
-screen reading requires `android.apps.launch`; Android screen control requires
-both `android.apps.launch` and `android.screen.read`. Both native companions
-present a local approval for each received command.
+`messages.send` requires `messages.read`. Each provider-based reply send
+requires a separate user-approved action in Jalora; pairing does not authorize
+provider-based sends. Windows screen reading requires `windows.apps.launch`.
+Windows screen control requires both `windows.apps.launch` and
+`windows.screen.read`. Android screen reading requires `android.apps.launch`;
+Android screen control requires both `android.apps.launch` and
+`android.screen.read`. Android commands covered by granted pairing scopes do
+not require a separate phone approval for each action.
 
 ## Companion protocol
 

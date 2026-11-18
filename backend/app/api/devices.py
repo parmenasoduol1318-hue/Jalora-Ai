@@ -71,9 +71,7 @@ DEVICE_SCOPE_LABELS = {
     "messages.read": "Read message notifications",
     "messages.draft": "Prepare editable reply drafts",
     "messages.send": "Send replies after your approval",
-    "remote.browser.open_url": (
-        "Approve opening external web links in the target browser"
-    ),
+    "remote.browser.open_url": "Open public links in the target device browser",
     "windows.apps.launch": "Launch only applications added to the Windows companion allowlist",
     "windows.screen.read": (
         "Read accessibility controls or OCR from an approved Windows app"
@@ -81,10 +79,10 @@ DEVICE_SCOPE_LABELS = {
     "windows.screen.control": (
         "Click, scroll, or type into selected Windows app controls"
     ),
-    "android.apps.launch": "Launch only applications selected in the Android companion",
-    "android.screen.read": "Read accessibility controls from the foreground approved Android app",
+    "android.apps.launch": "Open installed applications on the paired Android phone",
+    "android.screen.read": "Read visible accessibility content across Android apps",
     "android.screen.control": (
-        "Navigate, click, scroll, or type into the foreground approved Android app"
+        "Click, scroll, and type in apps on the paired Android phone"
     ),
 }
 
@@ -156,7 +154,7 @@ class DeviceManifestApplication(BaseModel):
 
 class DeviceCapabilityManifest(BaseModel):
     schema_version: Literal[1]
-    applications: list[DeviceManifestApplication] = Field(max_length=100)
+    applications: list[DeviceManifestApplication] = Field(max_length=500)
 
     def normalized(self) -> dict:
         rows = [app.model_dump() for app in self.applications]
@@ -404,7 +402,7 @@ def _validate_device_scopes(
         )
     if "android.screen.read" in scopes and "android.apps.launch" not in scopes:
         raise BadRequestError(
-            "Android screen reading is limited to apps selected in the companion.",
+            "Android screen reading requires app-launch permission.",
             "DEVICE_SCOPE_DEPENDENCY",
         )
     if "android.screen.control" in scopes and not {

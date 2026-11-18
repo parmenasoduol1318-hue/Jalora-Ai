@@ -57,9 +57,9 @@ def discover_device_capabilities(
 ) -> dict[str, Any]:
     """Describe registered, connected, and unsupported execution surfaces.
 
-    A registered device scope is not treated as proof that an app or action
-    succeeded. The companion must be online, and external actions retain their
-    existing individual approval gates.
+    A registered device scope is not treated as proof that an action succeeded.
+    The phone must be online and report a verified receipt; Android operation
+    grants are established at pairing.
     """
     now = datetime.now(timezone.utc)
     devices = db.scalars(
@@ -119,7 +119,7 @@ def discover_device_capabilities(
         for operation, label, scope in (
             (
                 "application.launch",
-                "Launch an approved application",
+                "Launch installed applications",
                 f"{native_prefix}.apps.launch",
             ),
             (
@@ -134,7 +134,7 @@ def discover_device_capabilities(
             ),
             (
                 "screen.control",
-                "Control an approved application",
+                "Control application screens",
                 f"{native_prefix}.screen.control",
             ),
         ):
@@ -159,6 +159,8 @@ def discover_device_capabilities(
                 status = "permission_required"
             elif not online:
                 status = "offline"
+            elif device.platform == "android":
+                status = "available"
             elif has_capability:
                 status = "available"
             else:
@@ -167,16 +169,23 @@ def discover_device_capabilities(
                 "operation": operation,
                 "label": label,
                 "scope": scope,
-                "approval_required": True,
+                "approval_required": device.platform != "android",
                 "status": status,
                 "reason": (
                     (
-                        f"The paired {device.platform.title()} companion has "
-                        "this capability and permission."
+                        (
+                            "The paired Android phone has this capability "
+                            "under the permissions granted at pairing."
+                            if device.platform == "android"
+                            else f"The paired {device.platform.title()} companion "
+                            "has this capability and permission."
+                        )
                     )
                     if status == "available"
                     else (
-                        f"Add an application with this capability in the "
+                        "The Android app list has not synchronized yet."
+                        if device.platform == "android"
+                        else f"Add an application with this capability in the "
                         f"{device.platform.title()} companion."
                     )
                     if status == "registered_unavailable"

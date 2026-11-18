@@ -8,7 +8,7 @@ import pytest
 from app.agents.graph import build_graph
 from app.agents.intent import classify_intent, extract_person_search_subject
 from app.services.model_router import JaloraChatModel, ProviderSpec
-from app.tools import registry as real_registry
+from app.tools import registry as real_registry, routing as routing_module
 from app.tools.base import PermissionLevel, ToolRegistry
 from app.tools.routing import (
     is_multi_step_request,
@@ -1090,6 +1090,16 @@ def test_local_app_open_isolated_from_unrelated_hotel_context(app_request):
     assert {"search_hotels", "book_hotel", "open_url", "browse_page"}.isdisjoint(
         routing.tool_names or []
     )
+
+
+def test_local_app_open_uses_paired_android_tool_on_non_windows_backend(monkeypatch):
+    monkeypatch.setattr(routing_module.sys, "platform", "linux")
+
+    routing = route_request("open WhatsApp")
+
+    assert routing.intent == "task"
+    assert "open_paired_android_app" in (routing.tool_names or [])
+    assert "open_local_app" not in (routing.tool_names or [])
 
 
 def test_generic_open_app_without_name_is_not_treated_as_a_launch_command():

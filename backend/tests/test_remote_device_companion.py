@@ -263,7 +263,7 @@ def test_legacy_device_creation_cannot_skip_target_remote_approval(client, auth_
     assert response.json()["error"]["code"] == "TARGET_DEVICE_APPROVAL_REQUIRED"
 
 
-def test_remote_device_command_tool_is_confirmation_gated_and_routed():
+def test_remote_device_command_tool_is_permission_scoped_and_routed():
     from app.tools import device_tools
     from app.tools.base import PermissionLevel
     from app.tools.routing import route_request
@@ -273,13 +273,27 @@ def test_remote_device_command_tool_is_confirmation_gated_and_routed():
         if item.name == "request_remote_url"
     )
     assert spec.permission == PermissionLevel.CONFIRM
+    android_url_tool = next(
+        item for item in device_tools.registry.all()
+        if item.name == "request_remote_android_url"
+    )
+    assert android_url_tool.permission == PermissionLevel.AUTO
 
     routing = route_request(
         "On my phone, play Unanijua by Bahati on YouTube."
     )
     assert "remote_device_control" in routing.signals
-    assert "request_remote_url" in (routing.tool_names or [])
+    assert "request_remote_android_url" in (routing.tool_names or [])
+    assert "request_remote_url" not in (routing.tool_names or [])
     assert not {"search_hotels", "book_hotel"} & set(routing.tool_names or [])
+
+    windows_url_routing = route_request(
+        "Open YouTube on my paired Windows computer."
+    )
+    assert "request_remote_url" in (windows_url_routing.tool_names or [])
+    assert "request_remote_android_url" not in (
+        windows_url_routing.tool_names or []
+    )
 
     windows_tool = next(
         item for item in device_tools.registry.all()

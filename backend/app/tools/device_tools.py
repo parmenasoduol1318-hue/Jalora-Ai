@@ -138,11 +138,7 @@ async def _open_android_app(app_name: str) -> ToolResult:
         last_seen = device.last_seen_at
         if last_seen is not None and last_seen.tzinfo is None:
             last_seen = last_seen.replace(tzinfo=timezone.utc)
-        if (
-            last_seen is None
-            or last_seen < now - timedelta(seconds=30)
-            or "android.apps.launch" not in (device.scopes or [])
-        ):
+        if last_seen is None or last_seen < now - timedelta(seconds=30):
             offline_match = True
             continue
         for app in app_matches:
@@ -161,13 +157,13 @@ async def _open_android_app(app_name: str) -> ToolResult:
         if offline_match:
             return ToolResult.fail(
                 "ANDROID_DEVICE_OFFLINE",
-                f"The selected '{validated_name}' app is on a phone that is offline "
-                "or has not granted app-launch permission. Reconnect the phone and retry.",
+                f"The paired phone is offline. Reconnect it and try opening "
+                f"'{validated_name}' again.",
             )
         return ToolResult.fail(
-            "ANDROID_APP_NOT_SELECTED",
-            f"Select '{validated_name}' in the Android companion and grant its "
-            "app-launch permission before asking Jalora to open it.",
+            "ANDROID_APP_UNAVAILABLE",
+            f"No launchable app named '{validated_name}' was found on the paired phone. "
+            "Check the app name and make sure it is installed.",
         )
 
     device, app = online_matches[0]
@@ -180,8 +176,8 @@ async def _open_android_app(app_name: str) -> ToolResult:
     if not result.success:
         return result
     return ToolResult.ok(
-        f"Requested opening '{validated_name}' on {device.name}. "
-        "Approve the launch on the phone; completion is confirmed only after its receipt.",
+        f"Opening '{validated_name}' on {device.name}; completion is confirmed "
+        "after the phone reports its result.",
         {
             **result.data,
             "app": validated_name,
@@ -216,10 +212,8 @@ def _run_local_app_action(
 async def open_local_app(app_name: str) -> ToolResult:
     """Open an app on this Windows computer or a paired Android phone.
 
-    Windows uses visible Start-menu search; other backends require a single
-    online Android companion with the app selected and app-launch permission.
-    The user approves the launch action; adding a Windows app to Integrations
-    is not required.
+    Windows uses visible Start-menu search. A non-Windows backend uses the
+    user's paired Android phone, whose pairing grant covers installed apps.
     """
     if sys.platform != "win32":
         return await _open_android_app(app_name)
@@ -227,6 +221,11 @@ async def open_local_app(app_name: str) -> ToolResult:
         app_name,
         local_device_control.launch_app_from_start_menu,
     )
+
+
+async def open_paired_android_app(app_name: str) -> ToolResult:
+    """Open an installed Android app on the user's paired phone."""
+    return await _open_android_app(app_name)
 
 
 async def open_registered_local_app(
@@ -362,20 +361,17 @@ async def close_local_app(app_name: str) -> ToolResult:
     )
 
 
-async def request_remote_url(
+async def _request_remote_url(
     device_name: str,
     url: str,
     device_id: str = "",
+    *,
+    required_platform: Literal["android"] | None = None,
 ) -> ToolResult:
-    """Request a public web link be opened in one paired device's browser.
-
-    The sending user must approve this request and the target device user must
-    separately approve opening the link. This does not control other apps or
-    claim that the page loaded or any action occurred within it.
-    """
+    """Open a public web link on a paired device with the required scope."""
     normalized_device_name = _normalized_app_name(device_name)
     target_url = url.strip()
-    if not normalized_device_name:
+    if not device_id and not normalized_device_name:
         return ToolResult.fail("INVALID_DEVICE_NAME", "Specify the paired device name.")
     if not target_url or len(target_url) > 2000:
         return ToolResult.fail(
@@ -397,6 +393,10 @@ async def request_remote_url(
                 if device is not None
                 and device.user_id == context.user_id
                 and device.status == "active"
+                and (
+                    required_platform is None
+                    or device.platform == required_platform
+                )
                 else []
             )
         else:
@@ -413,7 +413,11 @@ async def request_remote_url(
         if not matches:
             return ToolResult.fail(
                 "DEVICE_NOT_PAIRED",
-                f"No active paired device named '{device_name.strip()}' was found.",
+                (
+                    "No active paired Android phone was found for this request."
+                    if required_platform == "android"
+                    else f"No active paired device named '{device_name.strip()}' was found."
+                ),
             )
         if len(matches) > 1:
             return ToolResult.fail(
@@ -424,7 +428,7 @@ async def request_remote_url(
         if "remote.browser.open_url" not in (device.scopes or []):
             return ToolResult.fail(
                 "DEVICE_SCOPE_REQUIRED",
-                f"'{device.name}' has not approved remote browser links.",
+                f"'{device.name}' was not granted permission to open public links.",
             )
         try:
             command, already_queued = queue_device_command(
@@ -443,9 +447,15 @@ async def request_remote_url(
             db.rollback()
             return ToolResult.fail("DEVICE_COMMAND_INVALID", str(exc))
         db.refresh(command)
+        target_approval_required = device.platform != "android"
         return ToolResult.ok(
-            f"Remote link request queued for '{device.name}'. "
-            "The target device must approve before the link opens.",
+            (
+                f"Remote link request queued for '{device.name}'. "
+                "The paired Android permission authorizes opening it."
+                if device.platform == "android"
+                else f"Remote link request queued for '{device.name}'. "
+                "The target device must approve before the link opens."
+            ),
             {
                 "command_id": command.id,
                 "device_id": device.id,
@@ -459,9 +469,28 @@ async def request_remote_url(
                 "run_id": command.run_id,
                 "task_step_id": command.task_step_id,
                 "already_queued": already_queued,
-                "target_approval_required": True,
+                "target_approval_required": target_approval_required,
             },
         )
+
+
+async def request_remote_url(
+    device_name: str,
+    url: str,
+    device_id: str = "",
+) -> ToolResult:
+    """Request a public link on a paired device's browser with confirmation."""
+    return await _request_remote_url(device_name, url, device_id)
+
+
+async def request_remote_android_url(device_id: str, url: str) -> ToolResult:
+    """Open a public link on the paired Android phone under its pairing grant."""
+    return await _request_remote_url(
+        "",
+        url,
+        device_id,
+        required_platform="android",
+    )
 
 
 async def _request_remote_native_action(
@@ -476,10 +505,10 @@ async def _request_remote_native_action(
     *,
     platform: Literal["windows", "android"],
 ) -> ToolResult:
-    """Queue one approval-gated operation for an explicitly paired native device.
+    """Queue one scoped operation for an explicitly paired native device.
 
-    Jalora task approval and local device approval are independent gates.
-    A queued command is not evidence that the device action completed.
+    Android pairing scopes are standing authorization for phone-side execution;
+    Windows companion commands continue to require target approval.
     """
     context = get_tool_context()
     with SessionLocal() as db:
@@ -542,9 +571,17 @@ async def _request_remote_native_action(
             db.rollback()
             return ToolResult.fail("DEVICE_COMMAND_INVALID", str(exc))
         db.refresh(command)
+        target_approval_required = platform == "windows"
         return ToolResult.ok(
-            f"Queued '{action}' for '{device.name}'. The device user must approve "
-            "it locally; execution is not confirmed until the companion reports a receipt.",
+            (
+                f"Queued '{action}' for '{device.name}'. The paired Android scope "
+                "authorizes this action; completion is not confirmed until the "
+                "phone reports its result."
+                if platform == "android"
+                else f"Queued '{action}' for '{device.name}'. The device user must "
+                "approve it locally; completion is not confirmed until the device "
+                "reports its result."
+            ),
             {
                 "command_id": command.id,
                 "device_id": device.id,
@@ -557,7 +594,7 @@ async def _request_remote_native_action(
                 "run_id": command.run_id,
                 "task_step_id": command.task_step_id,
                 "already_queued": already_queued,
-                "target_approval_required": True,
+                "target_approval_required": target_approval_required,
             },
         )
 
@@ -613,7 +650,7 @@ async def request_remote_android_action(
     text: str = "",
     direction: Literal["up", "down"] = "down",
 ) -> ToolResult:
-    """Queue an Android action through Jalora's shared approvals."""
+    """Queue an Android action authorized by the phone's pairing scopes."""
     return await _request_remote_native_action(
         device_id,
         action,
@@ -916,6 +953,15 @@ registry.register(
 )
 
 registry.register(
+    open_paired_android_app,
+    permission=PermissionLevel.AUTO,
+    category="device_control",
+    tags=["remote_device", "android", "application", "launch"],
+    side_effect="external",
+    required_signals=["local_app_control"],
+)
+
+registry.register(
     open_registered_local_app,
     permission=PermissionLevel.CONFIRM,
     category="device_control",
@@ -943,6 +989,14 @@ registry.register(
     required_signals=["remote_device_control"],
 )
 registry.register(
+    request_remote_android_url,
+    permission=PermissionLevel.AUTO,
+    category="device_control",
+    tags=["remote_device", "android", "browser", "open_url"],
+    side_effect="external",
+    required_signals=["remote_device_control"],
+)
+registry.register(
     request_remote_windows_action,
     permission=PermissionLevel.CONFIRM,
     category="device_control",
@@ -952,7 +1006,7 @@ registry.register(
 )
 registry.register(
     request_remote_android_action,
-    permission=PermissionLevel.CONFIRM,
+    permission=PermissionLevel.AUTO,
     category="device_control",
     tags=["remote_device", "android", "application", "screen"],
     side_effect="external",

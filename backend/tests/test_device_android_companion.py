@@ -91,7 +91,44 @@ def test_android_notification_only_pairing_accepts_empty_app_manifest(
     assert message.status_code == 200, message.text
 
 
-def test_android_companion_uses_shared_manifest_approval_and_receipt_lifecycle(
+def test_android_manifest_accepts_full_installed_app_list(client, auth_headers):
+    owner_headers = auth_headers("android-app-inventory@test.com")
+    paired = _paired_android_device(client, owner_headers)
+    session = client.post(
+        "/api/devices/protocol/v1/session",
+        headers={"Authorization": f"Bearer {paired['device_token']}"},
+    )
+    assert session.status_code == 200, session.text
+    access_headers = {
+        "Authorization": f"Bearer {session.json()['access_token']}"
+    }
+
+    manifest = {
+        "schema_version": 1,
+        "applications": [
+            {
+                "id": f"android-app-{index}",
+                "name": f"Installed app {index}",
+                "capabilities": [
+                    "application.launch",
+                    "screen.accessibility.inspect",
+                    "screen.control",
+                ],
+            }
+            for index in range(125)
+        ],
+    }
+    response = client.put(
+        "/api/devices/protocol/v1/manifest",
+        headers=access_headers,
+        json=manifest,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["application_count"] == 125
+
+
+def test_android_companion_uses_pairing_scopes_and_receipt_lifecycle(
     client, auth_headers, fake_router, monkeypatch
 ):
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -210,7 +247,7 @@ def test_android_companion_uses_shared_manifest_approval_and_receipt_lifecycle(
         )
 
     assert queued.success
-    assert queued.data["target_approval_required"] is True
+    assert queued.data["target_approval_required"] is False
     from app.services.chat_service import serialize_state
 
     state = {
@@ -220,7 +257,7 @@ def test_android_companion_uses_shared_manifest_approval_and_receipt_lifecycle(
         "intent": "chat",
         "messages": [
             HumanMessage(content=(
-                "Inspect the selected Android app."
+                "Inspect an Android app."
             )),
             AIMessage(content="", tool_calls=[{
                 "name": "request_remote_android_action",

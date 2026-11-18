@@ -120,7 +120,7 @@ async def test_open_local_app_uses_paired_android_when_backend_is_not_windows(mo
 
 
 @pytest.mark.asyncio
-async def test_open_local_app_reports_when_android_app_is_not_selected(monkeypatch):
+async def test_open_local_app_reports_when_android_app_is_not_installed(monkeypatch):
     device = SimpleNamespace(
         id="phone-1",
         name="My Android",
@@ -151,10 +151,11 @@ async def test_open_local_app_reports_when_android_app_is_not_selected(monkeypat
 
     assert not result.success
     assert result.error is not None
-    assert result.error.code == "ANDROID_APP_NOT_SELECTED"
+    assert result.error.code == "ANDROID_APP_UNAVAILABLE"
+    assert "No launchable app named" in result.error.details
 
 
-def test_local_app_agent_tools_require_explicit_approval():
+def test_local_app_agent_tools_respect_permission_levels():
     specs = {
         spec.name: spec
         for spec in device_tools.registry.all()
@@ -163,6 +164,7 @@ def test_local_app_agent_tools_require_explicit_approval():
 
     assert {
         "open_local_app",
+        "open_paired_android_app",
         "inspect_local_app",
         "click_local_app_control",
         "type_local_app_text",
@@ -171,6 +173,9 @@ def test_local_app_agent_tools_require_explicit_approval():
     } <= specs.keys()
     expected_permissions = {
         "open_youtube": PermissionLevel.AUTO,
+        "open_paired_android_app": PermissionLevel.AUTO,
+        "request_remote_android_action": PermissionLevel.AUTO,
+        "request_remote_android_url": PermissionLevel.AUTO,
         "assist_device_message": PermissionLevel.AUTO,
         "save_device_reply_draft": PermissionLevel.AUTO,
         "discover_available_device_capabilities": PermissionLevel.AUTO,

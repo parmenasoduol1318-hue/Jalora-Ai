@@ -6,20 +6,16 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class DeviceCompanionService : Service() {
     private val running = AtomicBoolean(false)
     private val paused = AtomicBoolean(false)
-    private val pending = mutableMapOf<String, PendingDecision>()
     private var worker: Thread? = null
     @Volatile private var accessToken = ""
     @Volatile private var accessTokenExpiry = 0L
@@ -39,7 +35,6 @@ class DeviceCompanionService : Service() {
                 updateStatus("Resuming the companion connection.")
             }
             ACTION_STOP -> stopConnection()
-            ACTION_DECISION -> applyDecision(intent)
         }
         return START_STICKY
     }
@@ -61,26 +56,8 @@ class DeviceCompanionService : Service() {
         running.set(false)
         paused.set(false)
         worker?.interrupt()
-        synchronized(pending) {
-            pending.values.forEach { it.latch.countDown() }
-            pending.clear()
-        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
-    }
-
-    private fun applyDecision(intent: Intent) {
-        val id = intent.getStringExtra(EXTRA_COMMAND_ID) ?: return
-        val nonce = intent.getStringExtra(EXTRA_NONCE) ?: return
-        val approve = intent.getBooleanExtra(EXTRA_APPROVE, false)
-        synchronized(pending) {
-            val item = pending[id]
-            if (item != null && item.nonce == nonce) {
-                item.approved = approve
-                item.latch.countDown()
-            }
-        }
-        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).cancel(actionNotificationId(id))
     }
 
     private fun connectionLoop() {
@@ -106,7 +83,8 @@ class DeviceCompanionService : Service() {
                     }
                     state = recoverInterruptedAction(state)
                     deliverSavedReceipt(state)
-                    reportManifestIfChanged(state)
+                    val installedApps = CompanionApi.installedApplications(this)
+                    reportManifestIfChanged(state, installedApps)
                     val batch = CompanionApi.request(
                         origin,
                         "/api/devices/protocol/v1/commands?wait_seconds=20&client_type=android",
@@ -116,9 +94,11 @@ class DeviceCompanionService : Service() {
                     for (index in 0 until commands.length()) {
                         if (!running.get()) break
                         while (paused.get() && running.get()) Thread.sleep(250)
-                        if (running.get()) handleCommand(commands.getJSONObject(index))
+                        if (running.get()) {
+                            handleCommand(commands.getJSONObject(index), state, installedApps)
+                        }
                     }
-                    updateStatus("Connected. Waiting for an approved Jalora task.")
+                    updateStatus("Connected. Waiting for a Jalora task.")
                 } catch (error: CompanionHttpException) {
                     if (error.status == 401) {
                         accessToken = ""
@@ -145,11 +125,10 @@ class DeviceCompanionService : Service() {
         }
     }
 
-    private fun reportManifestIfChanged(state: JSONObject) {
-        val applications = state.optJSONArray("applications") ?: JSONArray()
+    private fun reportManifestIfChanged(state: JSONObject, installedApps: JSONArray) {
         val scopes = state.optJSONArray("scopes") ?: JSONArray()
         val scopeSet = (0 until scopes.length()).map { scopes.getString(it) }.toSet()
-        val manifest = CompanionApi.manifest(applications, scopeSet)
+        val manifest = CompanionApi.manifest(installedApps, scopeSet)
         val digest = manifest.toString()
         if (state.optString("manifest_digest") != digest) {
             CompanionApi.request(
@@ -164,45 +143,32 @@ class DeviceCompanionService : Service() {
         }
     }
 
-    private fun handleCommand(command: JSONObject) {
+    private fun handleCommand(
+        command: JSONObject,
+        state: JSONObject,
+        installedApps: JSONArray,
+    ) {
         val id = command.getString("command_id")
         val nonce = command.getString("nonce")
         val operation = command.getString("operation")
         val arguments = command.optJSONObject("arguments") ?: JSONObject()
-        val state = SecureStore.read(this) ?: return
-        val appId = arguments.optString("app_id")
-        val apps = state.optJSONArray("applications") ?: JSONArray()
-        val app = (0 until apps.length())
-            .map { apps.getJSONObject(it) }
-            .firstOrNull { it.optString("id") == appId }
-        val appName = app?.optString("name") ?: "Selected application"
-        val decision = PendingDecision(nonce, CountDownLatch(1))
-        synchronized(pending) { pending[id] = decision }
-        showApprovalNotification(id, nonce, operation, appName, arguments)
-        updateStatus("Action needs your approval on this phone.")
-        val resolved = decision.latch.await(35, TimeUnit.SECONDS)
-        synchronized(pending) { pending.remove(id) }
-        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).cancel(actionNotificationId(id))
-        if (!resolved) {
-            updateStatus("Action approval expired locally; it was not executed.")
-            return
-        }
         val origin = state.getString("api_origin")
         val result = CompanionApi.request(
             origin,
             "/api/devices/protocol/v1/commands/${Uri.encode(id)}/decision",
             "POST",
             accessToken,
-            JSONObject().put("nonce", nonce).put("approve", decision.approved),
+            JSONObject().put("nonce", nonce).put("approve", true),
         )
-        if (!decision.approved || !result.optBoolean("execute")) {
-            updateStatus("Action rejected on this phone.")
+        if (!result.optBoolean("execute")) {
+            updateStatus("The phone did not authorize this command.")
             return
         }
+        updateStatus("Executing an authorized Jalora task.")
         val inflight = JSONObject().put("command_id", id).put("nonce", nonce)
         state.put("inflight_command", inflight)
         SecureStore.write(this, state)
-        val actionResult = execute(operation, arguments, state, apps)
+        val actionResult = execute(operation, arguments, state, installedApps)
         val receipt = JSONObject()
             .put("nonce", nonce)
             .put("status", actionResult.status)
@@ -224,11 +190,41 @@ class DeviceCompanionService : Service() {
         state: JSONObject,
         apps: JSONArray,
     ): ActionResult {
+        if (operation == "browser.open_url") {
+            if (!hasScope(state, "remote.browser.open_url")) {
+                return browserFailure(
+                    "ANDROID_SCOPE_REQUIRED",
+                    "Opening links was not granted when this phone was paired.",
+                )
+            }
+            val uri = Uri.parse(arguments.optString("url"))
+            val host = uri.host
+                ?: return browserFailure("ANDROID_URL_INVALID", "The link has no valid host.")
+            return try {
+                startActivity(
+                    Intent(Intent.ACTION_VIEW, uri)
+                        .addCategory(Intent.CATEGORY_BROWSABLE)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+                ActionResult(
+                    "succeeded",
+                    JSONObject()
+                        .put("browser_open_receipt", true)
+                        .put("opened_url_host", host),
+                    null,
+                )
+            } catch (_: Exception) {
+                browserFailure(
+                    "ANDROID_URL_OPEN_FAILED",
+                    "Android could not open the link in a browser.",
+                )
+            }
+        }
         val appId = arguments.optString("app_id")
         val app = (0 until apps.length())
             .map { apps.getJSONObject(it) }
             .firstOrNull { it.optString("id") == appId }
-            ?: return ActionResult.failed("ANDROID_APP_NOT_ALLOWLISTED", "This app is not selected on this phone.")
+            ?: return ActionResult.failed("ANDROID_APP_UNAVAILABLE", "This app is not installed or no longer launchable.")
         val packageName = app.optString("package_name")
         return when (operation) {
             "android.app.launch" -> {
@@ -243,7 +239,7 @@ class DeviceCompanionService : Service() {
                 } catch (_: Exception) {
                     return ActionResult.failed(
                         "ANDROID_LAUNCH_FAILED",
-                        "Android did not allow the selected app to open.",
+                        "Android did not allow the target app to open.",
                     )
                 }
                 val accessibility = JaloraAccessibilityService.instance
@@ -259,7 +255,7 @@ class DeviceCompanionService : Service() {
                 }
                 ActionResult.uncertain(
                     "ANDROID_LAUNCH_UNVERIFIED",
-                    "Android accepted the launch request, but the selected app did not become the verified foreground app.",
+                    "Android accepted the launch request, but the target app did not become the verified foreground app.",
                 )
             }
             "android.screen.inspect",
@@ -324,55 +320,17 @@ class DeviceCompanionService : Service() {
         return (0 until scopes.length()).any { scopes.optString(it) == expected }
     }
 
-    private fun showApprovalNotification(
-        commandId: String,
-        nonce: String,
-        operation: String,
-        appName: String,
-        arguments: JSONObject,
-    ) {
-        val content = PendingIntent.getActivity(
-            this,
-            commandId.hashCode(),
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val notification = Notification.Builder(this, ACTION_CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("Jalora action needs review")
-            .setContentText("$operation · $appName")
-            .setStyle(
-                Notification.BigTextStyle().bigText(
-                    "$operation\n$appName\n${arguments.toString(2)}",
-                ),
-            )
-            .setContentIntent(content)
-            .setVisibility(Notification.VISIBILITY_PRIVATE)
-            .setAutoCancel(true)
-            .setCategory(Notification.CATEGORY_REMINDER)
-            .addAction(
-                android.R.drawable.ic_menu_close_clear_cancel,
-                "Reject",
-                approvalPendingIntent(commandId, nonce, approve = false),
-            )
-            .addAction(
-                android.R.drawable.ic_menu_send,
-                "Approve once",
-                approvalPendingIntent(commandId, nonce, approve = true),
-            )
-            .build()
-        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-            .notify(actionNotificationId(commandId), notification)
-    }
+    private fun browserFailure(code: String, reason: String) = ActionResult(
+        "failed",
+        JSONObject().put("reason", reason),
+        code,
+    )
 
     private fun createChannels() {
         if (Build.VERSION.SDK_INT < 26) return
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         manager.createNotificationChannel(
             NotificationChannel(STATUS_CHANNEL, "Jalora companion status", NotificationManager.IMPORTANCE_LOW),
-        )
-        manager.createNotificationChannel(
-            NotificationChannel(ACTION_CHANNEL, "Jalora action approvals", NotificationManager.IMPORTANCE_HIGH),
         )
     }
 
@@ -413,28 +371,6 @@ class DeviceCompanionService : Service() {
         return notification.build()
     }
 
-    private fun approvalPendingIntent(
-        commandId: String,
-        nonce: String,
-        approve: Boolean,
-    ): PendingIntent {
-        val action = if (approve) {
-            CompanionActionReceiver.ACTION_APPROVE
-        } else {
-            CompanionActionReceiver.ACTION_REJECT
-        }
-        val intent = Intent(this, CompanionActionReceiver::class.java)
-            .setAction(action)
-            .putExtra(EXTRA_COMMAND_ID, commandId)
-            .putExtra(EXTRA_NONCE, nonce)
-        return PendingIntent.getBroadcast(
-            this,
-            actionNotificationId(commandId) xor if (approve) 1 else 0,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-    }
-
     private fun serviceActionPendingIntent(action: String, requestCode: Int): PendingIntent {
         val intent = Intent(this, CompanionActionReceiver::class.java).setAction(action)
         return PendingIntent.getBroadcast(
@@ -452,33 +388,19 @@ class DeviceCompanionService : Service() {
         }
     }
 
-    private fun actionNotificationId(commandId: String) = commandId.hashCode() xor ACTION_NOTIFICATION_MASK
-
     override fun onDestroy() {
         running.set(false)
         worker?.interrupt()
         super.onDestroy()
     }
 
-    private data class PendingDecision(
-        val nonce: String,
-        val latch: CountDownLatch,
-        @Volatile var approved: Boolean = false,
-    )
-
     companion object {
         const val ACTION_START = "ai.jalora.companion.START"
         const val ACTION_STOP = "ai.jalora.companion.STOP"
         const val ACTION_PAUSE = "ai.jalora.companion.PAUSE"
         const val ACTION_RESUME = "ai.jalora.companion.RESUME"
-        const val ACTION_DECISION = "ai.jalora.companion.DECISION"
-        const val EXTRA_COMMAND_ID = "command_id"
-        const val EXTRA_NONCE = "nonce"
-        const val EXTRA_APPROVE = "approve"
         private const val STATUS_CHANNEL = "jalora_status"
-        private const val ACTION_CHANNEL = "jalora_actions"
         private const val NOTIFICATION_ID = 7412
-        private const val ACTION_NOTIFICATION_MASK = 0x4A41
         private const val RETRY_DELAY_MS = 2500L
     }
 }

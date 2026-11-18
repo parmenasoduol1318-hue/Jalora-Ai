@@ -20,7 +20,7 @@ from app.services.device_command_protocol import (
     DeviceProtocolError,
     _normalized_command,
 )
-from app.tools.device_tools import request_remote_url
+from app.tools.device_tools import request_remote_android_url
 
 
 @pytest.mark.parametrize("platform", ["windows", "android"])
@@ -129,24 +129,21 @@ def test_protocol_v1_is_task_linked_idempotent_and_uncertain_safe(
 
     with bind_tool_execution(context):
         queued = asyncio.run(
-            request_remote_url(
-                "Protocol test device",
-                "https://example.com/project",
+            request_remote_android_url(
                 device["id"],
+                "https://example.com/project",
             )
         )
         duplicate = asyncio.run(
-            request_remote_url(
-                "Protocol test device",
-                "https://example.com/project",
+            request_remote_android_url(
                 device["id"],
+                "https://example.com/project",
             )
         )
         conflicting = asyncio.run(
-            request_remote_url(
-                "Protocol test device",
-                "https://example.com/other",
+            request_remote_android_url(
                 device["id"],
+                "https://example.com/other",
             )
         )
 
@@ -210,8 +207,9 @@ def test_protocol_v1_is_task_linked_idempotent_and_uncertain_safe(
     )
     assert scope_denied.status_code == 403
 
+    assert queued.data["target_approval_required"] is False
     poll = client.get(
-        "/api/devices/protocol/v1/commands",
+        "/api/devices/protocol/v1/commands?client_type=android",
         headers=protocol_headers,
     )
     assert poll.status_code == 200, poll.text
@@ -232,7 +230,7 @@ def test_protocol_v1_is_task_linked_idempotent_and_uncertain_safe(
     assert envelope["delivery_count"] == 1
 
     second_poll = client.get(
-        "/api/devices/protocol/v1/commands?wait_seconds=0",
+        "/api/devices/protocol/v1/commands?wait_seconds=0&client_type=android",
         headers=protocol_headers,
     )
     assert second_poll.status_code == 200
@@ -361,10 +359,9 @@ def test_protocol_v1_is_task_linked_idempotent_and_uncertain_safe(
         )
     with bind_tool_execution(second_context):
         expiring = asyncio.run(
-            request_remote_url(
-                "Protocol test device",
-                "https://example.com/expire-me",
+            request_remote_android_url(
                 device["id"],
+                "https://example.com/expire-me",
             )
         )
     assert expiring.success
@@ -408,10 +405,9 @@ def test_protocol_v1_is_task_linked_idempotent_and_uncertain_safe(
         )
     with bind_tool_execution(third_context):
         queued_for_cancel = asyncio.run(
-            request_remote_url(
-                "Protocol test device",
-                "https://example.com/cancel-me",
+            request_remote_android_url(
                 device["id"],
+                "https://example.com/cancel-me",
             )
         )
     assert queued_for_cancel.success
@@ -453,10 +449,9 @@ def test_protocol_v1_is_task_linked_idempotent_and_uncertain_safe(
         )
     with bind_tool_execution(fourth_context):
         corrupted = asyncio.run(
-            request_remote_url(
-                "Protocol test device",
-                "https://example.com/validated-at-queue-time",
+            request_remote_android_url(
                 device["id"],
+                "https://example.com/validated-at-queue-time",
             )
         )
     assert corrupted.success
@@ -503,10 +498,9 @@ def test_protocol_v1_is_task_linked_idempotent_and_uncertain_safe(
         )
     with bind_tool_execution(fifth_context):
         running_cancel = asyncio.run(
-            request_remote_url(
-                "Protocol test device",
-                "https://example.com/running-cancel",
+            request_remote_android_url(
                 device["id"],
+                "https://example.com/running-cancel",
             )
         )
     assert running_cancel.success

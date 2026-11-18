@@ -1,18 +1,15 @@
 package ai.jalora.companion
 
-import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.ViewGroup
 import android.widget.Button
-import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -42,11 +39,11 @@ class MainActivity : Activity() {
         setContentView(scroll)
 
         content.addView(TextView(this).apply {
-            text = "Jalora Android Companion"
+            text = "Jalora Phone Access"
             textSize = 22f
         })
         content.addView(TextView(this).apply {
-            text = "Pair this phone with a Jalora account you control. App access is limited to apps you select, each remote action is shown here for approval, and Android permissions can be revoked in system settings."
+            text = "Pair this phone with your Jalora account once. Jalora can open and operate installed apps covered by the permissions you grant. Android requires you to enable its Accessibility service once for screen access; you can revoke it in system settings."
             textSize = 15f
             setPadding(0, 10, 0, 16)
         })
@@ -59,16 +56,16 @@ class MainActivity : Activity() {
         status = TextView(this).apply { textSize = 15f }
         content.addView(status)
 
-        content.addView(sectionTitle("Selected applications"))
+        content.addView(sectionTitle("Optional notification sharing"))
         appList = TextView(this).apply { textSize = 14f }
         content.addView(appList)
-        content.addView(button("Choose apps this companion may open or inspect") {
+        content.addView(button("Choose apps whose notifications may be shared") {
             chooseApps()
         })
 
         content.addView(sectionTitle("Operating-system permissions"))
         content.addView(TextView(this).apply {
-            text = "Accessibility is required only for screen-reading and interaction scopes. Notification access is separate and sends notification text only when Jalora has messages.read permission and the app is selected above."
+            text = "Screen reading and control require Android's Accessibility service to be enabled once. Notification access is separate and sends notification text only when you grant messages.read permission and select an app above."
             textSize = 14f
         })
         content.addView(button("Open Accessibility settings") {
@@ -170,7 +167,8 @@ class MainActivity : Activity() {
                 SecureStore.write(this, state)
                 runOnUiThread {
                     pairingLink.setText("")
-                    status.text = "Paired. Select permitted apps, review Android permissions, then connect."
+                    status.text = "Paired. Starting the phone connection."
+                    startCompanion()
                 }
             } catch (error: Exception) {
                 runOnUiThread { status.text = "Pairing approval failed: ${error.message}" }
@@ -202,12 +200,12 @@ class MainActivity : Activity() {
             }
         }.toBooleanArray()
         AlertDialog.Builder(this)
-            .setTitle("Choose apps for Jalora")
+            .setTitle("Choose notification-sharing apps")
             .setMessage(
                 if (hasScope(state, "messages.read")) {
-                    "Selected app notifications may be sent to your Jalora account because messages.read is enabled."
+                    "Only notifications from apps selected here may be sent to Jalora because messages.read is enabled. App launching and screen control do not use this list."
                 } else {
-                    "Only selected apps can be launched or inspected under the permissions you approved."
+                    "Notification forwarding is disabled until messages.read is granted. This list does not limit app launching or screen control."
                 },
             )
             .setMultiChoiceItems(
@@ -215,7 +213,7 @@ class MainActivity : Activity() {
                 selected,
             ) { _, index, checked -> selected[index] = checked }
             .setNegativeButton("Cancel", null)
-            .setPositiveButton("Save selected apps") { _, _ ->
+            .setPositiveButton("Save notification apps") { _, _ ->
                 val apps = JSONArray()
                 candidates.forEachIndexed { index, (packageName, label) ->
                     if (selected[index]) {
@@ -230,7 +228,7 @@ class MainActivity : Activity() {
                 state.put("applications", apps)
                 SecureStore.write(this, state)
                 appList.text = selectedAppNames(apps)
-                status.text = "Saved ${apps.length()} selected application(s) on this phone."
+                status.text = "Saved ${apps.length()} notification-sharing app(s)."
             }
             .show()
     }
@@ -243,30 +241,20 @@ class MainActivity : Activity() {
             return
         }
         val hasNativePermission = listOf(
+            "remote.browser.open_url",
             "android.apps.launch",
             "android.screen.read",
             "android.screen.control",
         ).any { hasScope(state, it) }
         val canReadNotifications = hasScope(state, "messages.read")
         if (!hasNativePermission && !canReadNotifications) {
-            status.text = "This pairing has no Android app-operation or notification-reading permission. Select a permission in Jalora and pair again."
-            return
-        }
-        if ((state.optJSONArray("applications")?.length() ?: 0) == 0) {
-            status.text = "Select at least one app before connecting."
-            return
-        }
-        if (Build.VERSION.SDK_INT >= 33
-            && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
-            status.text = "Grant notifications so you can see and approve each incoming device action."
+            status.text = "This pairing has no Android app, browser, or notification permission. Select a permission in Jalora and pair again."
             return
         }
         val intent = Intent(this, DeviceCompanionService::class.java)
             .setAction(DeviceCompanionService.ACTION_START)
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
-        status.text = "Connecting through outbound HTTPS. This phone will ask before every native action."
+        status.text = "Connecting securely. Pairing permissions authorize phone actions."
     }
 
     private fun disconnect() {
@@ -296,7 +284,7 @@ class MainActivity : Activity() {
         }
         if (state == null) {
             status.text = "Not paired."
-            appList.text = "No application allowlist is configured."
+            appList.text = "No notification-sharing apps selected."
             return
         }
         appList.text = selectedAppNames(state.optJSONArray("applications") ?: JSONArray())
@@ -326,15 +314,16 @@ class MainActivity : Activity() {
     }
 
     private fun scopeLabel(scope: String): String = when (scope) {
-        "android.apps.launch" -> "Launch only apps selected on this phone"
-        "android.screen.read" -> "Read accessible content from selected foreground apps"
-        "android.screen.control" -> "Navigate, click, scroll, or enter approved text in selected apps"
+        "remote.browser.open_url" -> "Open public links in this phone's browser"
+        "android.apps.launch" -> "Open installed apps on this phone"
+        "android.screen.read" -> "Read visible app content using Android Accessibility"
+        "android.screen.control" -> "Click, scroll, and type in apps on this phone"
         "messages.read" -> "Read selected apps' notification content"
         else -> scope
     }
 
     private fun selectedAppNames(apps: JSONArray): String =
-        if (apps.length() == 0) "No apps selected."
+        if (apps.length() == 0) "No apps selected for notification sharing."
         else (0 until apps.length()).joinToString("\n") { apps.optJSONObject(it)?.optString("name").orEmpty() }
 
     private fun button(label: String, action: () -> Unit) =
@@ -367,6 +356,5 @@ class MainActivity : Activity() {
     }
 
     companion object {
-        private const val REQUEST_NOTIFICATIONS = 931
     }
 }

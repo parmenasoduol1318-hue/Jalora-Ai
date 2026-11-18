@@ -90,7 +90,16 @@ export function DeviceAccessPanel({
     `Current ${platformLabels[defaultPlatform]} device`,
   );
   const [platform, setPlatform] = useState(defaultPlatform);
-  const [scopes, setScopes] = useState<string[]>(["remote.browser.open_url"]);
+  const [scopes, setScopes] = useState<string[]>(
+    defaultPlatform === "android"
+      ? [
+          "remote.browser.open_url",
+          "android.apps.launch",
+          "android.screen.read",
+          "android.screen.control",
+        ]
+      : ["remote.browser.open_url"],
+  );
   const [consentConfirmed, setConsentConfirmed] = useState(false);
   const [pairRequest, setPairRequest] = useState<PairRequest | null>(null);
   const [pairRequestId, setPairRequestId] = useState("");
@@ -357,13 +366,14 @@ export function DeviceAccessPanel({
 
   return (
     <div className="panel device-access-panel">
-      <h3>Another device — remote companion pairing</h3>
+      <h3>Pair another device</h3>
       <p className="muted small">
         Choose whether to pair the browser/device you are using now or a different
-        device. The target approves the short-lived request. The browser companion
-        can open approved public links. For native control, run the Windows or
-        Android Companion on the target and paste this pairing link there. Each
-        companion operates only apps selected on that device and asks before each action.
+        device. The target approves the short-lived pairing request once. On
+        Android, Jalora can open and operate installed apps without selecting
+        each app or approving every action on the phone. Android still requires
+        its Accessibility service to be enabled once for screen access. Windows
+        app controls remain limited to apps selected in its companion.
       </p>
 
       <div className="form-grid">
@@ -384,10 +394,22 @@ export function DeviceAccessPanel({
               const nextPlatform = event.target.value;
               if (isDevicePlatform(nextPlatform)) {
                 setPlatform(nextPlatform);
-                setScopes((current) => current.filter((scope) =>
-                  (!scope.startsWith("windows.") || nextPlatform === "windows")
-                  && (!scope.startsWith("android.") || nextPlatform === "android"),
-                ));
+                setScopes((current) => {
+                  const next = current.filter((scope) =>
+                    (!scope.startsWith("windows.") || nextPlatform === "windows")
+                    && (!scope.startsWith("android.") || nextPlatform === "android"),
+                  );
+                  if (nextPlatform === "android") {
+                    return [...new Set([
+                      ...next,
+                      "remote.browser.open_url",
+                      "android.apps.launch",
+                      "android.screen.read",
+                      "android.screen.control",
+                    ])];
+                  }
+                  return next;
+                });
               }
             }}
           >

@@ -468,6 +468,7 @@ def claim_device_commands(
         )
     elif client_type == "android" and device.platform == "android":
         supported_operations = (
+            "browser.open_url",
             "android.app.launch",
             "android.screen.inspect",
             "android.screen.back",

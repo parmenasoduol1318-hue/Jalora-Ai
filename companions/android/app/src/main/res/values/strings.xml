@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">Jalora Device Companion</string>
-    <string name="accessibility_description">Allows Jalora to inspect and interact with apps you explicitly select, only after each action is approved on this device.</string>
+    <string name="app_name">Jalora Phone Access</string>
+    <string name="accessibility_description">Allows Jalora to inspect and interact with apps on this phone after you enable Accessibility and approve phone pairing. You can turn this service off in Android settings at any time.</string>
 </resources>

@@ -1,6 +1,10 @@
 package ai.jalora.companion
 
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -14,6 +18,46 @@ data class PairingLink(
 )
 
 object CompanionApi {
+    private const val MAX_LAUNCHER_APPS = 500
+
+    fun installedApplications(context: Context): JSONArray {
+        val packageManager = context.packageManager
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val activities = if (Build.VERSION.SDK_INT >= 33) {
+            packageManager.queryIntentActivities(
+                launcher,
+                PackageManager.ResolveInfoFlags.of(0L),
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.queryIntentActivities(launcher, 0)
+        }
+        val applications = JSONArray()
+        activities
+            .mapNotNull { resolve ->
+                val packageName = resolve.activityInfo?.packageName
+                    ?: return@mapNotNull null
+                if (packageName == context.packageName) return@mapNotNull null
+                val label = resolve.loadLabel(packageManager)?.toString()
+                    ?.take(120)
+                    ?.takeIf { it.isNotBlank() }
+                    ?: packageName
+                packageName to label
+            }
+            .distinctBy { it.first }
+            .sortedBy { it.second.lowercase() }
+            .take(MAX_LAUNCHER_APPS)
+            .forEach { (packageName, name) ->
+                applications.put(
+                    JSONObject()
+                        .put("id", appId(packageName))
+                        .put("name", name)
+                        .put("package_name", packageName),
+                )
+            }
+        return applications
+    }
+
     fun parsePairingLink(value: String): PairingLink {
         val uri = Uri.parse(value.trim())
         require(
