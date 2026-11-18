@@ -1,11 +1,20 @@
 package ai.jalora.companion
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.app.KeyguardManager
+import android.graphics.Path
+import android.graphics.Rect
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.DisplayMetrics
 import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.ArrayDeque
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class JaloraAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent?) = Unit
@@ -29,6 +38,282 @@ class JaloraAccessibilityService : AccessibilityService() {
             root.recycle()
         }
     }
+
+    fun launchAppThroughLauncher(packageName: String, appName: String): ActionResult {
+        val keyguard = getSystemService(KEYGUARD_SERVICE) as? KeyguardManager
+        if (keyguard?.isKeyguardLocked == true) {
+            return ActionResult.failed(
+                "ANDROID_DEVICE_LOCKED",
+                "Unlock the phone before asking Jalora to control its screen.",
+            )
+        }
+        if (appName.isBlank()) {
+            return ActionResult.failed("ANDROID_APP_UNAVAILABLE", "The installed app name is unavailable.")
+        }
+        if (isAppForeground(packageName)) return launchReceipt(appName)
+        if (!performGlobalAction(GLOBAL_ACTION_HOME)) {
+            return ActionResult.failed("ANDROID_HOME_UNAVAILABLE", "Android could not open the home screen.")
+        }
+
+        Thread.sleep(LAUNCHER_SETTLE_MS)
+        var appDrawerOpened = false
+        var searchAttempted = false
+        var searchButtonOpened = false
+        repeat(MAX_LAUNCHER_SWIPES + 1) {
+            if (isAppForeground(packageName)) return launchReceipt(appName)
+            val root = rootInActiveWindow
+            if (root != null) {
+                val appNode = findExactLabel(root, appName)
+                if (appNode != null) {
+                    val bounds = Rect().also(appNode::getBoundsInScreen)
+                    val clicked = appNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        || tapBounds(bounds)
+                    if (appNode !== root) appNode.recycle()
+                    root.recycle()
+                    if (clicked && waitForForeground(packageName)) {
+                        return launchReceipt(appName)
+                    }
+                    return ActionResult.failed(
+                        "ANDROID_LAUNCH_UNVERIFIED",
+                        "The launcher icon was activated, but Android did not show $appName in the foreground.",
+                    )
+                }
+
+                if (appDrawerOpened && !searchAttempted) {
+                    val searchField = findEditable(root)
+                    if (searchField != null) {
+                        val arguments = Bundle().apply {
+                            putCharSequence(
+                                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                                appName,
+                            )
+                        }
+                        searchAttempted = true
+                        val entered = searchField.performAction(
+                            AccessibilityNodeInfo.ACTION_SET_TEXT,
+                            arguments,
+                        )
+                        if (searchField !== root) searchField.recycle()
+                        root.recycle()
+                        if (entered) {
+                            Thread.sleep(LAUNCHER_SETTLE_MS)
+                            if (isAppForeground(packageName)) return launchReceipt(appName)
+                            val results = rootInActiveWindow
+                            if (results != null) {
+                                val resultNode = findExactLabel(results, appName)
+                                if (resultNode != null) {
+                                    val bounds = Rect().also(resultNode::getBoundsInScreen)
+                                    val clicked = resultNode.performAction(
+                                        AccessibilityNodeInfo.ACTION_CLICK,
+                                    ) || tapBounds(bounds)
+                                    if (resultNode !== results) resultNode.recycle()
+                                    results.recycle()
+                                    if (clicked && waitForForeground(packageName)) {
+                                        return launchReceipt(appName)
+                                    }
+                                    return ActionResult.failed(
+                                        "ANDROID_LAUNCH_UNVERIFIED",
+                                        "The launcher search result was activated, but Android did not show $appName in the foreground.",
+                                    )
+                                }
+                                results.recycle()
+                            }
+                            return ActionResult.failed(
+                                "ANDROID_APP_NOT_FOUND",
+                                "The launcher did not show an accessible search result for $appName.",
+                            )
+                        }
+                    } else if (!searchButtonOpened) {
+                        val searchButton = findSearchButton(root)
+                        if (searchButton != null) {
+                            searchButtonOpened = searchButton.performAction(
+                                AccessibilityNodeInfo.ACTION_CLICK,
+                            )
+                            if (searchButton !== root) searchButton.recycle()
+                            root.recycle()
+                            if (searchButtonOpened) {
+                                Thread.sleep(SEARCH_SETTLE_MS)
+                                return@repeat
+                            }
+                        } else {
+                            root.recycle()
+                        }
+                    } else {
+                        root.recycle()
+                    }
+                } else {
+                    root.recycle()
+                }
+            }
+
+            if (!swipeLauncher()) {
+                return ActionResult.failed(
+                    "ANDROID_LAUNCHER_UNAVAILABLE",
+                    "Android did not expose a usable launcher screen or app drawer.",
+                )
+            }
+            Thread.sleep(LAUNCHER_SETTLE_MS)
+            appDrawerOpened = true
+        }
+        return ActionResult.failed(
+            "ANDROID_APP_NOT_FOUND",
+            "The app was not visible, searchable, or reachable in the Android launcher.",
+        )
+    }
+
+    private fun launchReceipt(appName: String): ActionResult =
+        ActionResult(
+            "succeeded",
+            JSONObject()
+                .put(
+                    "operation_result",
+                    JSONObject()
+                        .put("ok", true)
+                        .put("status", "app_opened")
+                        .put("app_name", appName)
+                        .put("verified", true),
+                ),
+            null,
+        )
+
+    private fun waitForForeground(packageName: String): Boolean {
+        repeat(20) {
+            if (isAppForeground(packageName)) return true
+            Thread.sleep(250)
+        }
+        return false
+    }
+
+    private fun findExactLabel(
+        root: AccessibilityNodeInfo,
+        label: String,
+    ): AccessibilityNodeInfo? {
+        val expected = normalize(label)
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var visited = 0
+        while (queue.isNotEmpty() && visited < MAX_NODES) {
+            val node = queue.removeFirst()
+            visited += 1
+            if (
+                node.isVisibleToUser &&
+                (normalize(node.text?.toString()) == expected ||
+                    normalize(node.contentDescription?.toString()) == expected)
+            ) {
+                queue.forEach { it.recycle() }
+                return node
+            }
+            for (index in 0 until node.childCount) {
+                node.getChild(index)?.let(queue::addLast)
+            }
+            if (node !== root) node.recycle()
+        }
+        queue.forEach { it.recycle() }
+        return null
+    }
+
+    private fun findEditable(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var visited = 0
+        while (queue.isNotEmpty() && visited < MAX_NODES) {
+            val node = queue.removeFirst()
+            visited += 1
+            if (node.isVisibleToUser && node.isEditable && !node.isPassword) {
+                queue.forEach { it.recycle() }
+                return node
+            }
+            for (index in 0 until node.childCount) {
+                node.getChild(index)?.let(queue::addLast)
+            }
+            if (node !== root) node.recycle()
+        }
+        queue.forEach { it.recycle() }
+        return null
+    }
+
+    private fun findSearchButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var visited = 0
+        while (queue.isNotEmpty() && visited < MAX_NODES) {
+            val node = queue.removeFirst()
+            visited += 1
+            val label = normalize(
+                "${node.text?.toString().orEmpty()} ${node.contentDescription?.toString().orEmpty()}",
+            )
+            if (
+                node.isVisibleToUser && node.isClickable &&
+                ("search" in label || "find apps" in label)
+            ) {
+                queue.forEach { it.recycle() }
+                return node
+            }
+            for (index in 0 until node.childCount) {
+                node.getChild(index)?.let(queue::addLast)
+            }
+            if (node !== root) node.recycle()
+        }
+        queue.forEach { it.recycle() }
+        return null
+    }
+
+    private fun swipeLauncher(): Boolean {
+        val metrics: DisplayMetrics = resources.displayMetrics
+        val path = Path().apply {
+            moveTo(metrics.widthPixels * 0.5f, metrics.heightPixels * 0.82f)
+            lineTo(metrics.widthPixels * 0.5f, metrics.heightPixels * 0.30f)
+        }
+        val completed = CountDownLatch(1)
+        var succeeded = false
+        val dispatched = dispatchGesture(
+            GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, SWIPE_DURATION_MS))
+                .build(),
+            object : GestureResultCallback() {
+                override fun onCompleted(gesture: GestureDescription?) {
+                    succeeded = true
+                    completed.countDown()
+                }
+
+                override fun onCancelled(gesture: GestureDescription?) {
+                    completed.countDown()
+                }
+            },
+            Handler(Looper.getMainLooper()),
+        )
+        return dispatched && completed.await(GESTURE_TIMEOUT_MS, TimeUnit.MILLISECONDS) && succeeded
+    }
+
+    private fun tapBounds(bounds: Rect): Boolean {
+        if (bounds.isEmpty) return false
+        val path = Path().apply {
+            moveTo(bounds.exactCenterX(), bounds.exactCenterY())
+            lineTo(bounds.exactCenterX() + 1f, bounds.exactCenterY() + 1f)
+        }
+        val completed = CountDownLatch(1)
+        var succeeded = false
+        val dispatched = dispatchGesture(
+            GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, TAP_DURATION_MS))
+                .build(),
+            object : GestureResultCallback() {
+                override fun onCompleted(gesture: GestureDescription?) {
+                    succeeded = true
+                    completed.countDown()
+                }
+
+                override fun onCancelled(gesture: GestureDescription?) {
+                    completed.countDown()
+                }
+            },
+            Handler(Looper.getMainLooper()),
+        )
+        return dispatched && completed.await(GESTURE_TIMEOUT_MS, TimeUnit.MILLISECONDS) && succeeded
+    }
+
+    private fun normalize(value: String?): String =
+        value.orEmpty().trim().replace(Regex("\\s+"), " ").lowercase()
 
     fun execute(operation: String, arguments: JSONObject, apps: JSONArray): ActionResult {
         val appId = arguments.optString("app_id")
@@ -337,6 +622,12 @@ class JaloraAccessibilityService : AccessibilityService() {
     companion object {
         private const val MAX_NODES = 300
         private const val MAX_CONTROLS = 40
+        private const val MAX_LAUNCHER_SWIPES = 8
+        private const val LAUNCHER_SETTLE_MS = 500L
+        private const val SEARCH_SETTLE_MS = 300L
+        private const val SWIPE_DURATION_MS = 400L
+        private const val TAP_DURATION_MS = 80L
+        private const val GESTURE_TIMEOUT_MS = 2_000L
         private val AUTHENTICATION_GUARDED_OPERATIONS = setOf(
             "android.screen.click",
             "android.screen.scroll",

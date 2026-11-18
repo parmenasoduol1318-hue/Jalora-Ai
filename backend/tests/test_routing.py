@@ -1102,6 +1102,24 @@ def test_local_app_open_uses_paired_android_tool_on_non_windows_backend(monkeypa
     assert "open_local_app" not in (routing.tool_names or [])
 
 
+def test_whatsapp_launch_uses_paired_android_tool_on_windows(monkeypatch):
+    monkeypatch.setattr(routing_module.sys, "platform", "win32")
+
+    routing = route_request("Open WhatsApp")
+
+    assert "open_paired_android_app" in (routing.tool_names or [])
+    assert "open_local_app" not in (routing.tool_names or [])
+
+
+def test_whatsapp_multistep_task_binds_android_screen_control():
+    routing = route_request("Open WhatsApp and send hello to Mama")
+
+    assert "remote_device_control" in routing.signals
+    assert "request_remote_android_action" in (routing.tool_names or [])
+    assert "open_paired_android_app" in (routing.tool_names or [])
+    assert "send_whatsapp" not in (routing.tool_names or [])
+
+
 def test_generic_open_app_without_name_is_not_treated_as_a_launch_command():
     assert "open_local_app" not in (
         route_request("open any app").tool_names or []

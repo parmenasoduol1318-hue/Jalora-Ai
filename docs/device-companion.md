@@ -226,9 +226,12 @@ requires Pillow, pytesseract, the Tesseract executable, `windows.screen.read`,
 and local per-command approval.
 
 The Android client is under `companions/android`. It discovers installed
-launcher apps and uses intents to launch them; an owner-enabled Accessibility
-Service provides bounded foreground-app inspection, back navigation, and
-accessible control. The `remote.browser.open_url` scope can open public links
+launcher apps and uses the owner-enabled Accessibility Service to find and
+click an app icon from the home screen or app drawer and verify the foreground
+package. Screen contents are returned only by a separate inspection command
+when the phone granted `android.screen.read`. The service also provides bounded
+foreground-app inspection, back navigation, and accessible control. The
+`remote.browser.open_url` scope can open public links
 through Android's default handler. Android notification access is separate and
 forwards only notifications from selected apps when `messages.read` is granted.
 Scroll uses an accessible scrollable control and reports success only when the

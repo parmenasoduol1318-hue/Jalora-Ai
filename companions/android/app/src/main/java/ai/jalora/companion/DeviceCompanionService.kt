@@ -231,31 +231,14 @@ class DeviceCompanionService : Service() {
                 if (!hasScope(state, "android.apps.launch")) {
                     return ActionResult.failed("ANDROID_SCOPE_REQUIRED", "App-launch permission was not granted.")
                 }
-                val launch = packageManager.getLaunchIntentForPackage(packageName)
-                    ?: return ActionResult.failed("ANDROID_APP_UNAVAILABLE", "Android could not find a launchable activity for this app.")
-                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                try {
-                    startActivity(launch)
-                } catch (_: Exception) {
-                    return ActionResult.failed(
-                        "ANDROID_LAUNCH_FAILED",
-                        "Android did not allow the target app to open.",
-                    )
-                }
                 val accessibility = JaloraAccessibilityService.instance
                     ?: return ActionResult.uncertain(
-                        "ANDROID_LAUNCH_UNVERIFIED",
-                        "Android accepted the launch request, but the foreground app cannot be verified without the accessibility service.",
+                        "ANDROID_ACCESSIBILITY_REQUIRED",
+                        "Enable Jalora Accessibility in Android Settings to find and open the app from the launcher.",
                     )
-                repeat(20) {
-                    if (accessibility.isAppForeground(packageName)) {
-                        return ActionResult.succeeded("app_opened", verified = true)
-                    }
-                    Thread.sleep(250)
-                }
-                ActionResult.uncertain(
-                    "ANDROID_LAUNCH_UNVERIFIED",
-                    "Android accepted the launch request, but the target app did not become the verified foreground app.",
+                accessibility.launchAppThroughLauncher(
+                    packageName,
+                    app.optString("name"),
                 )
             }
             "android.screen.inspect",

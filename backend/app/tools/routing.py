@@ -64,6 +64,7 @@ _MOBILE_DEVICE_ACTION = re.compile(
     re.I,
 )
 _ANDROID_DEVICE_TARGET = re.compile(r"\b(?:android|phone|tablet|mobile)\b", re.I)
+_ANDROID_APP_TARGET = re.compile(r"\bwhatsapp\b", re.I)
 _IOS_DEVICE_TARGET = re.compile(r"\b(?:iphone|ipad|ios)\b", re.I)
 _WINDOWS_DEVICE_TARGET = re.compile(
     r"\b(?:windows|pc|desktop|laptop|computer)\b", re.I
@@ -203,10 +204,15 @@ def route_request(
         _WINDOWS_COMPANION_REQUEST.search(request_text)
         and _WINDOWS_DEVICE_ACTION.search(request_text)
     )
+    android_app_request = (
+        _ANDROID_APP_TARGET.search(request_text)
+        and re.search(r"\b(?:open|launch|start|use)\b", request_text, re.I)
+    )
     remote_device_request = (
         _REMOTE_DEVICE_REQUEST.search(request_text)
         or mobile_device_action
         or windows_device_request
+        or android_app_request
     )
     app_command = (
         None
@@ -219,13 +225,14 @@ def route_request(
             if spec.always_available and spec.permission == PermissionLevel.AUTO
         }
         action, app_name = app_command
-        tool_name = "close_local_app" if action == "close" else (
-            "open_youtube"
-            if app_name.casefold() in {"youtube", "youtube.com"}
-            else "open_paired_android_app"
-            if sys.platform != "win32"
-            else "open_local_app"
-        )
+        if action == "close":
+            tool_name = "close_local_app"
+        elif app_name.casefold() in {"youtube", "youtube.com"}:
+            tool_name = "open_youtube"
+        elif sys.platform != "win32" or _ANDROID_APP_TARGET.search(app_name):
+            tool_name = "open_paired_android_app"
+        else:
+            tool_name = "open_local_app"
         if registry.get(tool_name) is not None:
             tool_names.add(tool_name)
         return IntentRouting(
@@ -240,6 +247,8 @@ def route_request(
     if context_result:
         active_signals.update(context_result.signals)
     if _LOCAL_APP_ACTION.search(request_text):
+        active_signals.add("local_app_control")
+    if android_app_request:
         active_signals.add("local_app_control")
     if remote_device_request:
         active_signals.add("remote_device_control")
@@ -287,6 +296,8 @@ def route_request(
             selected.add("discover_available_device_capabilities")
         if registry.get("get_remote_device_action_status") is not None:
             selected.add("get_remote_device_action_status")
+        if android_app_request and registry.get("open_paired_android_app") is not None:
+            selected.add("open_paired_android_app")
         android_target = (
             _ANDROID_DEVICE_TARGET.search(request_text)
             and not _IOS_DEVICE_TARGET.search(request_text)
