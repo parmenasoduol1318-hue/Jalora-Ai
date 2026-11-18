@@ -1812,8 +1812,8 @@ async def launch_local_app(
     return await _execute_device_tool(
         user=user,
         model_router=model_router,
-        tool_name="open_local_app",
-        arguments={"app_name": app.name},
+        tool_name="open_registered_local_app",
+        arguments={"app_name": app.name, "registered_app_id": app.id},
         description=f"Launch approved local app '{app.name}'.",
     )
 

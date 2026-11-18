@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
+import uuid
 import webbrowser
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -58,76 +59,105 @@ def _normalized_app_name(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold()
 
 
-def _approved_app(
-    app_name: str,
-) -> tuple[str, str, str] | ToolResult:
+def _local_app_identity(app_name: str) -> tuple[str, str] | ToolResult:
     requested_name = _normalized_app_name(app_name)
-    if not requested_name:
-        return ToolResult.fail("INVALID_APP_NAME", "Specify the approved app name.")
+    if (
+        not requested_name
+        or len(app_name) > 120
+        or any(ord(character) < 32 or ord(character) == 127 for character in app_name)
+    ):
+        return ToolResult.fail(
+            "INVALID_APP_NAME",
+            "Enter an app name between 1 and 120 printable characters.",
+        )
     if sys.platform != "win32":
         return ToolResult.fail(
             "LOCAL_APP_CONTROL_UNSUPPORTED",
             "Local app control is currently supported only on Windows.",
         )
     context = get_tool_context()
-    with SessionLocal() as db:
-        apps = db.scalars(
-            select(LocalDeviceApp).where(
-                LocalDeviceApp.user_id == context.user_id,
-                LocalDeviceApp.enabled.is_(True),
-            )
-        ).all()
-        matches = [
-            app for app in apps
-            if _normalized_app_name(app.name) == requested_name
-        ]
-        if not matches:
-            return ToolResult.fail(
-                "APP_NOT_APPROVED",
-                f"'{app_name.strip()}' is not an enabled approved local app. "
-                "Add and approve it in Integrations before asking Jalora to use it.",
-            )
-        if len(matches) > 1:
-            return ToolResult.fail(
-                "APP_NAME_AMBIGUOUS",
-                f"More than one approved app is named '{app_name.strip()}'. "
-                "Give the apps distinct names in Integrations.",
-            )
-        app = matches[0]
-        return app.id, app.name, app.executable_path
+    app_id = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"jalora:screen-app:{context.user_id}:{requested_name}",
+    ).hex
+    return app_id, app_name.strip()
 
 
-def _run_approved_app_action(
+def _run_local_app_action(
     app_name: str,
     operation: Callable[..., dict],
     **kwargs,
 ) -> ToolResult:
-    app = _approved_app(app_name)
+    app = _local_app_identity(app_name)
     if isinstance(app, ToolResult):
         return app
-    app_id, approved_name, executable_path = app
+    app_id, display_name = app
     context = get_tool_context()
     try:
-        if operation is local_device_control.launch_local_app:
-            result = operation(context.user_id, app_id, executable_path, **kwargs)
+        if operation is local_device_control.launch_app_from_start_menu:
+            result = operation(context.user_id, app_id, display_name, **kwargs)
         else:
             result = operation(context.user_id, app_id, **kwargs)
     except JaloraError as exc:
         return ToolResult.fail(exc.code, exc.message)
     return ToolResult.ok(
-        f"Completed the requested action for approved app '{approved_name}'.",
-        {"app": approved_name, **result},
+        f"Completed the requested action for local app '{display_name}'.",
+        {"app": display_name, **result},
     )
 
 
 async def open_local_app(app_name: str) -> ToolResult:
-    """Open one user-registered Windows app after explicit task approval.
+    """Find and open an installed Windows app through visible Start-menu search.
 
-    Only the exact enabled app name from the user's local-app allowlist can be
-    started. Register and approve the app in Integrations before requesting it.
+    The user approves the launch action in Chat; adding the app to Integrations
+    is not required.
     """
-    return _run_approved_app_action(
-        app_name, local_device_control.launch_local_app
+    return _run_local_app_action(
+        app_name,
+        local_device_control.launch_app_from_start_menu,
+    )
+
+
+async def open_registered_local_app(
+    app_name: str,
+    registered_app_id: str,
+) -> ToolResult:
+    """Launch a registered Integrations app by its saved executable path."""
+    app_identity = _local_app_identity(app_name)
+    if isinstance(app_identity, ToolResult):
+        return app_identity
+    display_name = app_identity[1]
+    context = get_tool_context()
+    with SessionLocal() as db:
+        app = db.get(LocalDeviceApp, registered_app_id)
+        if app is None or app.user_id != context.user_id:
+            return ToolResult.fail(
+                "APP_NOT_APPROVED",
+                "The selected app is not registered for this user.",
+            )
+        if not app.enabled:
+            return ToolResult.fail(
+                "APP_PERMISSION_DISABLED",
+                "Permission for this registered app is disabled.",
+            )
+        if _normalized_app_name(app.name) != _normalized_app_name(display_name):
+            return ToolResult.fail(
+                "APP_NAME_MISMATCH",
+                "The selected registered app does not match the requested name.",
+            )
+        app_id = app.id
+        executable_path = app.executable_path
+    try:
+        result = local_device_control.launch_local_app(
+            context.user_id,
+            app_id,
+            executable_path,
+        )
+    except JaloraError as exc:
+        return ToolResult.fail(exc.code, exc.message)
+    return ToolResult.ok(
+        f"Opened registered local app '{display_name}'.",
+        {"app": display_name, **result},
     )
 
 
@@ -165,7 +195,7 @@ async def inspect_local_app(
     Requires a separate approval because the selected window may contain private
     data. OCR is a read-only fallback when accessibility controls are unavailable.
     """
-    return _run_approved_app_action(
+    return _run_local_app_action(
         app_name, local_device_control.inspect_local_app, mode=mode
     )
 
@@ -180,7 +210,7 @@ async def click_local_app_control(
     The user must approve the action, and Jalora reports whether the visible
     accessibility tree changed; unchanged UI is not reported as verified.
     """
-    return _run_approved_app_action(
+    return _run_local_app_action(
         app_name,
         local_device_control.click_accessible_control,
         name=name,
@@ -195,7 +225,7 @@ async def type_local_app_text(app_name: str, text: str) -> ToolResult:
             "INVALID_APP_INPUT",
             "Text input must contain between 1 and 2,000 characters.",
         )
-    return _run_approved_app_action(
+    return _run_local_app_action(
         app_name, local_device_control.interact_with_local_app,
         action="type", text=text,
     )
@@ -208,7 +238,7 @@ async def press_local_app_key(
     ],
 ) -> ToolResult:
     """Press one supported key in the foreground window after approval."""
-    return _run_approved_app_action(
+    return _run_local_app_action(
         app_name, local_device_control.interact_with_local_app,
         action="key", key=key,
     )
@@ -216,7 +246,7 @@ async def press_local_app_key(
 
 async def close_local_app(app_name: str) -> ToolResult:
     """Request a graceful close of an app launched by Jalora after approval."""
-    return _run_approved_app_action(
+    return _run_local_app_action(
         app_name, local_device_control.close_local_app
     )
 
@@ -681,13 +711,13 @@ async def assist_device_message(
 
 
 async def click_local_app_coordinates(app_name: str, x: int, y: int) -> ToolResult:
-    """Click a coordinate in an approved local app after explicit approval."""
+    """Click a coordinate in a local app opened by Jalora after approval."""
     if x < 0 or y < 0 or x > 10000 or y > 10000:
         return ToolResult.fail(
             "INVALID_APP_COORDINATES",
             "Click coordinates must be between 0 and 10,000.",
         )
-    return _run_approved_app_action(
+    return _run_local_app_action(
         app_name,
         local_device_control.interact_with_local_app,
         action="click",
@@ -771,6 +801,15 @@ registry.register(
     tags=["local_app", "desktop", "launch"],
     side_effect="external",
     default_for_actions=["open"],
+    required_signals=["local_app_control"],
+)
+
+registry.register(
+    open_registered_local_app,
+    permission=PermissionLevel.CONFIRM,
+    category="device_control",
+    tags=["local_app", "desktop", "launch", "integrations"],
+    side_effect="external",
     required_signals=["local_app_control"],
 )
 

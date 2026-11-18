@@ -1,5 +1,6 @@
 import io
 import json
+import uuid
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -642,7 +643,6 @@ def test_exact_app_close_requires_approval_and_reports_verified_result(
     from sqlalchemy import select
 
     from app.database.session import SessionLocal
-    from app.models.device import LocalDeviceApp
     from app.models.user import User
     from app.services import local_device_control
     from app.tools import device_tools
@@ -651,15 +651,10 @@ def test_exact_app_close_requires_approval_and_reports_verified_result(
     with SessionLocal() as db:
         user = db.scalar(select(User).where(User.email == "local-app-close@test.com"))
         assert user is not None
-        app = LocalDeviceApp(
-            user_id=user.id,
-            name="Calculator",
-            executable_path=r"C:\Windows\System32\calc.exe",
-            enabled=True,
-        )
-        db.add(app)
-        db.commit()
-        app_id = app.id
+        screen_app_id = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"jalora:screen-app:{user.id}:calculator",
+        ).hex
 
     closed = []
     monkeypatch.setattr(device_tools.sys, "platform", "win32")
@@ -694,7 +689,64 @@ def test_exact_app_close_requires_approval_and_reports_verified_result(
     assert approved.status_code == 200, approved.text
     assert approved.json()["status"] == expected_status, approved.json()
     assert approved.json()["reply"] == expected_reply
-    assert closed == [(user.id, app_id)]
+    assert closed == [(user.id, screen_app_id)]
+    assert not fake_router.tape
+
+
+def test_exact_app_open_from_chat_works_without_an_ai_provider(
+    client, fake_router, monkeypatch,
+):
+    from sqlalchemy import select
+
+    from app.database.session import SessionLocal
+    from app.models.user import User
+    from app.services import local_device_control
+    from app.tools import device_tools
+
+    headers = _token(client, "local-app-open@test.com")
+    with SessionLocal() as db:
+        user = db.scalar(select(User).where(User.email == "local-app-open@test.com"))
+        assert user is not None
+        screen_app_id = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"jalora:screen-app:{user.id}:notepad",
+        ).hex
+
+    launched = []
+    monkeypatch.setattr(fake_router, "route", lambda **_: pytest.fail(
+        "Exact local-app commands must not require a configured model."
+    ))
+    monkeypatch.setattr(device_tools.sys, "platform", "win32")
+    monkeypatch.setattr(
+        local_device_control,
+        "launch_app_from_start_menu",
+        lambda user_id, selected_app_id, app_name: (
+            launched.append((user_id, selected_app_id, app_name))
+            or {"status": "started", "process_id": 321}
+        ),
+    )
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "open Notepad"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "paused_approval"
+    assert launched == []
+    assert not fake_router.tape
+
+    approvals = client.get("/api/approvals", headers=headers).json()
+    approval = next(row for row in approvals if row["tool_name"] == "open_local_app")
+    approved = client.post(
+        f"/api/approvals/{approval['id']}/approve",
+        headers=headers,
+    )
+
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "completed"
+    assert launched == [(user.id, screen_app_id, "Notepad")]
     assert not fake_router.tape
 
 

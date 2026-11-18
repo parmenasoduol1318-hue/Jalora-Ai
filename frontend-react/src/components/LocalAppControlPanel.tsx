@@ -351,7 +351,9 @@ export function LocalAppControlPanel({
         This section controls only approved desktop apps on the Windows computer
         running Jalora&apos;s backend. It is not necessarily the device where this
         browser tab is open, and it is separate from the remote paired devices below.
-        Add trusted .exe files yourself. Every voice command is push-to-talk and
+        Integrations controls only apps you add here; Chat can also open an installed
+        app through Windows Start search without adding it to this list. Every voice
+        command is push-to-talk and
         requires a separate confirmation; no microphone stays open. For an app Jalora
         launched, you can request a click in its client area, type text, or press a
         limited key. Each operation is separately confirmed and works only while that

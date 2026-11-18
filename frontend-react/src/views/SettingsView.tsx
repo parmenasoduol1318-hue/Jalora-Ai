@@ -11,6 +11,9 @@ type ProviderInfo = {
   keyless: boolean;
   disabled: boolean;
   usable: boolean;
+  has_user_key?: boolean;
+  developer_key_available?: boolean;
+  credential_source?: "developer" | "user" | null;
 };
 type ProvidersResponse = { providers: Record<string, ProviderInfo> };
 
@@ -175,6 +178,22 @@ export function SettingsView({
       onToast(t("apiKeySaved"));
       setConnectProvider(null);
       setApiKeyInput("");
+      await load();
+    } catch (err) {
+      onToast((err as Error).message, true);
+    }
+  };
+
+  const chooseProviderKeySource = async (
+    provider: string,
+    source: "developer" | "user",
+  ) => {
+    try {
+      await api("/api/settings/provider-key-source", {
+        method: "PATCH",
+        body: { provider, source },
+      });
+      await load();
     } catch (err) {
       onToast((err as Error).message, true);
     }
@@ -236,16 +255,8 @@ export function SettingsView({
     // eslint-disable-next-line react/hooks/exhaustive-deps
   }, [settings?.lmstudio_base_url]);
 
-  /* Determine whether a provider shows "Connect" (needs a per-user key). */
-  const needsApiKey = (name: string, info: ProviderInfo): boolean => {
-    if (name === "google" || name === "groq") {
-      return !providerKeys.has(name);
-    }
-    if (info.configured) return false;            // env key already present
-    if (info.keyless) return false;               // local, no key needed
-    if (providerKeys.has(name)) return false;     // user already supplied a key
-    return KEY_REQUIRED_PROVIDERS.has(name);
-  };
+  const needsApiKey = (name: string): boolean =>
+    KEY_REQUIRED_PROVIDERS.has(name) && !providerKeys.has(name);
 
   return (
     <>
@@ -257,8 +268,8 @@ export function SettingsView({
         <div className="provider-list">
           {Object.entries(providers).map(([name, info]) => {
             const hasKey = providerKeys.has(name);
-            const hasProviderConfig = info.configured || hasKey;
-            const usable = !info.disabled && (info.usable || hasKey);
+            const hasProviderConfig = info.configured;
+            const usable = !info.disabled && info.usable;
             return (
             <div key={name} className="provider-row">
               <div>
@@ -269,10 +280,10 @@ export function SettingsView({
                 <div className="model">{info.model}</div>
               </div>
               <span className={`badge ${usable ? "ok" : info.disabled ? "warn" : ""}`}>
-                {hasKey && (name === "google" || name === "groq")
+                {usable && info.credential_source === "user"
                   ? t("personalProviderKey")
-                  : info.configured && (name === "google" || name === "groq")
-                    ? t("sharedProviderKey")
+                  : usable && info.credential_source === "developer"
+                    ? t("developerProviderKey")
                     : usable
                       ? t("configured")
                       : info.disabled
@@ -294,19 +305,38 @@ export function SettingsView({
                 </button>
               ) : null}
 
-              {/* Key-required, not configured: offer Connect dialog */}
-              {needsApiKey(name, info) ? (
+              {KEY_REQUIRED_PROVIDERS.has(name)
+                && info.credential_source !== "developer" ? (
+                <button
+                  className="btn small"
+                  disabled={!info.developer_key_available}
+                  onClick={() => chooseProviderKeySource(name, "developer")}
+                >
+                  {info.developer_key_available
+                    ? t("useDeveloperKey")
+                    : t("developerKeyUnavailable")}
+                </button>
+              ) : null}
+
+              {hasKey && info.credential_source !== "user" ? (
+                <button
+                  className="btn small"
+                  onClick={() => chooseProviderKeySource(name, "user")}
+                >
+                  {t("usePersonalKey")}
+                </button>
+              ) : null}
+
+              {needsApiKey(name) ? (
                 <button
                   className="btn small primary"
                   onClick={() => { setConnectProvider(name); setApiKeyInput(""); }}
                 >
-                  {name === "google" || name === "groq"
-                    ? t("connectPersonalKey")
-                    : t("connectProvider")}
+                  {t("addPersonalKey")}
                 </button>
               ) : null}
 
-              {/* Configured (env key present): existing disconnect / reconnect */}
+              {/* Disconnect controls whether this provider may be used, independent of key source. */}
               {hasProviderConfig ? (
                 info.disabled ? (
                   <button className="btn small" onClick={() => toggleProvider(name, false)}>

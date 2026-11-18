@@ -3,25 +3,29 @@
 The per-device API supports browser pairing and source-run Windows and Android
 desktop/mobile companions.
 On Windows, the backend also supports an explicitly approved same-host desktop
-app list. The web application is not a system-wide integration and cannot read
-arbitrary apps or control phone calls.
+app list and screen-based launch of installed apps from Chat. The web
+application is not a system-wide integration, cannot read arbitrary apps before
+a Jalora-mediated launch, and cannot control phone calls.
 
-## Windows desktop app allowlist
+## Windows desktop app access
 
 The local app control works only when Jalora's backend runs on the same
 Windows computer as the programs. The authenticated request must come from
-loopback. From Integrations, add a trusted app's absolute `.exe` path and
-confirm approval. Jalora launches that exact executable without a shell or
-user-supplied arguments. A chat or Agent Tasks request such as `open YouTube` can
-open `https://www.youtube.com/` in the Windows computer's default browser
-without app registration. This is a deterministic browser launch, not control
-of a remote chat user's browser, and does not verify that YouTube finished
-loading. Exact chat or Agent Tasks requests to open or close another app use its
-exact enabled allowlist name; Jalora asks for approval before launching or
-requesting a graceful close. Close is limited to a process Jalora launched in
-the current backend session and is not a force-kill. Other app launches require
-the exact enabled app name in the allowlist and their own explicit approval.
-After an approved launch, the agent can inspect
+loopback. In Chat or Agent Tasks, an explicit request such as `open Notepad`
+uses Windows Start search to find a uniquely matching installed app and select
+its visible search result. This screen-based launch does not require adding the
+app to Integrations; Jalora asks for approval before launching. If no unique
+installed-app result is found, the launch fails without running a shell command.
+An exact request such as `open YouTube` can open `https://www.youtube.com/` in
+the Windows computer's default browser without app registration. This is a
+deterministic browser launch, not control of a remote chat user's browser, and
+does not verify that YouTube finished loading.
+
+Integrations separately supports explicitly registered desktop apps: add a
+trusted app's absolute `.exe` path and confirm approval. Jalora launches that
+exact executable without a shell or user-supplied arguments. Close is limited
+to a process/window Jalora launched in the current backend session and is not
+a force-kill. After an approved launch, the agent can inspect
 the selected window, click a uniquely matched accessibility control, type text,
 or press an allowlisted key. Each inspection and action has a separate
 approval, and interactions are restricted to the foreground window of the app

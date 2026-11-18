@@ -397,10 +397,16 @@ async def generate_email_draft_with_model(
             set_active_user_key_values,
             set_active_user_keys,
         )
-        from app.services.provider_state import disabled_for_preferences
+        from app.services.provider_state import (
+            disabled_for_preferences,
+            selected_user_provider_keys,
+        )
 
         reset_user_keys = clear_active_user_keys
-        keys = _load_user_provider_keys(preferences)
+        keys = selected_user_provider_keys(
+            _load_user_provider_keys(preferences),
+            preferences,
+        )
         set_active_user_keys(frozenset(keys))
         set_active_user_key_values(keys)
         router = get_model_router()

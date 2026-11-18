@@ -1,7 +1,4 @@
-from types import SimpleNamespace
-
 import pytest
-
 from app.context import ToolContext, set_tool_context
 from app.tools import device_tools
 from app.tools.base import PermissionLevel, registry
@@ -16,68 +13,49 @@ def test_device_discovery_is_registered_as_read_only_central_tool():
 
 
 @pytest.mark.asyncio
-async def test_open_local_app_uses_only_exact_enabled_user_approved_app(monkeypatch):
-    app = SimpleNamespace(
-        id="app-1",
-        name="YouTube",
-        executable_path=r"C:\Apps\youtube.exe",
-    )
-
-    class FakeSession:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def scalars(self, _statement):
-            return SimpleNamespace(all=lambda: [app])
-
+async def test_open_local_app_uses_start_search_without_integrations_entry(monkeypatch):
     launched = []
-    monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
     monkeypatch.setattr(device_tools.sys, "platform", "win32")
     monkeypatch.setattr(
         device_tools.local_device_control,
-        "launch_local_app",
+        "launch_app_from_start_menu",
         lambda *args: launched.append(args) or {
             "status": "started",
             "process_id": 123,
+            "window_process_id": 123,
+            "window_handle": 456,
         },
     )
     set_tool_context(ToolContext(user_id="user-1"))
     try:
-        result = await device_tools.open_local_app(" youtube ")
+        expected_app_id = device_tools._local_app_identity("Notepad")[0]
+        result = await device_tools.open_local_app(" Notepad ")
     finally:
         set_tool_context(None)
 
     assert result.success
-    assert result.data == {"app": "YouTube", "status": "started", "process_id": 123}
-    assert launched == [("user-1", "app-1", r"C:\Apps\youtube.exe")]
+    assert result.data == {
+        "app": "Notepad",
+        "status": "started",
+        "process_id": 123,
+        "window_process_id": 123,
+        "window_handle": 456,
+    }
+    assert launched == [("user-1", expected_app_id, "Notepad")]
 
 
 @pytest.mark.asyncio
-async def test_open_local_app_rejects_unregistered_app(monkeypatch):
-    class FakeSession:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def scalars(self, _statement):
-            return SimpleNamespace(all=lambda: [])
-
-    monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
+async def test_open_local_app_rejects_control_characters(monkeypatch):
     monkeypatch.setattr(device_tools.sys, "platform", "win32")
     set_tool_context(ToolContext(user_id="user-1"))
     try:
-        result = await device_tools.open_local_app("YouTube")
+        result = await device_tools.open_local_app("Notepad\nEnter")
     finally:
         set_tool_context(None)
 
     assert not result.success
     assert result.error is not None
-    assert result.error.code == "APP_NOT_APPROVED"
+    assert result.error.code == "INVALID_APP_NAME"
 
 
 def test_local_app_agent_tools_require_explicit_approval():

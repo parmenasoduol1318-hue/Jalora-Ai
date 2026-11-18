@@ -59,9 +59,27 @@ def test_providers_never_leak_secrets(client, auth_headers):
     providers = data["providers"]
     assert set(data["disabled_providers"]) == {"ollama", "lmstudio"}
     for name, info in providers.items():
-        assert set(info.keys()) == {"configured", "model", "keyless", "disabled", "usable", "logo"}
-        for key in ("configured", "keyless", "disabled", "usable"):
+        assert set(info.keys()) == {
+            "configured",
+            "model",
+            "keyless",
+            "disabled",
+            "usable",
+            "logo",
+            "has_user_key",
+            "developer_key_available",
+            "credential_source",
+        }
+        for key in (
+            "configured",
+            "keyless",
+            "disabled",
+            "usable",
+            "has_user_key",
+            "developer_key_available",
+        ):
             assert isinstance(info[key], bool)
+        assert info["credential_source"] in (None, "developer", "user")
         assert info["usable"] == (info["configured"] and not info["disabled"])
 
 

@@ -17,7 +17,7 @@ from app.models.integration import Integration
 from app.models.user import User
 from app.schemas import (
     SettingsOut, SettingsPatch, VoiceSettings,
-    ProviderKeyPatch, ProviderKeyOut,
+    ProviderKeyPatch, ProviderKeyOut, ProviderKeySourcePatch,
     ModelsResponse, ModelInfo,
     CustomIntegrationCreate, CustomIntegrationOut,
     IntegrationTestOut,
@@ -32,11 +32,14 @@ from app.services.policy import (
     normalize_tool_policies,
 )
 from app.services.provider_state import (
+    KEY_REQUIRED_PROVIDERS,
     LOCAL_PROVIDER_NAMES,
     PROVIDER_NAMES,
     disabled_for_preferences,
     enabled_local_for_preferences,
+    effective_provider_key_source,
     normalize_disabled,
+    selected_user_provider_keys,
 )
 from app.services.provider_extensions import (
     set_active_user_keys,
@@ -50,12 +53,6 @@ import httpx
 logger = logging.getLogger("jalora.settings")
 
 router = APIRouter(prefix="/api", tags=["settings"])
-
-# Providers that require an API key but have no key configured via the
-# environment (server-wide). Users can supply their own per-user key.
-KEY_REQUIRED_PROVIDERS = {"mistral", "cohere", "cerebras", "perplexity", "openai",
-                          "anthropic", "google", "deepseek", "groq", "openrouter",
-                          "poolside", "nvidia", "copilot", "codex"}
 
 # Dashboard URLs for keyless/open providers so the UI can link to usage pages.
 PROVIDER_DASHBOARD_URLS = {
@@ -88,6 +85,12 @@ def _settings_out(prefs: dict) -> SettingsOut:
     provider_keys = sorted(
         k for k in (prefs.get("provider_keys") or {}) if isinstance(k, str)
     )
+    raw_sources = prefs.get("provider_key_sources")
+    provider_key_sources = {
+        key: value
+        for key, value in raw_sources.items()
+        if isinstance(key, str) and value in {"developer", "user"}
+    } if isinstance(raw_sources, dict) else {}
     return SettingsOut(
         autonomy=normalize_autonomy(prefs.get("autonomy")),
         tool_policies=normalize_tool_policies(prefs.get("tool_policies")),
@@ -107,6 +110,7 @@ def _settings_out(prefs: dict) -> SettingsOut:
         disabled_providers=disabled_for_preferences(prefs),
         enabled_local_providers=enabled_local_for_preferences(prefs),
         provider_keys=provider_keys,
+        provider_key_sources=provider_key_sources,
     )
 
 
@@ -257,10 +261,63 @@ def save_provider_key(
     keys = dict(prefs.get("provider_keys") or {})
     keys[body.provider] = credential_store.fernet_encrypt(body.api_key)
     prefs["provider_keys"] = keys
+    raw_sources = prefs.get("provider_key_sources")
+    sources = dict(raw_sources) if isinstance(raw_sources, dict) else {}
+    sources[body.provider] = "user"
+    prefs["provider_key_sources"] = sources
     user.prefs = prefs
     db.commit()
     return {"success": True, "provider": body.provider,
             "message": f"API key saved for {body.provider}."}
+
+
+@router.patch("/settings/provider-key-source")
+def update_provider_key_source(
+    body: ProviderKeySourcePatch,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Choose whether this account uses the developer or personal provider key."""
+    provider = body.provider.strip().lower()
+    if provider not in KEY_REQUIRED_PROVIDERS:
+        raise BadRequestError(
+            f"Provider '{provider}' does not support API-key selection.",
+            "INVALID_PROVIDER_KEY_SOURCE",
+        )
+
+    prefs = dict(user.prefs or {})
+    keys = prefs.get("provider_keys")
+    has_user_key = (
+        isinstance(keys, dict)
+        and isinstance(keys.get(provider), str)
+        and bool(keys[provider])
+    )
+    provider_status = get_settings().provider_status()
+    developer_key_available = bool(
+        provider_status.get(provider, {}).get("configured")
+    )
+    if body.source == "user" and not has_user_key:
+        raise BadRequestError(
+            f"No personal API key is connected for {provider}.",
+            "PERSONAL_KEY_NOT_CONFIGURED",
+        )
+    if body.source == "developer" and not developer_key_available:
+        raise BadRequestError(
+            f"No developer API key is configured for {provider}.",
+            "DEVELOPER_KEY_NOT_CONFIGURED",
+        )
+
+    raw_sources = prefs.get("provider_key_sources")
+    sources = dict(raw_sources) if isinstance(raw_sources, dict) else {}
+    sources[provider] = body.source
+    prefs["provider_key_sources"] = sources
+    user.prefs = prefs
+    db.commit()
+    return {
+        "success": True,
+        "provider": provider,
+        "credential_source": body.source,
+    }
 
 
 @router.delete("/settings/provider-key/{provider}")
@@ -281,6 +338,18 @@ def delete_provider_key(
                 "message": "No per-user key was stored for this provider."}
     del keys[provider]
     prefs["provider_keys"] = keys
+    raw_sources = prefs.get("provider_key_sources")
+    sources = dict(raw_sources) if isinstance(raw_sources, dict) else {}
+    if sources.get(provider) == "user":
+        provider_status = get_settings().provider_status()
+        if provider_status.get(provider, {}).get("configured"):
+            sources[provider] = "developer"
+        else:
+            sources.pop(provider, None)
+    if sources:
+        prefs["provider_key_sources"] = sources
+    else:
+        prefs.pop("provider_key_sources", None)
     user.prefs = prefs
     db.commit()
     return {"success": True, "provider": provider,
@@ -348,18 +417,42 @@ def provider_availability_for_user(
     the server-wide env key is missing."""
     settings = get_settings()
     prefs = dict(user.prefs or {})
-    _load_keys = _load_user_provider_keys(prefs)
-    set_active_user_keys(frozenset(_load_keys))
-    set_active_user_key_values(_load_keys)
+    all_user_keys = _load_user_provider_keys(prefs)
+    selected_keys = selected_user_provider_keys(all_user_keys, prefs)
+    set_active_user_keys(frozenset(selected_keys))
+    set_active_user_key_values(selected_keys)
     try:
         from app.services.provider_state import overview as _overview
         disabled = disabled_for_preferences(prefs)
         result = _overview(settings, disabled)
-        # Inject per-user key availability flags
         stored_keys = prefs.get("provider_keys") or {}
+        provider_status = settings.provider_status()
         for name in PROVIDER_NAMES:
-            if name in stored_keys and name in result:
-                result[name]["has_user_key"] = True
+            info = result.get(name)
+            if info is None:
+                continue
+            supports_keys = name in KEY_REQUIRED_PROVIDERS
+            has_user_key = (
+                supports_keys
+                and isinstance(stored_keys, dict)
+                and bool(stored_keys.get(name))
+            )
+            developer_key_available = bool(
+                supports_keys
+                and provider_status.get(name, {}).get("configured")
+            )
+            source = effective_provider_key_source(
+                prefs,
+                name,
+                developer_key_available=developer_key_available,
+                user_key_available=has_user_key,
+            )
+            info["has_user_key"] = has_user_key
+            info["developer_key_available"] = developer_key_available
+            info["credential_source"] = source
+            if not info.get("keyless"):
+                info["configured"] = source is not None
+                info["usable"] = bool(source is not None and not info["disabled"])
         return result
     finally:
         set_active_user_keys(frozenset())

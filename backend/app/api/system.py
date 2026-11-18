@@ -17,7 +17,12 @@ from app.services import calendar as calendar_service
 from app.services.direct_action import execute_direct_action
 from app.services.model_router import ModelRouter
 from app.services.policy import decide_for_user
-from app.services.provider_state import disabled_for_preferences, overview
+from app.services.provider_state import (
+    disabled_for_preferences,
+    effective_provider_key_source,
+    KEY_REQUIRED_PROVIDERS,
+    overview,
+)
 from app.tools import registry
 
 router = APIRouter(prefix="/api", tags=["system"])
@@ -99,16 +104,39 @@ def providers(user: User = Depends(get_current_user)):
     provider_status = overview(settings, disabled)
     stored_keys = (user.prefs or {}).get("provider_keys") or {}
     for name, label in (("copilot", "GitHub Copilot SDK"), ("codex", "OpenAI Codex SDK")):
-        configured = bool(stored_keys.get(name))
-        is_disabled = name in disabled
         provider_status[name] = {
             "model": label,
-            "configured": configured,
+            "configured": False,
             "keyless": False,
-            "disabled": is_disabled,
-            "usable": configured and not is_disabled,
+            "disabled": name in disabled,
+            "usable": False,
             "logo": name,
         }
+    developer_status = settings.provider_status()
+    preferences = user.prefs or {}
+    for name, info in provider_status.items():
+        supports_keys = name in KEY_REQUIRED_PROVIDERS
+        has_user_key = (
+            supports_keys
+            and isinstance(stored_keys, dict)
+            and bool(stored_keys.get(name))
+        )
+        developer_key_available = bool(
+            supports_keys
+            and developer_status.get(name, {}).get("configured")
+        )
+        source = effective_provider_key_source(
+            preferences,
+            name,
+            developer_key_available=developer_key_available,
+            user_key_available=has_user_key,
+        )
+        info["has_user_key"] = has_user_key
+        info["developer_key_available"] = developer_key_available
+        info["credential_source"] = source
+        if not info.get("keyless"):
+            info["configured"] = source is not None
+            info["usable"] = bool(source is not None and not info["disabled"])
     return {
         "providers": provider_status,
         "disabled_providers": disabled,

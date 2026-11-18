@@ -25,6 +25,51 @@ _PROVIDERS_BEYOND_ROUTER = [
 ]
 PROVIDER_NAMES: tuple[str, ...] = tuple(list(AUTO_PRIORITY) + _PROVIDERS_BEYOND_ROUTER)
 LOCAL_PROVIDER_NAMES = frozenset({"lmstudio", "ollama"})
+KEY_REQUIRED_PROVIDERS = frozenset({
+    "mistral", "cohere", "cerebras", "perplexity", "openai", "anthropic",
+    "google", "deepseek", "groq", "openrouter", "poolside", "nvidia",
+    "copilot", "codex",
+})
+
+
+def effective_provider_key_source(
+    preferences: dict | None,
+    provider: str,
+    *,
+    developer_key_available: bool,
+    user_key_available: bool,
+) -> str | None:
+    """Resolve the selected credential without exposing either key."""
+    prefs = preferences or {}
+    raw_sources = prefs.get("provider_key_sources")
+    sources = raw_sources if isinstance(raw_sources, dict) else {}
+    selected = sources.get(provider)
+    if selected == "developer":
+        return "developer" if developer_key_available else None
+    if selected == "user":
+        return "user" if user_key_available else None
+    if selected is not None:
+        return None
+    if user_key_available:
+        return "user"
+    if developer_key_available:
+        return "developer"
+    return None
+
+
+def selected_user_provider_keys(
+    keys: dict[str, str],
+    preferences: dict | None,
+) -> dict[str, str]:
+    """Keep only personal keys selected for routing; unset retains legacy behavior."""
+    prefs = preferences or {}
+    raw_sources = prefs.get("provider_key_sources")
+    sources = raw_sources if isinstance(raw_sources, dict) else {}
+    return {
+        name: key
+        for name, key in keys.items()
+        if sources.get(name) in (None, "user")
+    }
 
 
 def normalize_disabled(raw: object) -> list[str]:

@@ -6,13 +6,23 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from ctypes import wintypes
+from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 
 from app.errors import BadRequestError, ConflictError, ServiceUnavailableError
 
+
+@dataclass(frozen=True)
+class _WindowTarget:
+    hwnd: int
+    process_id: int
+
+
 _launched_processes: dict[tuple[str, str], subprocess.Popen] = {}
+_launched_windows: dict[tuple[str, str], _WindowTarget] = {}
 _process_lock = RLock()
 _WM_CLOSE = 0x0010
 _MOUSEEVENTF_LEFTDOWN = 0x0002
@@ -104,6 +114,11 @@ def validate_executable_path(value: str) -> str:
 
 def is_running(user_id: str, app_id: str) -> bool:
     with _process_lock:
+        target = _launched_windows.get((user_id, app_id))
+        if target is not None:
+            if _window_target_is_open(target):
+                return True
+            _launched_windows.pop((user_id, app_id), None)
         process = _launched_processes.get((user_id, app_id))
         return process is not None and process.poll() is None
 
@@ -133,7 +148,231 @@ def launch_local_app(user_id: str, app_id: str, executable_path: str) -> dict[st
         return {"status": "started", "process_id": process.pid}
 
 
-def _request_window_close(process_id: int) -> int:
+def _window_target_is_open(target: _WindowTarget) -> bool:
+    if os.name != "nt":
+        return False
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    is_window = user32.IsWindow
+    is_window.argtypes = [wintypes.HWND]
+    is_window.restype = wintypes.BOOL
+    if not is_window(target.hwnd):
+        return False
+    return target.process_id in _window_process_ids(user32, target.hwnd)
+
+
+def _foreground_window_details() -> tuple[int, int, str] | None:
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    get_foreground = user32.GetForegroundWindow
+    get_foreground.restype = wintypes.HWND
+    hwnd = get_foreground()
+    is_visible = user32.IsWindowVisible
+    is_visible.argtypes = [wintypes.HWND]
+    is_visible.restype = wintypes.BOOL
+    if not hwnd or not is_visible(hwnd):
+        return None
+    process_id = wintypes.DWORD()
+    get_process_id = user32.GetWindowThreadProcessId
+    get_process_id.argtypes = [
+        wintypes.HWND,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    get_process_id.restype = wintypes.DWORD
+    if not get_process_id(hwnd, ctypes.byref(process_id)):
+        return None
+    get_text_length = user32.GetWindowTextLengthW
+    get_text_length.argtypes = [wintypes.HWND]
+    get_text_length.restype = ctypes.c_int
+    length = get_text_length(hwnd)
+    title = ctypes.create_unicode_buffer(max(length, 0) + 1)
+    get_text = user32.GetWindowTextW
+    get_text.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    get_text.restype = ctypes.c_int
+    get_text(hwnd, title, len(title))
+    return int(hwnd), int(process_id.value), title.value
+
+
+def _matching_start_menu_app_results(search_window, app_name: str) -> list:
+    requested_name = re.sub(r"\s+", " ", app_name.strip()).casefold()
+    exact_matches = []
+    alias_matches = []
+    for control in search_window.descendants()[:300]:
+        info = control.element_info
+        automation_id = str(info.automation_id or "")
+        if (
+            info.control_type != "ListItem"
+            or not automation_id.startswith("PP\ue000")
+        ):
+            continue
+        result_name = automation_id[len("PP\ue000"):].split("\ue001", 1)[0].strip()
+        normalized_result = re.sub(r"\s+", " ", result_name).casefold()
+        if normalized_result == requested_name:
+            exact_matches.append((result_name, control))
+        elif (
+            normalized_result.endswith(f" {requested_name}")
+            or normalized_result.startswith(f"{requested_name} ")
+        ):
+            alias_matches.append((result_name, control))
+    return exact_matches or alias_matches
+
+
+def launch_app_from_start_menu(
+    user_id: str,
+    app_id: str,
+    app_name: str,
+) -> dict[str, int | str]:
+    if os.name != "nt":
+        raise ServiceUnavailableError(
+            "Screen-based app launching is available only on Windows.",
+            "LOCAL_APP_CONTROL_UNSUPPORTED",
+        )
+    if not app_name.strip() or len(app_name) > 120 or any(
+        ord(character) < 32 or ord(character) == 127 for character in app_name
+    ):
+        raise BadRequestError(
+            "Enter an app name between 1 and 120 printable characters.",
+            "INVALID_APP_NAME",
+        )
+
+    key = (user_id, app_id)
+    with _process_lock:
+        target = _launched_windows.get(key)
+        if target is not None and _window_target_is_open(target):
+            return {
+                "status": "already_running",
+                "process_id": target.process_id,
+                "window_process_id": target.process_id,
+                "window_handle": target.hwnd,
+            }
+        _launched_windows.pop(key, None)
+
+        try:
+            from pywinauto import Desktop, keyboard
+        except ImportError as exc:
+            raise ServiceUnavailableError(
+                "Screen-based app launching requires pywinauto.",
+                "ACCESSIBILITY_DEPENDENCY_MISSING",
+            ) from exc
+
+        previous = _foreground_window_details()
+        previous_hwnd = previous[0] if previous else None
+        search_window = None
+        try:
+            keyboard.send_keys("^{ESC}")
+            desktop = Desktop(backend="uia")
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and search_window is None:
+                for title in ("Start", "Search"):
+                    candidate = desktop.window(
+                        title=title,
+                        class_name="Windows.UI.Core.CoreWindow",
+                    )
+                    if candidate.exists(timeout=0.1):
+                        search_window = candidate.wrapper_object()
+                        break
+                time.sleep(0.1)
+            if search_window is None:
+                raise ServiceUnavailableError(
+                    "Windows Start search did not open.",
+                    "APP_SEARCH_UNAVAILABLE",
+                )
+            search_box = next(
+                (
+                    control
+                    for control in search_window.descendants()[:300]
+                    if control.element_info.automation_id == "SearchTextBox"
+                    and control.element_info.control_type == "Edit"
+                ),
+                None,
+            )
+            if search_box is None:
+                raise ServiceUnavailableError(
+                    "Windows Start search does not expose an accessible search box.",
+                    "APP_SEARCH_UNAVAILABLE",
+                )
+            search_box.set_edit_text(app_name.strip())
+
+            matches = []
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not matches:
+                matches = _matching_start_menu_app_results(
+                    search_window,
+                    app_name,
+                )
+                time.sleep(0.15)
+            if not matches:
+                raise BadRequestError(
+                    f"Windows Start search did not find an installed app named "
+                    f"'{app_name.strip()}'. No app was launched.",
+                    "APP_SEARCH_RESULT_NOT_FOUND",
+                )
+            if len(matches) > 1:
+                names = ", ".join(sorted({match[0] for match in matches}))
+                raise ConflictError(
+                    f"Windows Start search found multiple matching apps: {names}. "
+                    "Use a more specific app name."
+                )
+
+            search_hwnd = int(search_window.handle)
+            matches[0][1].click_input()
+            deadline = time.monotonic() + 10
+            observed_hwnd = None
+            stable_since = 0.0
+            target = None
+            while time.monotonic() < deadline:
+                details = _foreground_window_details()
+                if details is not None:
+                    hwnd, process_id, title = details
+                    is_previous_app = (
+                        hwnd == previous_hwnd
+                        and app_name.casefold() in title.casefold()
+                    )
+                    is_candidate = (
+                        hwnd != search_hwnd
+                        and title.strip().casefold()
+                        not in {"", "program manager", "taskbar"}
+                        and (hwnd != previous_hwnd or is_previous_app)
+                    )
+                    if is_candidate:
+                        if hwnd != observed_hwnd:
+                            observed_hwnd = hwnd
+                            stable_since = time.monotonic()
+                        elif time.monotonic() - stable_since >= 0.25:
+                            target = _WindowTarget(hwnd=hwnd, process_id=process_id)
+                            break
+                    else:
+                        observed_hwnd = None
+                time.sleep(0.1)
+            if target is None:
+                raise ServiceUnavailableError(
+                    f"Windows did not bring the selected app '{app_name}' "
+                    "to the foreground.",
+                    "APP_WINDOW_NOT_FOUND",
+                )
+        except (BadRequestError, ConflictError, ServiceUnavailableError):
+            if search_window is not None:
+                search_window.set_focus()
+                keyboard.send_keys("{ESC}")
+            raise
+        except Exception as exc:
+            if search_window is not None:
+                search_window.set_focus()
+                keyboard.send_keys("{ESC}")
+            raise ServiceUnavailableError(
+                "Windows could not search for or open the selected app through "
+                "the Start menu.",
+                "APP_SEARCH_FAILED",
+            ) from exc
+
+        _launched_windows[key] = target
+        return {
+            "status": "started",
+            "process_id": target.process_id,
+            "window_process_id": target.process_id,
+            "window_handle": target.hwnd,
+        }
+
+
+def _request_window_close(process_id: int, target_hwnd: int | None = None) -> int:
     if os.name != "nt":
         raise ServiceUnavailableError(
             "Graceful app closing is available only on Windows.",
@@ -150,7 +389,15 @@ def _request_window_close(process_id: int) -> int:
         del parameter
         window_process_id = wintypes.DWORD()
         get_process_id(hwnd, ctypes.byref(window_process_id))
-        if window_process_id.value != process_id or not is_visible(hwnd):
+        if (
+            (target_hwnd is not None and int(hwnd) != target_hwnd)
+            or (
+                process_id not in _window_process_ids(user32, int(hwnd))
+                if target_hwnd is not None
+                else window_process_id.value != process_id
+            )
+            or not is_visible(hwnd)
+        ):
             return True
         if post_message(hwnd, _WM_CLOSE, 0, 0):
             close_windows += 1
@@ -181,7 +428,66 @@ def _request_window_close(process_id: int) -> int:
     return close_windows
 
 
-def _foreground_app_window(process_id: int):
+def _window_process_ids(user32, hwnd: int) -> set[int]:
+    callback_factory = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)
+    callback_type = callback_factory(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    get_window_process_id = user32.GetWindowThreadProcessId
+    get_window_process_id.argtypes = [
+        wintypes.HWND,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    get_window_process_id.restype = wintypes.DWORD
+
+    process_ids: set[int] = set()
+    root_process_id = wintypes.DWORD()
+    if not get_window_process_id(hwnd, ctypes.byref(root_process_id)):
+        raise OSError(ctypes.get_last_error(), "Could not verify the app window owner.")
+    process_ids.add(int(root_process_id.value))
+
+    callback_errors: list[int] = []
+
+    @callback_type
+    def collect_child_process_id(child_hwnd: int, _parameter: int) -> bool:
+        child_process_id = wintypes.DWORD()
+        if not get_window_process_id(child_hwnd, ctypes.byref(child_process_id)):
+            callback_errors.append(ctypes.get_last_error())
+            return False
+        process_ids.add(int(child_process_id.value))
+        return True
+
+    enum_child_windows = user32.EnumChildWindows
+    enum_child_windows.argtypes = [
+        wintypes.HWND,
+        callback_type,
+        wintypes.LPARAM,
+    ]
+    enum_child_windows.restype = wintypes.BOOL
+    if not enum_child_windows(hwnd, collect_child_process_id, 0):
+        error = callback_errors[0] if callback_errors else ctypes.get_last_error()
+        raise OSError(error, "Could not verify the app window descendants.")
+    if callback_errors:
+        raise OSError(
+            callback_errors[0],
+            "Could not verify the app window descendants.",
+        )
+    return process_ids
+
+
+def _app_window_target(user_id: str, app_id: str) -> tuple[int, int | None]:
+    key = (user_id, app_id)
+    target = _launched_windows.get(key)
+    if target is not None:
+        if _window_target_is_open(target):
+            return target.process_id, target.hwnd
+        _launched_windows.pop(key, None)
+
+    process = _launched_processes.get(key)
+    if process is None or process.poll() is not None:
+        raise ConflictError("Open this app through Jalora before operating it.")
+    return process.pid, None
+
+
+def _foreground_app_window(process_id: int, expected_hwnd: int | None = None):
     if os.name != "nt":
         raise ServiceUnavailableError(
             "Desktop input is available only on Windows.",
@@ -192,15 +498,15 @@ def _foreground_app_window(process_id: int):
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     get_foreground = user32.GetForegroundWindow
     get_foreground.restype = wintypes.HWND
-    get_window_process_id = user32.GetWindowThreadProcessId
-    get_window_process_id.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-    get_window_process_id.restype = wintypes.DWORD
     hwnd = get_foreground()
     if not hwnd:
         raise ConflictError("Focus the Jalora-launched app before operating it.")
-    window_process_id = wintypes.DWORD()
-    get_window_process_id(hwnd, ctypes.byref(window_process_id))
-    if window_process_id.value != process_id:
+    if expected_hwnd is not None and int(hwnd) != expected_hwnd:
+        raise ConflictError(
+            "The foreground window is not the selected Jalora-launched app. "
+            "Focus that app and try again."
+        )
+    if process_id not in _window_process_ids(user32, hwnd):
         raise ConflictError(
             "The foreground window is not the selected Jalora-launched app. "
             "Focus that app and try again."
@@ -251,7 +557,8 @@ def _uia_window(process_id: int, hwnd: int):
         window = Desktop(backend="uia").window(handle=int(hwnd))
         if not window.exists(timeout=1):
             raise RuntimeError("The selected application window is no longer available.")
-        if window.process_id() != process_id:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        if process_id not in _window_process_ids(user32, hwnd):
             raise RuntimeError("The selected window no longer belongs to the approved app.")
         return window
     except Exception as exc:
@@ -269,12 +576,10 @@ def inspect_local_app(user_id: str, app_id: str, *, mode: str = "accessibility")
             "LOCAL_APP_CONTROL_UNSUPPORTED",
         )
     with _process_lock:
-        process = _launched_processes.get((user_id, app_id))
-        if process is None or process.poll() is not None:
-            raise ConflictError("Open this approved app through Jalora before inspecting it.")
-        user32, hwnd, _ = _foreground_app_window(process.pid)
+        process_id, expected_hwnd = _app_window_target(user_id, app_id)
+        user32, hwnd, _ = _foreground_app_window(process_id, expected_hwnd)
         if mode == "accessibility":
-            window = _uia_window(process.pid, hwnd)
+            window = _uia_window(process_id, hwnd)
             controls = []
             try:
                 for control in window.descendants()[:300]:
@@ -360,11 +665,9 @@ def click_accessible_control(
             "ACCESSIBLE_CONTROL_REQUIRED",
         )
     with _process_lock:
-        process = _launched_processes.get((user_id, app_id))
-        if process is None or process.poll() is not None:
-            raise ConflictError("Open this approved app through Jalora before operating it.")
-        _, hwnd, _ = _foreground_app_window(process.pid)
-        window = _uia_window(process.pid, hwnd)
+        process_id, expected_hwnd = _app_window_target(user_id, app_id)
+        _, hwnd, _ = _foreground_app_window(process_id, expected_hwnd)
+        window = _uia_window(process_id, hwnd)
         try:
             _ensure_no_authentication_field(window)
             matches = [
@@ -388,7 +691,7 @@ def click_accessible_control(
                 (item.element_info.control_type, item.element_info.name)
                 for item in window.descendants()[:300]
             ]
-            _ensure_foreground_window(process.pid, hwnd)
+            _ensure_foreground_window(process_id, hwnd)
             control.click_input()
             after = [
                 (item.element_info.control_type, item.element_info.name)
@@ -442,23 +745,15 @@ def _ensure_no_authentication_field(window) -> None:
 
 
 def _ensure_foreground_window(process_id: int, expected_hwnd: int) -> None:
-    from ctypes import wintypes
-
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     get_foreground = user32.GetForegroundWindow
     get_foreground.restype = wintypes.HWND
-    get_window_process_id = user32.GetWindowThreadProcessId
-    get_window_process_id.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-    get_window_process_id.restype = wintypes.DWORD
     hwnd = get_foreground()
     if hwnd != expected_hwnd:
         raise ConflictError(
             "The foreground window changed. Focus the selected app and confirm the action again."
         )
-    window_process_id = wintypes.DWORD()
-    if not get_window_process_id(hwnd, ctypes.byref(window_process_id)):
-        raise OSError(ctypes.get_last_error(), "Could not verify the focused app window.")
-    if window_process_id.value != process_id:
+    if process_id not in _window_process_ids(user32, hwnd):
         raise ConflictError(
             "The foreground window no longer belongs to the selected app."
         )
@@ -521,14 +816,13 @@ def interact_with_local_app(
             "LOCAL_APP_CONTROL_UNSUPPORTED",
         )
     with _process_lock:
-        process = _launched_processes.get((user_id, app_id))
-        if process is None or process.poll() is not None:
-            raise ConflictError(
-                "Open this approved app through Jalora before operating it."
-            )
-        user32, hwnd, client_rect = _foreground_app_window(process.pid)
+        process_id, expected_hwnd = _app_window_target(user_id, app_id)
+        user32, hwnd, client_rect = _foreground_app_window(
+            process_id,
+            expected_hwnd,
+        )
         if action in {"click", "type", "key"}:
-            _ensure_no_authentication_field(_uia_window(process.pid, hwnd))
+            _ensure_no_authentication_field(_uia_window(process_id, hwnd))
         if action == "click":
             if x is None or y is None:
                 raise BadRequestError("Click requires x and y coordinates.")
@@ -552,7 +846,7 @@ def interact_with_local_app(
             set_cursor.restype = ctypes.wintypes.BOOL
             if not set_cursor(point.x, point.y):
                 raise OSError(ctypes.get_last_error(), "Could not move the pointer.")
-            _ensure_foreground_window(process.pid, hwnd)
+            _ensure_foreground_window(process_id, hwnd)
             _send_inputs(
                 user32,
                 [
@@ -573,7 +867,7 @@ def interact_with_local_app(
                 inputs.append(
                     _keyboard_input(0, code_unit, _KEYEVENTF_UNICODE | _KEYEVENTF_KEYUP)
                 )
-            _ensure_foreground_window(process.pid, hwnd)
+            _ensure_foreground_window(process_id, hwnd)
             _send_inputs(user32, inputs)
             return {"status": "typed", "characters": len(text)}
 
@@ -581,7 +875,7 @@ def interact_with_local_app(
             if not key or key.upper() not in _KEYS:
                 raise BadRequestError("Unsupported key. Use Enter, Tab, Esc, Backspace, Space, or an arrow.")
             virtual_key = _KEYS[key.upper()]
-            _ensure_foreground_window(process.pid, hwnd)
+            _ensure_foreground_window(process_id, hwnd)
             _send_inputs(
                 user32,
                 [
@@ -597,6 +891,35 @@ def interact_with_local_app(
 def close_local_app(user_id: str, app_id: str) -> dict[str, int | str]:
     key = (user_id, app_id)
     with _process_lock:
+        target = _launched_windows.get(key)
+        if target is not None:
+            if not _window_target_is_open(target):
+                _launched_windows.pop(key, None)
+                return {"status": "already_exited", "process_id": target.process_id}
+            close_windows = _request_window_close(
+                target.process_id,
+                target_hwnd=target.hwnd,
+            )
+            if close_windows == 0:
+                raise ConflictError(
+                    "No visible app window was found. Jalora did not force-terminate it."
+                )
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if not _window_target_is_open(target):
+                    _launched_windows.pop(key, None)
+                    return {
+                        "status": "closed",
+                        "process_id": target.process_id,
+                        "windows_notified": close_windows,
+                    }
+                time.sleep(0.05)
+            return {
+                "status": "close_requested",
+                "process_id": target.process_id,
+                "windows_notified": close_windows,
+            }
+
         process = _launched_processes.get(key)
         if process is None:
             raise ConflictError(

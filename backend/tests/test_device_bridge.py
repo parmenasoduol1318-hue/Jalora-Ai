@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 import ctypes
+import sys
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import AIMessage
-from sqlalchemy import select
-
 from app.api import devices as devices_api
 from app.database.session import SessionLocal
-from app.errors import BadRequestError, ConflictError
+from app.errors import BadRequestError, ConflictError, ServiceUnavailableError
 from app.models.device import DeviceConnection, DeviceMessage
 from app.models.task import Task, TaskStep
 from app.models.user import utcnow
 from app.services import local_device_control
+from langchain_core.messages import AIMessage
+from sqlalchemy import select
 
 
 def _approve_direct_action(client, headers, response):
@@ -42,6 +43,37 @@ def _create_device(client, headers, scopes=None):
             "consent_confirmed": True,
         },
     )
+
+
+def test_start_menu_search_uses_installed_app_result_not_run_command_or_web():
+    app_result = SimpleNamespace(
+        element_info=SimpleNamespace(
+            control_type="ListItem",
+            automation_id="PP\ue000Notepad\ue001",
+        )
+    )
+    run_command = SimpleNamespace(
+        element_info=SimpleNamespace(
+            control_type="ListItem",
+            automation_id=r"C:\Windows\Notepad.exe",
+        )
+    )
+    web_result = SimpleNamespace(
+        element_info=SimpleNamespace(
+            control_type="ListItem",
+            automation_id="EP\ue000Notepad\ue001",
+        )
+    )
+    search_window = SimpleNamespace(
+        descendants=lambda: [run_command, web_result, app_result]
+    )
+
+    matches = local_device_control._matching_start_menu_app_results(
+        search_window,
+        " notepad ",
+    )
+
+    assert matches == [("Notepad", app_result)]
 
 
 def test_device_pairing_requires_consent_and_valid_scope(client, auth_headers):
@@ -684,7 +716,7 @@ def test_local_accessible_click_stops_when_password_field_is_visible(monkeypatch
     monkeypatch.setattr(
         local_device_control,
         "_foreground_app_window",
-        lambda _pid: (None, 55, None),
+        lambda _pid, _expected_hwnd=None: (None, 55, None),
     )
     monkeypatch.setattr(local_device_control, "_uia_window", lambda _pid, _hwnd: window)
 
@@ -765,6 +797,92 @@ def test_local_app_close_is_verified_only_after_process_exit(monkeypatch):
         assert ("owner", "app") not in local_device_control._launched_processes
 
 
+def test_packaged_app_frame_is_owned_only_when_launched_process_is_descendant(monkeypatch):
+    class FakeFunction:
+        def __init__(self, function):
+            self.function = function
+            self._argtypes = None
+
+        @property
+        def argtypes(self):
+            return self._argtypes
+
+        @argtypes.setter
+        def argtypes(self, value):
+            valid = all(
+                callable(getattr(arg_type, "from_param", None))
+                for arg_type in value
+            )
+            if not valid:
+                raise TypeError("Win32 argument types must be ctypes parameter types.")
+            self._argtypes = value
+
+        def __call__(self, *args):
+            return self.function(*args)
+
+    class FakeUser32:
+        def __init__(self):
+            self.process_ids = {100: 10, 101: 20, 102: 30}
+            self.children = {100: [101]}
+            self.GetForegroundWindow = FakeFunction(lambda: 100)
+            self.GetWindowThreadProcessId = FakeFunction(self.get_process_id)
+            self.EnumChildWindows = FakeFunction(self.enum_child_windows)
+            self.GetClientRect = FakeFunction(self.get_client_rect)
+
+        def get_process_id(self, hwnd, process_id):
+            process_id._obj.value = self.process_ids[int(hwnd)]
+            return 1
+
+        def enum_child_windows(self, hwnd, callback, parameter):
+            for child_hwnd in self.children.get(int(hwnd), []):
+                callback(child_hwnd, parameter)
+            return 1
+
+        @staticmethod
+        def get_client_rect(_hwnd, rect):
+            rect._obj.left = 0
+            rect._obj.top = 0
+            rect._obj.right = 640
+            rect._obj.bottom = 480
+            return 1
+
+    class FakeWindow:
+        @staticmethod
+        def exists(timeout):
+            return timeout == 1
+
+    class FakeDesktop:
+        @staticmethod
+        def window(handle):
+            assert handle == 100
+            return FakeWindow()
+
+    class FakePywinauto:
+        @staticmethod
+        def Desktop(backend):
+            assert backend == "uia"
+            return FakeDesktop()
+
+    user32 = FakeUser32()
+    monkeypatch.setattr(local_device_control.os, "name", "nt")
+    monkeypatch.setattr(
+        local_device_control.ctypes,
+        "WinDLL",
+        lambda *_args, **_kwargs: user32,
+        raising=False,
+    )
+    monkeypatch.setitem(sys.modules, "pywinauto", FakePywinauto)
+
+    _, hwnd, _ = local_device_control._foreground_app_window(20)
+    assert hwnd == 100
+    assert local_device_control._uia_window(20, hwnd) is not None
+
+    with pytest.raises(ConflictError, match="selected Jalora-launched app"):
+        local_device_control._foreground_app_window(30)
+    with pytest.raises(ServiceUnavailableError, match="Windows UI Automation could not inspect"):
+        local_device_control._uia_window(30, hwnd)
+
+
 def test_local_input_is_limited_to_foreground_owned_app(monkeypatch):
     class FakeProcess:
         pid = 1234
@@ -809,7 +927,7 @@ def test_local_input_is_limited_to_foreground_owned_app(monkeypatch):
     monkeypatch.setattr(
         local_device_control,
         "_foreground_app_window",
-        lambda _pid: (
+        lambda _pid, _expected_hwnd=None: (
             fake_user32,
             55,
             type(

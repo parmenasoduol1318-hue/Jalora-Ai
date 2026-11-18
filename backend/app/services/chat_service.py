@@ -1611,11 +1611,21 @@ async def execute_chat(
                 direct_tool_description = str(
                     direct_tool_call.get("description") or spec.description
                 )[:500]
+            direct_app_command = (
+                local_app_command(request_message)
+                if direct_tool_call is None
+                and not coding
+                and not media_ids
+                and not document_ids
+                else None
+            )
             # Per-user API keys (spec §provider-keys): decrypt and make them
             # visible to the router so providers with a user-supplied key are
             # auto-routable and the spec carries the correct key.
             _user_keys = (
-                {} if direct_tool_name else _load_user_provider_keys(prefs)
+                {}
+                if direct_tool_name or direct_app_command
+                else _load_user_provider_keys(prefs)
             )
             _ctx_token = set_active_user_keys(frozenset(_user_keys))
             set_active_user_key_values(_user_keys)
@@ -2312,7 +2322,7 @@ async def execute_chat(
             selected_model = model_override or prefs.get("model_name")
             disabled_providers = disabled_for_preferences(prefs)
             route: TaskRoute
-            if direct_tool_name:
+            if direct_tool_name or direct_app_command:
                 route = TaskRoute(
                     provider=ProviderSpec(
                         name="capability_executor",
@@ -2400,7 +2410,7 @@ async def execute_chat(
                 tool_names = sorted(set(tool_names) | {direct_tool_name, "update_plan"})
             fallback_models = (
                 []
-                if direct_tool_name
+                if direct_tool_name or direct_app_command
                 else _fallback_models_for_turn(
                     router,
                     route,
@@ -2411,11 +2421,6 @@ async def execute_chat(
                     selected_model=selected_model,
                     disabled=disabled_providers,
                 )
-            )
-            direct_app_command = (
-                local_app_command(request_message)
-                if not coding and not image_rows and not attached_documents
-                else None
             )
             direct_action: dict[str, str] | None = None
             graph_entry = "agent"
@@ -2502,7 +2507,9 @@ async def execute_chat(
                         else direct_app_name
                     ),
                     "action": direct_action_name,
+                    "execution_mode": "direct_tool",
                 }
+                tool_names = sorted(set(tool_names) | {direct_tool_name})
                 graph_entry = "tools"
 
             graph = build_graph(

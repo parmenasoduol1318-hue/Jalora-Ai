@@ -303,6 +303,11 @@ class ProviderKeyPatch(BaseModel):
     api_key: str = Field(min_length=1, max_length=512)
 
 
+class ProviderKeySourcePatch(BaseModel):
+    provider: str = Field(min_length=1, max_length=32)
+    source: Literal["developer", "user"]
+
+
 class ProviderKeyOut(BaseModel):
     provider: str
     url: str | None = None
@@ -343,6 +348,9 @@ class SettingsOut(BaseModel):
     disabled_providers: list[str] = Field(default_factory=list)
     enabled_local_providers: list[str] = Field(default_factory=list)
     provider_keys: list[str] = Field(default_factory=list)
+    provider_key_sources: dict[str, Literal["developer", "user"]] = Field(
+        default_factory=dict,
+    )
 
 
 # ---- memory ---------------------------------------------------------------

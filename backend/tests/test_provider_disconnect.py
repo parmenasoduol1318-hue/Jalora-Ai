@@ -6,7 +6,10 @@ the provider in the user's preferences so routing silently skips it.
 from __future__ import annotations
 
 from app.services.model_router import AUTO_PRIORITY
-from app.services.provider_state import PROVIDER_NAMES
+from app.services.provider_state import (
+    PROVIDER_NAMES,
+    selected_user_provider_keys,
+)
 
 
 def _auth_headers(client, email: str = "who@test.com"):
@@ -21,6 +24,18 @@ def test_provider_names_include_router_providers_and_workspace_agents():
     assert list(PROVIDER_NAMES[:-2]) == list(AUTO_PRIORITY)
     assert PROVIDER_NAMES[-2:] == ("copilot", "codex")
     assert "poolside" in PROVIDER_NAMES
+
+
+def test_selected_provider_keys_respect_credential_source_and_legacy_default():
+    keys = {"openai": "personal-openai", "groq": "personal-groq"}
+
+    assert selected_user_provider_keys(keys, {}) == keys
+    assert selected_user_provider_keys(keys, {
+        "provider_key_sources": {
+            "openai": "developer",
+            "groq": "user",
+        },
+    }) == {"groq": "personal-groq"}
 
 
 def test_nvidia_per_user_key_is_accepted_and_never_returned(client):
@@ -106,6 +121,85 @@ def test_google_and_groq_accept_personal_keys_without_exposing_them(client):
     assert not {"google", "groq"} & remaining
 
 
+def test_provider_key_source_switches_between_personal_and_developer_keys(
+    client, monkeypatch,
+):
+    from app.api import settings as settings_api
+    from app.api import system as system_api
+    from app.config import get_settings
+
+    settings = get_settings().model_copy(update={"openai_api_key": "developer-key"})
+    monkeypatch.setattr(settings_api, "get_settings", lambda: settings)
+    monkeypatch.setattr(system_api, "get_settings", lambda: settings)
+    headers = _auth_headers(client, "key-source@test.com")
+
+    saved = client.post(
+        "/api/settings/provider-key",
+        headers=headers,
+        json={"provider": "openai", "api_key": "personal-key"},
+    )
+    assert saved.status_code == 200, saved.text
+
+    status = client.get("/api/providers", headers=headers).json()["providers"]["openai"]
+    assert status["developer_key_available"] is True
+    assert status["has_user_key"] is True
+    assert status["credential_source"] == "user"
+
+    switched = client.patch(
+        "/api/settings/provider-key-source",
+        headers=headers,
+        json={"provider": "openai", "source": "developer"},
+    )
+    assert switched.status_code == 200, switched.text
+    assert switched.json()["credential_source"] == "developer"
+    assert "developer-key" not in switched.text
+
+    status = client.get("/api/providers", headers=headers).json()["providers"]["openai"]
+    assert status["credential_source"] == "developer"
+    assert status["usable"] is True
+
+    switched_back = client.patch(
+        "/api/settings/provider-key-source",
+        headers=headers,
+        json={"provider": "openai", "source": "user"},
+    )
+    assert switched_back.status_code == 200, switched_back.text
+    assert switched_back.json()["credential_source"] == "user"
+
+    removed = client.delete(
+        "/api/settings/provider-key/openai",
+        headers=headers,
+    )
+    assert removed.status_code == 200, removed.text
+    status = client.get("/api/providers", headers=headers).json()["providers"]["openai"]
+    assert status["has_user_key"] is False
+    assert status["credential_source"] == "developer"
+
+
+def test_provider_key_source_rejects_unavailable_credentials(client, monkeypatch):
+    from app.api import settings as settings_api
+    from app.config import Settings
+
+    monkeypatch.setattr(settings_api, "get_settings", lambda: Settings(_env_file=None))
+    headers = _auth_headers(client, "missing-key-source@test.com")
+
+    developer = client.patch(
+        "/api/settings/provider-key-source",
+        headers=headers,
+        json={"provider": "openai", "source": "developer"},
+    )
+    assert developer.status_code == 400
+    assert developer.json()["error"]["code"] == "DEVELOPER_KEY_NOT_CONFIGURED"
+
+    personal = client.patch(
+        "/api/settings/provider-key-source",
+        headers=headers,
+        json={"provider": "openai", "source": "user"},
+    )
+    assert personal.status_code == 400
+    assert personal.json()["error"]["code"] == "PERSONAL_KEY_NOT_CONFIGURED"
+
+
 def test_disconnect_reconnect_round_trip(client):
     headers = _auth_headers(client)
     resp = client.patch("/api/settings", headers=headers, json={
@@ -127,6 +221,8 @@ def test_disconnect_reconnect_round_trip(client):
     assert providers["providers"]["groq"]["disabled"] is True
     assert providers["providers"]["ollama"]["disabled"] is True
     assert providers["providers"]["ollama"]["usable"] is False
+    assert providers["providers"]["ollama"]["developer_key_available"] is False
+    assert providers["providers"]["ollama"]["credential_source"] is None
 
     resp2 = client.patch("/api/settings", headers=headers, json={
         "disabled_providers": [],

@@ -259,6 +259,8 @@ export interface AppSettings {
   enabled_local_providers?: string[];
   // Names of providers for which the user has stored a per-user API key.
   provider_keys?: string[];
+  // Selected credential source for providers that accept API keys.
+  provider_key_sources?: Record<string, "developer" | "user">;
   // LM Studio local provider configuration.
   lmstudio_base_url?: string;
   lmstudio_model?: string;
