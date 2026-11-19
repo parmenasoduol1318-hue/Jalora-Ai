@@ -6,7 +6,7 @@ type Device = {
   name: string;
   platform: string;
   status: string;
-  connectivity: "online" | "offline";
+  connectivity: "online" | "offline" | "unknown";
   scopes: string[];
   last_seen_at: string | null;
 };
@@ -509,7 +509,13 @@ export function DeviceAccessPanel({
           <div className="provider-row" key={device.id}>
             <div>
               <div className="name">
-                {device.name} · {device.platform} · {device.connectivity}
+                {device.name} · {device.platform} · {
+                  device.connectivity === "online"
+                    ? "online (recently reachable)"
+                    : device.connectivity === "offline"
+                      ? "offline (no recent contact)"
+                      : "unknown (awaiting first contact)"
+                }
               </div>
               <div className="model">
                 {device.status === "revoked" ? "revoked" : "paired"} · {(device.scopes || []).join(", ")}

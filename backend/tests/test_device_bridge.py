@@ -371,25 +371,31 @@ def test_device_connectivity_uses_recent_authenticated_heartbeat(
 
     listed = client.get("/api/devices", headers=user_headers)
     assert listed.status_code == 200, listed.text
-    assert listed.json()[0]["connectivity"] == "offline"
+    assert listed.json()[0]["connectivity"] == "unknown"
 
     heartbeat = client.post(
-        "/api/devices/inbox",
+        "/api/devices/heartbeat",
         headers=device_headers,
-        json={
-            "external_id": "heartbeat-message-1",
-            "source_app": "Messages",
-            "content": "Heartbeat",
-        },
     )
     assert heartbeat.status_code == 200, heartbeat.text
+    assert heartbeat.json()["status"] == "online"
+    assert heartbeat.json()["last_seen_at"] is not None
+    listed = client.get("/api/devices", headers=user_headers)
+    assert listed.json()[0]["connectivity"] == "online"
+    assert client.post("/api/devices/heartbeat").status_code == 401
+
+    with SessionLocal() as db:
+        row = db.get(DeviceConnection, device["id"])
+        assert row is not None
+        row.last_seen_at = utcnow() - timedelta(seconds=89)
+        db.commit()
     listed = client.get("/api/devices", headers=user_headers)
     assert listed.json()[0]["connectivity"] == "online"
 
     with SessionLocal() as db:
         row = db.get(DeviceConnection, device["id"])
         assert row is not None
-        row.last_seen_at = utcnow() - timedelta(seconds=31)
+        row.last_seen_at = utcnow() - timedelta(seconds=91)
         db.commit()
 
     listed = client.get("/api/devices", headers=user_headers)

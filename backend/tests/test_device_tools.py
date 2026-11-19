@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -113,10 +113,135 @@ async def test_open_local_app_uses_paired_android_when_backend_is_not_windows(mo
         "status": "pending",
         "app": "WhatsApp",
         "device_name": "My Android",
+        "device_connectivity": "online",
     }
     assert queued == [
         ("phone-1", "android.launcher.open", "", "android", "WhatsApp")
     ]
+
+
+@pytest.mark.parametrize(
+    ("last_seen_at", "connectivity"),
+    [
+        (None, "unknown"),
+        (datetime.now(timezone.utc) - timedelta(minutes=3), "offline"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_open_local_app_queues_for_one_paired_phone_without_recent_heartbeat(
+    monkeypatch, last_seen_at, connectivity
+):
+    device = SimpleNamespace(
+        id="phone-1",
+        name="My Android",
+        platform="android",
+        status="active",
+        scopes=["android.apps.launch"],
+        last_seen_at=last_seen_at,
+        capability_manifest={"applications": []},
+    )
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def scalars(self, _statement):
+            return SimpleNamespace(all=lambda: [device])
+
+    queued = []
+
+    async def queue_launch(device_id, action, app_id, *, platform, app_name):
+        queued.append((device_id, action, app_id, platform, app_name))
+        return device_tools.ToolResult.ok(
+            "Queued Android launch.",
+            {"command_id": "command-reconnect", "status": "pending"},
+        )
+
+    monkeypatch.setattr(device_tools.sys, "platform", "linux")
+    monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
+    monkeypatch.setattr(device_tools, "_request_remote_native_action", queue_launch)
+    set_tool_context(ToolContext(user_id="user-1"))
+    try:
+        result = await device_tools.open_local_app("WhatsApp")
+    finally:
+        set_tool_context(None)
+
+    assert result.success
+    assert result.data["device_connectivity"] == connectivity
+    assert "waiting for the paired phone to reconnect" in result.message
+    assert queued == [
+        ("phone-1", "android.launcher.open", "", "android", "WhatsApp")
+    ]
+
+
+@pytest.mark.parametrize(
+    "last_seen_at",
+    [None, datetime.now(timezone.utc) - timedelta(minutes=3)],
+)
+@pytest.mark.asyncio
+async def test_android_action_queue_does_not_reject_a_stale_heartbeat(
+    monkeypatch, last_seen_at
+):
+    device = SimpleNamespace(
+        id="phone-1",
+        user_id="user-1",
+        name="My Android",
+        platform="android",
+        status="active",
+        scopes=["android.apps.launch"],
+        last_seen_at=last_seen_at,
+    )
+    command = SimpleNamespace(
+        id="command-reconnect",
+        action="android.launcher.open",
+        status="pending",
+        protocol_status="queued",
+        task_id=None,
+        run_id=None,
+        task_step_id=None,
+    )
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, _model, _device_id):
+            return device
+
+        def commit(self):
+            pass
+
+        def refresh(self, _command):
+            pass
+
+    def queue_command(_db, **kwargs):
+        assert kwargs["device"] is device
+        assert kwargs["action"] == "android.launcher.open"
+        return command, False
+
+    monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
+    monkeypatch.setattr(device_tools, "queue_device_command", queue_command)
+    set_tool_context(ToolContext(user_id="user-1"))
+    try:
+        result = await device_tools._request_remote_native_action(
+            "phone-1",
+            "android.launcher.open",
+            "",
+            platform="android",
+            app_name="WhatsApp",
+        )
+    finally:
+        set_tool_context(None)
+
+    assert result.success
+    assert result.data["command_id"] == "command-reconnect"
+    assert result.data["protocol_status"] == "queued"
 
 
 @pytest.mark.asyncio

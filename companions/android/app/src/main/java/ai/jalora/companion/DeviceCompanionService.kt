@@ -17,6 +17,7 @@ class DeviceCompanionService : Service() {
     private val running = AtomicBoolean(false)
     private val paused = AtomicBoolean(false)
     private var worker: Thread? = null
+    private var heartbeatWorker: Thread? = null
     @Volatile private var accessToken = ""
     @Volatile private var accessTokenExpiry = 0L
 
@@ -50,14 +51,59 @@ class DeviceCompanionService : Service() {
             isDaemon = true
             start()
         }
+        heartbeatWorker = Thread(::heartbeatLoop, "jalora-android-heartbeat").apply {
+            isDaemon = true
+            start()
+        }
     }
 
     private fun stopConnection() {
         running.set(false)
         paused.set(false)
         worker?.interrupt()
+        heartbeatWorker?.interrupt()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun heartbeatLoop() {
+        var failures = 0
+        while (running.get()) {
+            try {
+                val state = SecureStore.read(this)
+                if (state == null) {
+                    Thread.sleep(HEARTBEAT_RETRY_BASE_MS)
+                    continue
+                }
+                CompanionApi.request(
+                    state.getString("api_origin"),
+                    "/api/devices/heartbeat",
+                    "POST",
+                    token = state.getString("device_token"),
+                    body = JSONObject(),
+                )
+                failures = 0
+            } catch (error: InterruptedException) {
+                if (!running.get()) return
+            } catch (error: Exception) {
+                failures = (failures + 1).coerceAtMost(5)
+                updateStatus(
+                    "Heartbeat failed; reconnecting: ${error.message ?: error.javaClass.simpleName}",
+                )
+            }
+
+            val retryDelay = if (failures == 0) {
+                HEARTBEAT_INTERVAL_MS
+            } else {
+                (HEARTBEAT_RETRY_BASE_MS * (1L shl (failures - 1)))
+                    .coerceAtMost(HEARTBEAT_MAX_RETRY_MS)
+            }
+            try {
+                Thread.sleep(retryDelay)
+            } catch (error: InterruptedException) {
+                if (!running.get()) return
+            }
+        }
     }
 
     private fun connectionLoop() {
@@ -120,6 +166,7 @@ class DeviceCompanionService : Service() {
             }
         } finally {
             running.set(false)
+            heartbeatWorker?.interrupt()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
@@ -392,6 +439,7 @@ class DeviceCompanionService : Service() {
     override fun onDestroy() {
         running.set(false)
         worker?.interrupt()
+        heartbeatWorker?.interrupt()
         super.onDestroy()
     }
 
@@ -403,5 +451,8 @@ class DeviceCompanionService : Service() {
         private const val STATUS_CHANNEL = "jalora_status"
         private const val NOTIFICATION_ID = 7412
         private const val RETRY_DELAY_MS = 2500L
+        private const val HEARTBEAT_INTERVAL_MS = 15_000L
+        private const val HEARTBEAT_RETRY_BASE_MS = 2500L
+        private const val HEARTBEAT_MAX_RETRY_MS = 30_000L
     }
 }

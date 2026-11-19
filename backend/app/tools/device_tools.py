@@ -32,6 +32,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy import select
 
 logger = logging.getLogger("jalora.device_tools")
+ANDROID_DEVICE_ONLINE_WINDOW = timedelta(seconds=90)
 
 
 async def discover_available_device_capabilities() -> ToolResult:
@@ -111,10 +112,10 @@ async def _open_android_app(app_name: str) -> ToolResult:
             "Pair your Android phone in Integrations, then try again.",
         )
 
-    now = datetime.now(timezone.utc)
     authorized_devices = []
     online_devices = []
-    offline_authorized_device = False
+    connectivity_by_id = {}
+    now = datetime.now(timezone.utc)
     for device in devices:
         if "android.apps.launch" not in (device.scopes or []):
             continue
@@ -122,9 +123,13 @@ async def _open_android_app(app_name: str) -> ToolResult:
         last_seen = device.last_seen_at
         if last_seen is not None and last_seen.tzinfo is None:
             last_seen = last_seen.replace(tzinfo=timezone.utc)
-        if last_seen is None or last_seen < now - timedelta(seconds=30):
-            offline_authorized_device = True
+        if last_seen is None:
+            connectivity_by_id[device.id] = "unknown"
             continue
+        if last_seen < now - ANDROID_DEVICE_ONLINE_WINDOW:
+            connectivity_by_id[device.id] = "offline"
+            continue
+        connectivity_by_id[device.id] = "online"
         online_devices.append(device)
 
     if len(online_devices) > 1:
@@ -134,26 +139,25 @@ async def _open_android_app(app_name: str) -> ToolResult:
             f"More than one paired phone is available for opening '{validated_name}' "
             f"({device_names}). Specify the phone in your request and retry.",
         )
-    if not online_devices:
-        if offline_authorized_device:
-            return ToolResult.fail(
-                "ANDROID_DEVICE_OFFLINE",
-                f"The paired phone is offline. Reconnect it and try opening "
-                f"'{validated_name}' again.",
-            )
-        if authorized_devices:
-            return ToolResult.fail(
-                "ANDROID_DEVICE_OFFLINE",
-                "The paired Android phone has not checked in recently. Reconnect it "
-                "and try again.",
-            )
+    if online_devices:
+        device = online_devices[0]
+    elif len(authorized_devices) == 1:
+        device = authorized_devices[0]
+    elif authorized_devices:
+        device_names = ", ".join(sorted(device.name for device in authorized_devices))
+        return ToolResult.fail(
+            "ANDROID_DEVICE_AMBIGUOUS",
+            "No paired phone has a recent connection. Specify which phone should "
+            f"receive '{validated_name}' ({device_names}).",
+        )
+    else:
         return ToolResult.fail(
             "ANDROID_SCOPE_REQUIRED",
             "The paired phone was not granted app-launch permission. Update its "
             "pairing scopes before Jalora can open apps.",
         )
 
-    device = online_devices[0]
+    connectivity = connectivity_by_id[device.id]
     result = await _request_remote_native_action(
         device.id,
         "android.launcher.open",
@@ -163,13 +167,24 @@ async def _open_android_app(app_name: str) -> ToolResult:
     )
     if not result.success:
         return result
+    if connectivity == "online":
+        message = (
+            f"Searching the Android launcher for '{validated_name}' on {device.name}; "
+            "completion is confirmed after the phone reports its result."
+        )
+    else:
+        message = (
+            f"Queued the request to open '{validated_name}' on {device.name}; "
+            "waiting for the paired phone to reconnect. This is not complete until "
+            "the phone reports a verified result."
+        )
     return ToolResult.ok(
-        f"Searching the Android launcher for '{validated_name}' on {device.name}; "
-        "completion is confirmed after the phone reports its result.",
+        message,
         {
             **result.data,
             "app": validated_name,
             "device_name": device.name,
+            "device_connectivity": connectivity,
         },
     )
 
@@ -514,19 +529,20 @@ async def _request_remote_native_action(
                 f"{platform.upper()}_DEVICE_NOT_AVAILABLE",
                 f"The requested active paired {platform.title()} companion was not found.",
             )
-        last_seen = device.last_seen_at
-        if last_seen is None:
-            return ToolResult.fail(
-                f"{platform.upper()}_DEVICE_OFFLINE",
-                f"The {platform.title()} companion has not checked in.",
-            )
-        if last_seen.tzinfo is None:
-            last_seen = last_seen.replace(tzinfo=timezone.utc)
-        if last_seen < datetime.now(timezone.utc) - timedelta(seconds=30):
-            return ToolResult.fail(
-                f"{platform.upper()}_DEVICE_OFFLINE",
-                f"The {platform.title()} companion is currently offline.",
-            )
+        if platform == "windows":
+            last_seen = device.last_seen_at
+            if last_seen is None:
+                return ToolResult.fail(
+                    "WINDOWS_DEVICE_OFFLINE",
+                    "The Windows companion has not checked in.",
+                )
+            if last_seen.tzinfo is None:
+                last_seen = last_seen.replace(tzinfo=timezone.utc)
+            if last_seen < datetime.now(timezone.utc) - timedelta(seconds=30):
+                return ToolResult.fail(
+                    "WINDOWS_DEVICE_OFFLINE",
+                    "The Windows companion is currently offline.",
+                )
 
         arguments: dict[str, Any] = {"app_id": app_id} if app_id else {}
         if action == "android.launcher.open":

@@ -66,7 +66,7 @@ DEVICE_SCOPES = frozenset(
     }
 )
 PAIR_REQUEST_TTL = timedelta(minutes=10)
-DEVICE_ONLINE_WINDOW = timedelta(seconds=30)
+DEVICE_ONLINE_WINDOW = timedelta(seconds=90)
 DEVICE_SCOPE_LABELS = {
     "messages.read": "Read message notifications",
     "messages.draft": "Prepare editable reply drafts",
@@ -226,13 +226,14 @@ def _token_digest(token: str) -> str:
 
 def _device_out(device: DeviceConnection) -> dict:
     last_seen_at = device.last_seen_at
-    connectivity = (
-        "online"
-        if device.status == "active"
-        and last_seen_at is not None
-        and not _timestamp_is_expired(last_seen_at + DEVICE_ONLINE_WINDOW)
-        else "offline"
-    )
+    if device.status != "active":
+        connectivity = "offline"
+    elif last_seen_at is None:
+        connectivity = "unknown"
+    elif _timestamp_is_expired(last_seen_at + DEVICE_ONLINE_WINDOW):
+        connectivity = "offline"
+    else:
+        connectivity = "online"
     return {
         "id": device.id,
         "name": device.name,
@@ -535,6 +536,21 @@ def _authenticate_protocol_device(
     device.last_seen_at = utcnow()
     db.commit()
     return device
+
+
+@router.post("/heartbeat")
+def heartbeat(
+    response: Response,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Record an authenticated companion heartbeat independently of command polling."""
+    response.headers["Cache-Control"] = "no-store, private"
+    device = _authenticate_device(authorization, db)
+    return {
+        "status": "online",
+        "last_seen_at": device.last_seen_at,
+    }
 
 
 @router.get("/scopes", dependencies=[Depends(get_current_user)])

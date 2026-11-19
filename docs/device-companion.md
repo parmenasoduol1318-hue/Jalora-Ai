@@ -158,6 +158,15 @@ credential remains revocable and must be kept private; protocol requests use
 the short-lived access token. Device revocation is checked against the database
 on each protocol request and invalidates outstanding access tokens.
 
+The Android foreground companion also sends an authenticated heartbeat every
+15 seconds using its paired-device credential, independently of command
+long-polling. Temporary heartbeat failures are retried with bounded backoff.
+Jalora considers a device online after a recent authenticated contact (within
+90 seconds), offline after that window expires, and unknown until the first
+contact. This reports reachability to Jalora's backend, not general phone
+internet access. Android battery, force-stop, and manufacturer background
+policies can still interrupt the service.
+
 The device long-polls `GET /api/devices/protocol/v1/commands`; the bounded
 `wait_seconds` query parameter defaults to 20 seconds and accepts 0–25 seconds.
 The response contains
