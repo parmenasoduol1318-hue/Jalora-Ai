@@ -62,6 +62,82 @@ def test_native_scroll_requires_scoped_target_and_bounded_direction(platform):
         _normalized_command(action, arguments, device)
 
 
+def test_android_visual_actions_validate_directions_and_control_targets():
+    device = SimpleNamespace(
+        platform="android",
+        scopes=["android.screen.control", "android.screen.read"],
+        capability_manifest={"applications": []},
+    )
+
+    scope, swipe = _normalized_command(
+        "android.screen.swipe",
+        {"direction": "left"},
+        device,
+    )
+    assert scope == "android.screen.control"
+    assert swipe == {"direction": "left"}
+    for direction in ("diagonal", None, ["left"]):
+        with pytest.raises(DeviceProtocolError, match="direction"):
+            _normalized_command(
+                "android.screen.swipe",
+                {"direction": direction},
+                device,
+            )
+
+    scope, long_press = _normalized_command(
+        "android.screen.long_press",
+        {"name": "More options"},
+        device,
+    )
+    assert scope == "android.screen.control"
+    assert long_press == {"name": "More options"}
+    for action in (
+        "android.screen.notifications",
+        "android.screen.quick_settings",
+        "android.screen.app_switcher",
+    ):
+        scope, arguments = _normalized_command(action, {}, device)
+        assert scope == "android.screen.control"
+        assert arguments == {}
+
+    scope, arguments = _normalized_command(
+        "android.screen.key",
+        {"key": "Enter"},
+        device,
+    )
+    assert scope == "android.screen.control"
+    assert arguments == {"key": "Enter"}
+    with pytest.raises(DeviceProtocolError, match="Enter"):
+        _normalized_command(
+            "android.screen.key",
+            {"key": "Delete"},
+            device,
+        )
+
+    scope, arguments = _normalized_command(
+        "android.screen.set_brightness",
+        {"name": "Brightness", "percentage": 35},
+        device,
+    )
+    assert scope == "android.screen.control"
+    assert arguments == {
+        "name": "Brightness",
+        "percentage": 35,
+    }
+    with pytest.raises(DeviceProtocolError, match="brightness"):
+        _normalized_command(
+            "android.screen.set_brightness",
+            {"name": "Volume", "percentage": 35},
+            device,
+        )
+    with pytest.raises(DeviceProtocolError, match="percentage"):
+        _normalized_command(
+            "android.screen.set_brightness",
+            {"name": "Brightness", "percentage": 101},
+            device,
+        )
+
+
 def _approved_device(client, owner_headers):
     pair_response = client.post(
         "/api/devices/pair-requests",

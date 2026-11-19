@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/api";
+import { approvalDescription } from "../lib/approvalDescription";
 import { errorMessage } from "../lib/errors";
 import type { ChatResponse, Task, TaskApproval, TaskStep } from "../lib/types";
 
@@ -251,6 +252,10 @@ export function TaskExecutionDetails({
       {approvals.map((approval) => {
         const pending = approval.status === "pending";
         const actionable = pending && approval.claim_status === "unclaimed";
+        const description = approvalDescription(
+          approval.tool_name,
+          approval.arguments,
+        );
         const draftIsDirty = approval.can_edit
           && drafts[approval.id] !== JSON.stringify(approval.arguments, null, 2);
         return (
@@ -259,6 +264,7 @@ export function TaskExecutionDetails({
               <strong>{approval.tool_name}</strong>
               <span className={`badge ${pending ? "warn" : ""}`}>{approval.status}</span>
             </div>
+            {description && <p className="approval-description">{description}</p>}
             <p className="muted small">
               {t("taskApprovalReview")} · {t("taskApprovalLevel")} {approval.level}
             </p>

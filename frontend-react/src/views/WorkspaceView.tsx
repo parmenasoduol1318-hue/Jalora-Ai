@@ -11,6 +11,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, exportProject, uploadWorkspaceFiles } from "../lib/api";
+import { approvalDescription } from "../lib/approvalDescription";
 import { errorMessage, friendlyError } from "../lib/errors";
 import { streamAgent } from "../lib/sse";
 import { toolDetailText } from "../lib/toolDetail";
@@ -990,6 +991,11 @@ export function WorkspaceView({ t, onToast, onOpenRun }: Props) {
         <div className="approval-banner">
           <div className="approval-banner-info">
             <span>⏳ <strong>{approval.tool_name}</strong> {t("approvalBanner")}</span>
+            {approvalDescription(approval.tool_name, approval.arguments) && (
+              <p className="muted small">
+                {approvalDescription(approval.tool_name, approval.arguments)}
+              </p>
+            )}
             <p className="muted small">
               {t("taskApprovalReview")} · {t("taskApprovalLevel")} {approval.level}
             </p>
@@ -1289,6 +1295,11 @@ export function WorkspaceView({ t, onToast, onOpenRun }: Props) {
               <div className="approval-banner">
                 <div className="approval-banner-info">
                   <span>⏳ <strong>{approval.tool_name}</strong> {t("approvalBanner")}</span>
+                  {approvalDescription(approval.tool_name, approval.arguments) && (
+                    <p className="muted small">
+                      {approvalDescription(approval.tool_name, approval.arguments)}
+                    </p>
+                  )}
                   <p className="muted small">
                     {t("taskApprovalReview")} · {t("taskApprovalLevel")} {approval.level}
                   </p>

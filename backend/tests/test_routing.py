@@ -1102,6 +1102,37 @@ def test_local_app_open_uses_paired_android_tool_on_non_windows_backend(monkeypa
     assert "open_local_app" not in (routing.tool_names or [])
 
 
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "Open my Instagram",
+        "Open Facebook and check my notifications",
+        "Open Gmail and summarise unread emails",
+        "Open my browser and search for the weather",
+    ],
+)
+def test_common_mobile_app_requests_route_to_android_with_separate_follow_up(
+    monkeypatch, request_text
+):
+    monkeypatch.setattr(routing_module.sys, "platform", "win32")
+
+    routing = route_request(request_text)
+
+    assert "remote_device_control" in routing.signals
+    assert "open_paired_android_app" in (routing.tool_names or [])
+    assert "request_remote_android_action" in (routing.tool_names or [])
+    assert "open_local_app" not in (routing.tool_names or [])
+
+
+def test_android_app_launch_parser_routes_unfamiliar_app_to_visual_search(monkeypatch):
+    monkeypatch.setattr(routing_module.sys, "platform", "linux")
+
+    routing = route_request("Open my unfamiliar time-tracking app")
+
+    assert "remote_device_control" in routing.signals
+    assert "open_paired_android_app" in (routing.tool_names or [])
+
+
 def test_whatsapp_launch_uses_paired_android_tool_on_windows(monkeypatch):
     monkeypatch.setattr(routing_module.sys, "platform", "win32")
 

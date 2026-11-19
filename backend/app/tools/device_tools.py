@@ -21,6 +21,7 @@ from app.models.device import (
 )
 from app.models.user import User
 from app.services import local_device_control
+from app.services.device_intent import resolve_app_launch_target
 from app.services.device_command_protocol import (
     DeviceIdempotencyConflict,
     DeviceProtocolError,
@@ -91,10 +92,23 @@ def _local_app_identity(app_name: str) -> tuple[str, str] | ToolResult:
     return app_id, validated_name
 
 
-async def _open_android_app(app_name: str) -> ToolResult:
-    validated_name = _validated_app_name(app_name)
+async def _open_android_app(
+    app_name: str,
+    follow_up_request: str = "",
+) -> ToolResult:
+    launch_request = resolve_app_launch_target(app_name)
+    if launch_request is None:
+        return ToolResult.fail(
+            "INVALID_APP_NAME",
+            "Pass a specific application name, not an unrelated task or instruction.",
+        )
+    validated_name = _validated_app_name(launch_request.app_name)
     if isinstance(validated_name, ToolResult):
         return validated_name
+    follow_up = (
+        follow_up_request.strip()
+        or launch_request.follow_up
+    )
     context = get_tool_context()
     with SessionLocal() as db:
         devices = db.scalars(
@@ -164,6 +178,7 @@ async def _open_android_app(app_name: str) -> ToolResult:
         "",
         platform="android",
         app_name=validated_name,
+        follow_up_request=follow_up,
     )
     if not result.success:
         return result
@@ -178,15 +193,21 @@ async def _open_android_app(app_name: str) -> ToolResult:
             "waiting for the paired phone to reconnect. This is not complete until "
             "the phone reports a verified result."
         )
-    return ToolResult.ok(
-        message,
-        {
-            **result.data,
-            "app": validated_name,
-            "device_name": device.name,
-            "device_connectivity": connectivity,
-        },
-    )
+    if follow_up:
+        message += (
+            f" The remaining requested action is: {follow_up}. Continue by inspecting "
+            "the verified screen after this launch; opening the app alone does not "
+            "complete the full request."
+        )
+    result_data = {
+        **result.data,
+        "app": validated_name,
+        "device_name": device.name,
+        "device_connectivity": connectivity,
+    }
+    if follow_up:
+        result_data["follow_up_request"] = follow_up
+    return ToolResult.ok(message, result_data)
 
 
 def _run_local_app_action(
@@ -212,23 +233,44 @@ def _run_local_app_action(
     )
 
 
-async def open_local_app(app_name: str) -> ToolResult:
+async def open_local_app(
+    app_name: str,
+    follow_up_request: str = "",
+) -> ToolResult:
     """Open an app on this Windows computer or a paired Android phone.
 
     Windows uses visible Start-menu search. A non-Windows backend uses the
     user's paired Android phone, whose pairing grant covers installed apps.
     """
+    launch_request = resolve_app_launch_target(app_name)
+    if launch_request is None:
+        return ToolResult.fail(
+            "INVALID_APP_NAME",
+            "Pass a specific application name, not an unrelated task or instruction.",
+        )
+    display_name = launch_request.app_name
+    follow_up = follow_up_request.strip() or launch_request.follow_up
     if sys.platform != "win32":
-        return await _open_android_app(app_name)
-    return _run_local_app_action(
-        app_name,
+        return await _open_android_app(display_name, follow_up)
+    result = _run_local_app_action(
+        display_name,
         local_device_control.launch_app_from_start_menu,
     )
+    if result.success and follow_up:
+        result.message += (
+            f" The remaining requested action is: {follow_up}. Continue by inspecting "
+            "the launched app; opening it alone does not complete the full request."
+        )
+        result.data["follow_up_request"] = follow_up
+    return result
 
 
-async def open_paired_android_app(app_name: str) -> ToolResult:
+async def open_paired_android_app(
+    app_name: str,
+    follow_up_request: str = "",
+) -> ToolResult:
     """Find and open an Android app from the paired phone's launcher UI."""
-    return await _open_android_app(app_name)
+    return await _open_android_app(app_name, follow_up_request)
 
 
 async def open_registered_local_app(
@@ -508,8 +550,10 @@ async def _request_remote_native_action(
     *,
     platform: Literal["windows", "android"],
     app_name: str = "",
+    follow_up_request: str = "",
     x: int | None = None,
     y: int | None = None,
+    progress: int | None = None,
 ) -> ToolResult:
     """Queue one scoped operation for an explicitly paired native device.
 
@@ -544,27 +588,67 @@ async def _request_remote_native_action(
                     "The Windows companion is currently offline.",
                 )
 
-        arguments: dict[str, Any] = {"app_id": app_id} if app_id else {}
+        launch_request = None
+        app_arguments = {"app_id": app_id} if app_id else {}
         if action == "android.launcher.open":
-            arguments = {"app_name": app_name}
+            launch_request = resolve_app_launch_target(app_name)
+            if launch_request is None:
+                return ToolResult.fail(
+                    "INVALID_APP_NAME",
+                    "Pass a specific application name, not an unrelated task or instruction.",
+                )
+            arguments: dict[str, Any] = {
+                "app_name": launch_request.app_name,
+            }
         elif action == "android.screen.tap":
-            arguments.update({"x": x, "y": y})
+            arguments = {**app_arguments, "x": x, "y": y}
+        elif action == "android.screen.swipe":
+            arguments = {**app_arguments, "direction": direction}
+        elif action == "android.screen.long_press":
+            arguments = {
+                **app_arguments,
+                "name": name,
+                "automation_id": automation_id,
+            }
+        elif action == "android.screen.key":
+            arguments = {**app_arguments, "key": key}
+        elif action == "android.screen.set_brightness":
+            arguments = {
+                **app_arguments,
+                "name": name,
+                "automation_id": automation_id,
+                "percentage": progress,
+            }
+        elif action in {
+            "android.screen.notifications",
+            "android.screen.quick_settings",
+            "android.screen.app_switcher",
+        }:
+            arguments = app_arguments
         elif action in {"windows.screen.click", "android.screen.click"}:
-            arguments.update({"name": name, "automation_id": automation_id})
+            arguments = {
+                **app_arguments,
+                "name": name,
+                "automation_id": automation_id,
+            }
         elif action in {"windows.screen.scroll", "android.screen.scroll"}:
-            arguments.update({
+            arguments = {
+                **app_arguments,
                 "name": name,
                 "automation_id": automation_id,
                 "direction": direction,
-            })
+            }
         elif action in {"windows.screen.type", "android.screen.type"}:
-            arguments.update({
+            arguments = {
+                **app_arguments,
                 "text": text,
                 "name": name,
                 "automation_id": automation_id,
-            })
+            }
         elif action == "windows.screen.key":
-            arguments["key"] = key
+            arguments = {"key": key}
+        else:
+            arguments = {"app_id": app_id} if app_id else {}
         try:
             command, already_queued = queue_device_command(
                 db,
@@ -582,7 +666,27 @@ async def _request_remote_native_action(
             db.rollback()
             return ToolResult.fail("DEVICE_COMMAND_INVALID", str(exc))
         db.refresh(command)
+        resolved_follow_up = (
+            follow_up_request.strip()
+            or (launch_request.follow_up if launch_request is not None else "")
+        )
         target_approval_required = platform == "windows"
+        result_data = {
+            "command_id": command.id,
+            "device_id": device.id,
+            "device_name": device.name,
+            "action": command.action,
+            "app_id": app_id,
+            "status": command.status,
+            "protocol_status": command.protocol_status,
+            "task_id": command.task_id,
+            "run_id": command.run_id,
+            "task_step_id": command.task_step_id,
+            "already_queued": already_queued,
+            "target_approval_required": target_approval_required,
+        }
+        if resolved_follow_up:
+            result_data["follow_up_request"] = resolved_follow_up
         return ToolResult.ok(
             (
                 f"Queued '{action}' for '{device.name}'. The paired Android scope "
@@ -593,20 +697,7 @@ async def _request_remote_native_action(
                 "approve it locally; completion is not confirmed until the device "
                 "reports its result."
             ),
-            {
-                "command_id": command.id,
-                "device_id": device.id,
-                "device_name": device.name,
-                "action": command.action,
-                "app_id": app_id,
-                "status": command.status,
-                "protocol_status": command.protocol_status,
-                "task_id": command.task_id,
-                "run_id": command.run_id,
-                "task_step_id": command.task_step_id,
-                "already_queued": already_queued,
-                "target_approval_required": target_approval_required,
-            },
+            result_data,
         )
 
 
@@ -652,19 +743,29 @@ async def request_remote_android_action(
         "android.launcher.open",
         "android.screen.inspect",
         "android.screen.back",
+        "android.screen.notifications",
+        "android.screen.quick_settings",
+        "android.screen.app_switcher",
+        "android.screen.key",
+        "android.screen.set_brightness",
         "android.screen.click",
+        "android.screen.long_press",
         "android.screen.tap",
         "android.screen.scroll",
+        "android.screen.swipe",
         "android.screen.type",
     ],
     app_id: str = "",
     name: str = "",
     automation_id: str = "",
     text: str = "",
-    direction: Literal["up", "down"] = "down",
+    direction: Literal["up", "down", "left", "right"] = "down",
     app_name: str = "",
+    follow_up_request: str = "",
     x: int | None = None,
     y: int | None = None,
+    key: Literal["Enter"] = "Enter",
+    progress: int | None = None,
 ) -> ToolResult:
     """Queue an Android action authorized by the phone's pairing scopes."""
     return await _request_remote_native_action(
@@ -677,8 +778,11 @@ async def request_remote_android_action(
         direction=direction,
         platform="android",
         app_name=app_name,
+        follow_up_request=follow_up_request,
         x=x,
         y=y,
+        key=key,
+        progress=progress,
     )
 
 

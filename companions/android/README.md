@@ -65,10 +65,16 @@ Reading requires `android.screen.read`; clicking, scrolling, typing, and
 coordinate tapping also require `android.screen.control`. Inspection reports
 at most 24 accessibility controls and 16 on-device OCR text bounds from a
 bounded accessibility-tree scan. OCR uses an in-memory screenshot on Android
-11+; the image is not uploaded or stored. Older Android versions, secure
-windows, and unavailable screenshot capture still return accessibility data
-with an explicit OCR-unavailable status. When OCR detects authentication
-fields, screenshot OCR is redacted.
+11+, and the companion also sends a downscaled, size-limited JPEG snapshot with
+the command receipt. Jalora stores that image in paired-device task evidence
+and supplies the latest screen image to the task model through the existing
+image-modality route; the model also receives structured OCR and accessibility
+controls. Grant `android.screen.read` only if you consent to sending visible
+screen content to your Jalora backend and configured model provider. Older
+Android versions, secure windows, and unavailable screenshot capture still
+return accessibility data with an explicit OCR-unavailable status. When OCR
+detects authentication fields, screenshot OCR and screenshot transfer are
+redacted.
 
 Named clicks require one exact accessible control. If no scrollable control is
 available, scrolling uses a bounded screen swipe. Coordinate taps are supported
@@ -78,6 +84,14 @@ Jalora must inspect that receipt before selecting the next action. Sensitive
 named controls, app-permission grants, and all coordinate taps require Jalora's
 explicit confirmation before the phone command is queued. Other scope-covered
 navigation and reading do not require an extra phone-side approval.
+
+Back navigation, app switching, notifications, and Quick Settings use Android
+global actions. Screen swipes support all four directions. Long-press uses an
+accessible action with a bounded coordinate-gesture fallback. Enter is sent
+only to the focused accessible control and requires Jalora approval because it
+can submit content. Brightness adjustment is available when Android exposes a
+visible accessible brightness slider with a settable range; the selected
+percentage is checked against the refreshed slider value.
 
 Back navigation is an Android global-back action. It is reported as verified
 only when the foreground app remains active and the accessibility tree changes.
@@ -109,6 +123,15 @@ well as disconnecting locally.
 The Android source implementation and mocked backend protocol tests cover
 manifest-independent launcher commands, active-screen inspection, OCR
 evidence, coordinate taps, sequential delivery, and sensitive-action approval.
-This environment has no JDK, Gradle, Android SDK, emulator, or physical Android
-target, so the APK has not been built or device-tested here. Do not treat source
-presence or a successful backend test as Android release acceptance.
+The development environment has no JDK, Gradle, Android SDK, emulator, or
+physical Android target, so the APK has not been built or device-tested here.
+On Windows, install Android Studio with JDK 17, Android SDK Platform 35, and
+Android Build Tools 35; connect an unlocked phone with USB debugging enabled
+and accept its debugging prompt. Run `adb devices -l` and confirm the phone is
+listed as `device`, open `companions/android` in Android Studio and sync Gradle,
+then run `gradle assembleDebug` and
+`adb install -r app/build/outputs/apk/debug/app-debug.apk` from that project
+directory. Pair the app with Jalora, grant the requested screen scopes, enable
+the Accessibility Service, and leave the companion foreground service running
+with its Android notification. Do not treat source presence or a successful
+backend test as Android release acceptance.

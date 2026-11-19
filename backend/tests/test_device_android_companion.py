@@ -1,5 +1,8 @@
 import asyncio
+import base64
 from urllib.parse import parse_qs, urlsplit
+
+from langchain_core.messages import HumanMessage
 
 from app.context import ToolContext, bind_tool_execution
 from app.database.session import SessionLocal
@@ -336,6 +339,15 @@ def test_android_companion_uses_pairing_scopes_and_receipt_lifecycle(
     fake_router.script.append(AIMessage(
         content="The device inspection shows one accessible Continue button."
     ))
+    screenshot = base64.b64encode(b"\xff\xd8\xff\xd9").decode("ascii")
+    original_route = fake_router.route
+    route_calls = []
+
+    def record_route(**kwargs):
+        route_calls.append(kwargs)
+        return original_route(**kwargs)
+
+    monkeypatch.setattr(fake_router, "route", record_route)
     original_resume_run = chat_service.resume_run
 
     async def defer_resume(**_kwargs):
@@ -359,6 +371,7 @@ def test_android_companion_uses_pairing_scopes_and_receipt_lifecycle(
                 },
                 "screen_ocr_text": "Continue",
                 "screen_ocr_status": "available",
+                "screen_image_base64": screenshot,
                 "accessible_controls": [{
                     "name": "Continue",
                     "control_type": "Button",
@@ -389,6 +402,7 @@ def test_android_companion_uses_pairing_scopes_and_receipt_lifecycle(
                 },
                 "screen_ocr_text": "Continue",
                 "screen_ocr_status": "available",
+                "screen_image_base64": screenshot,
                 "accessible_controls": [{
                     "name": "Continue",
                     "control_type": "Button",
@@ -406,6 +420,20 @@ def test_android_companion_uses_pairing_scopes_and_receipt_lifecycle(
     )
     assert retry.json()["task_resume"]["reply"] == (
         "The device inspection shows one accessible Continue button."
+    )
+    assert route_calls[-1]["modality"] == "image"
+    assert any(
+        isinstance(message, HumanMessage)
+        and isinstance(message.content, list)
+        and any(
+            isinstance(block, dict)
+            and block.get("type") == "image_url"
+            and block.get("image_url", {}).get("url")
+            == f"data:image/jpeg;base64,{screenshot}"
+            for block in message.content
+        )
+        for invocation in fake_router.tape
+        for message in invocation
     )
     task_detail = client.get(f"/api/tasks/{context.task_id}", headers=owner_headers)
     assert task_detail.status_code == 200, task_detail.text
@@ -689,9 +717,21 @@ def test_android_coordinate_and_permission_controls_are_sensitive():
         "android.screen.click",
         {"name": "Send message"},
     )
+    assert android_action_requires_user_approval(
+        "android.screen.long_press",
+        {"name": "Delete conversation"},
+    )
+    assert not android_action_requires_user_approval(
+        "android.screen.long_press",
+        {"name": "Open conversation"},
+    )
     assert not android_action_requires_user_approval(
         "android.screen.click",
         {"name": "Chats"},
+    )
+    assert android_action_requires_user_approval(
+        "android.screen.key",
+        {"key": "Enter"},
     )
 
 

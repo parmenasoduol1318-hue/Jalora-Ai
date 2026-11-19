@@ -332,6 +332,7 @@ def _recover_capability_rejected_sends(
 from sqlalchemy.orm import Session
 
 from app.agents.graph import (
+    android_screen_image_base64,
     _model_outage_message,
     _parse_tool_result,
     build_graph,
@@ -3036,8 +3037,14 @@ async def _continue_from_state(
             reason="canonical direct capability",
         )
     else:
+        screen_modality = (
+            "image"
+            if android_screen_image_base64(state.get("messages", []))
+            else "text"
+        )
         route = router.route(
             message=resume_goal,
+            modality=screen_modality,
             provider_override=selected_provider,
             model_override=selected_model,
             disabled=disabled_providers,
@@ -3086,7 +3093,7 @@ async def _continue_from_state(
                 router,
                 route,
                 message=resume_goal,
-                modality="text",
+                modality=screen_modality,
                 intent=state.get("intent", ""),
                 provider_locked=bool(state.get("provider_locked")),
                 selected_model=selected_model,

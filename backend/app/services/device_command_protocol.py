@@ -1,6 +1,7 @@
 """Versioned, idempotent command delivery for outbound device companions."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -41,9 +42,16 @@ _OPERATION_SCOPES = {
     "android.launcher.open": "android.apps.launch",
     "android.screen.inspect": "android.screen.read",
     "android.screen.back": "android.screen.control",
+    "android.screen.notifications": "android.screen.control",
+    "android.screen.quick_settings": "android.screen.control",
+    "android.screen.app_switcher": "android.screen.control",
+    "android.screen.key": "android.screen.control",
+    "android.screen.set_brightness": "android.screen.control",
     "android.screen.click": "android.screen.control",
+    "android.screen.long_press": "android.screen.control",
     "android.screen.tap": "android.screen.control",
     "android.screen.scroll": "android.screen.control",
+    "android.screen.swipe": "android.screen.control",
     "android.screen.type": "android.screen.control",
 }
 _RECEIPT_STATUSES = {"succeeded", "failed", "uncertain"}
@@ -61,7 +69,9 @@ _EVIDENCE_KEYS = {
     "screen_ocr_text",
     "screen_ocr_status",
     "screen_ocr_reason",
+    "screen_image_base64",
 }
+MAX_SCREEN_IMAGE_BASE64_CHARS = 48_000
 _SENSITIVE_ANDROID_CONTROL = re.compile(
     r"\b(send|delete|remove|clear|empty|pay|purchase|buy|transfer|post|"
     r"publish|share|submit|confirm|order|checkout|place\s+order|allow|grant|"
@@ -83,9 +93,11 @@ def android_action_requires_user_approval(
     arguments: dict[str, Any],
 ) -> bool:
     """Require confirmation for coordinate taps and sensitive named controls."""
+    if action == "android.screen.key" and arguments.get("key") == "Enter":
+        return True
     if action == "android.screen.tap":
         return True
-    if action == "android.screen.click":
+    if action in {"android.screen.click", "android.screen.long_press"}:
         target = " ".join(
             value
             for value in (arguments.get("name"), arguments.get("automation_id"))
@@ -147,11 +159,65 @@ def _normalize_android_screen_command(
     safe_arguments: dict[str, Any] = {}
     if app_id:
         safe_arguments["app_id"] = app_id
-    if action in {"android.screen.inspect", "android.screen.back"}:
+    if action in {
+        "android.screen.inspect",
+        "android.screen.back",
+        "android.screen.notifications",
+        "android.screen.quick_settings",
+        "android.screen.app_switcher",
+    }:
         if set(arguments) - {"app_id"}:
             raise DeviceProtocolError(
                 "The Android screen command has unexpected arguments."
             )
+        return _OPERATION_SCOPES[action], safe_arguments
+    if action == "android.screen.swipe":
+        if set(arguments) - {"app_id", "direction"}:
+            raise DeviceProtocolError(
+                "The Android swipe command has unexpected arguments."
+            )
+        direction = arguments.get("direction")
+        if not isinstance(direction, str) or direction not in {
+            "up", "down", "left", "right"
+        }:
+            raise DeviceProtocolError(
+                "The Android swipe direction must be up, down, left, or right."
+            )
+        safe_arguments["direction"] = direction
+        return _OPERATION_SCOPES[action], safe_arguments
+    if action == "android.screen.key":
+        if set(arguments) - {"app_id", "key"} or arguments.get("key") != "Enter":
+            raise DeviceProtocolError(
+                "The Android keyboard action only supports the Enter key."
+            )
+        safe_arguments["key"] = "Enter"
+        return _OPERATION_SCOPES[action], safe_arguments
+    if action == "android.screen.set_brightness":
+        name = arguments.get("name", "")
+        automation_id = arguments.get("automation_id", "")
+        percentage = arguments.get("percentage")
+        if (
+            set(arguments) - {"app_id", "name", "automation_id", "percentage"}
+            or not isinstance(name, str)
+            or len(name) > 300
+            or not isinstance(automation_id, str)
+            or len(automation_id) > 200
+            or not re.search(
+                r"\bbrightness\b",
+                f"{name} {automation_id}".replace("_", " "),
+                re.IGNORECASE,
+            )
+            or not isinstance(percentage, int)
+            or isinstance(percentage, bool)
+            or not 0 <= percentage <= 100
+        ):
+            raise DeviceProtocolError(
+                "Brightness adjustment requires a brightness control and a percentage from 0 to 100."
+            )
+        safe_arguments["name"] = name.strip()
+        if automation_id.strip():
+            safe_arguments["automation_id"] = automation_id.strip()
+        safe_arguments["percentage"] = percentage
         return _OPERATION_SCOPES[action], safe_arguments
     if action == "android.screen.tap":
         if set(arguments) - {"app_id", "x", "y"}:
@@ -172,7 +238,11 @@ def _normalize_android_screen_command(
         return _OPERATION_SCOPES[action], safe_arguments
 
     is_scroll = action == "android.screen.scroll"
-    if action in {"android.screen.click", "android.screen.scroll"}:
+    if action in {
+        "android.screen.click",
+        "android.screen.long_press",
+        "android.screen.scroll",
+    }:
         allowed_arguments = {"app_id", "name", "automation_id"}
         if is_scroll:
             allowed_arguments.add("direction")
@@ -348,9 +418,16 @@ def _normalized_command(
         "android.app.launch": "application.launch",
         "android.screen.inspect": "screen.accessibility.inspect",
         "android.screen.back": "screen.control",
+        "android.screen.notifications": "screen.control",
+        "android.screen.quick_settings": "screen.control",
+        "android.screen.app_switcher": "screen.control",
+        "android.screen.key": "screen.control",
+        "android.screen.set_brightness": "screen.control",
         "android.screen.click": "screen.control",
+        "android.screen.long_press": "screen.control",
         "android.screen.tap": "screen.control",
         "android.screen.scroll": "screen.control",
+        "android.screen.swipe": "screen.control",
         "android.screen.type": "screen.control",
     }.get(action)
     if capability is None or capability not in app.get("capabilities", []):
@@ -362,9 +439,16 @@ def _normalized_command(
         "windows.screen.key",
         "android.screen.click",
         "android.screen.tap",
+        "android.screen.long_press",
         "android.screen.scroll",
+        "android.screen.swipe",
         "android.screen.type",
         "android.screen.back",
+        "android.screen.notifications",
+        "android.screen.quick_settings",
+        "android.screen.app_switcher",
+        "android.screen.key",
+        "android.screen.set_brightness",
     } and (
         f"{platform}.screen.read" not in (device.scopes or [])
         or "screen.accessibility.inspect" not in app.get("capabilities", [])
@@ -482,6 +566,8 @@ def _expected_evidence(action: str) -> list[str]:
         expected.append("screen_ocr_text")
         expected.append("screen_ocr_status")
         expected.append("screen_ocr_reason")
+    if action.startswith("android.screen.") or action == "android.launcher.open":
+        expected.append("screen_image_base64")
     return expected
 
 
@@ -643,9 +729,16 @@ def claim_device_commands(
             "android.launcher.open",
             "android.screen.inspect",
             "android.screen.back",
+            "android.screen.notifications",
+            "android.screen.quick_settings",
+            "android.screen.app_switcher",
+            "android.screen.key",
+            "android.screen.set_brightness",
             "android.screen.click",
+            "android.screen.long_press",
             "android.screen.tap",
             "android.screen.scroll",
+            "android.screen.swipe",
             "android.screen.type",
         )
     else:
@@ -1032,9 +1125,32 @@ def _normalize_receipt(
         "screen_ocr_text",
         "screen_ocr_status",
         "screen_ocr_reason",
+        "screen_image_base64",
     ):
         if key in evidence and key not in expected:
             raise DeviceProtocolError("The operation evidence was not requested.")
+    if "screen_image_base64" in evidence:
+        image = evidence["screen_image_base64"]
+        if (
+            not isinstance(image, str)
+            or not image
+            or len(image) > MAX_SCREEN_IMAGE_BASE64_CHARS
+        ):
+            raise DeviceProtocolError("The Android screenshot payload is invalid.")
+        try:
+            image_bytes = base64.b64decode(image, validate=True)
+        except ValueError as exc:
+            raise DeviceProtocolError(
+                "The Android screenshot payload is not valid base64."
+            ) from exc
+        if (
+            len(image_bytes) > MAX_SCREEN_IMAGE_BASE64_CHARS * 3 // 4
+            or not image_bytes.startswith(b"\xff\xd8")
+            or not image_bytes.endswith(b"\xff\xd9")
+        ):
+            raise DeviceProtocolError(
+                "The Android screenshot must be a bounded JPEG image."
+            )
     if command.action.startswith(("windows.", "android.")) and status == "succeeded":
         if not isinstance(evidence.get("operation_result"), dict):
             raise DeviceProtocolError("A successful native receipt needs an operation result.")

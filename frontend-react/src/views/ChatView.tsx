@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { api, clearToken, getToken, ApiError, listIdeaProjects, transcribeAudio, uploadDocument, uploadEmailAttachment, uploadMedia, mediaUrl } from "../lib/api";
+import { approvalDescription } from "../lib/approvalDescription";
 import { errorMessage, friendlyError } from "../lib/errors";
 import { resolveTimeZone } from "../lib/timezone";
 import { toolDetailText } from "../lib/toolDetail";
@@ -1826,6 +1827,11 @@ export function ChatView({
                 </span>
               )}
             </span>
+            {approvalDescription(approval.tool_name, approval.arguments) && (
+              <p className="muted small">
+                {approvalDescription(approval.tool_name, approval.arguments)}
+              </p>
+            )}
             <span>
               {approval.run_id && onOpenRun && (
                 <button

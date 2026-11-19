@@ -91,8 +91,12 @@ async def test_open_local_app_uses_paired_android_when_backend_is_not_windows(mo
 
     queued = []
 
-    async def queue_launch(device_id, action, app_id, *, platform, app_name):
-        queued.append((device_id, action, app_id, platform, app_name))
+    async def queue_launch(
+        device_id, action, app_id, *, platform, app_name, follow_up_request=""
+    ):
+        queued.append(
+            (device_id, action, app_id, platform, app_name, follow_up_request)
+        )
         return device_tools.ToolResult.ok(
             "Queued Android launch.",
             {"command_id": "command-1", "status": "pending"},
@@ -103,7 +107,9 @@ async def test_open_local_app_uses_paired_android_when_backend_is_not_windows(mo
     monkeypatch.setattr(device_tools, "_request_remote_native_action", queue_launch)
     set_tool_context(ToolContext(user_id="user-1"))
     try:
-        result = await device_tools.open_local_app("WhatsApp")
+        result = await device_tools.open_local_app(
+            "Open my WhatsApp and tell me who sent unread messages"
+        )
     finally:
         set_tool_context(None)
 
@@ -114,9 +120,17 @@ async def test_open_local_app_uses_paired_android_when_backend_is_not_windows(mo
         "app": "WhatsApp",
         "device_name": "My Android",
         "device_connectivity": "online",
+        "follow_up_request": "tell me who sent unread messages",
     }
     assert queued == [
-        ("phone-1", "android.launcher.open", "", "android", "WhatsApp")
+        (
+            "phone-1",
+            "android.launcher.open",
+            "",
+            "android",
+            "WhatsApp",
+            "tell me who sent unread messages",
+        )
     ]
 
 
@@ -153,8 +167,12 @@ async def test_open_local_app_queues_for_one_paired_phone_without_recent_heartbe
 
     queued = []
 
-    async def queue_launch(device_id, action, app_id, *, platform, app_name):
-        queued.append((device_id, action, app_id, platform, app_name))
+    async def queue_launch(
+        device_id, action, app_id, *, platform, app_name, follow_up_request=""
+    ):
+        queued.append(
+            (device_id, action, app_id, platform, app_name, follow_up_request)
+        )
         return device_tools.ToolResult.ok(
             "Queued Android launch.",
             {"command_id": "command-reconnect", "status": "pending"},
@@ -173,7 +191,7 @@ async def test_open_local_app_queues_for_one_paired_phone_without_recent_heartbe
     assert result.data["device_connectivity"] == connectivity
     assert "waiting for the paired phone to reconnect" in result.message
     assert queued == [
-        ("phone-1", "android.launcher.open", "", "android", "WhatsApp")
+        ("phone-1", "android.launcher.open", "", "android", "WhatsApp", "")
     ]
 
 
@@ -268,8 +286,12 @@ async def test_open_local_app_searches_launcher_without_manifest_match(monkeypat
 
     queued = []
 
-    async def queue_launch(device_id, action, app_id, *, platform, app_name):
-        queued.append((device_id, action, app_id, platform, app_name))
+    async def queue_launch(
+        device_id, action, app_id, *, platform, app_name, follow_up_request=""
+    ):
+        queued.append(
+            (device_id, action, app_id, platform, app_name, follow_up_request)
+        )
         return device_tools.ToolResult.ok(
             "Queued Android launcher search.",
             {"command_id": "command-2", "status": "pending"},
@@ -287,7 +309,7 @@ async def test_open_local_app_searches_launcher_without_manifest_match(monkeypat
     assert result.success
     assert result.data["app"] == "WhatsApp"
     assert queued == [
-        ("phone-1", "android.launcher.open", "", "android", "WhatsApp")
+        ("phone-1", "android.launcher.open", "", "android", "WhatsApp", "")
     ]
 
 

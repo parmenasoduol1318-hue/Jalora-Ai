@@ -11,15 +11,12 @@ from app.agents.intent import (
     explicitly_requests_email_send,
     has_multiple_outreach_recipients,
 )
+from app.services.device_intent import (
+    is_common_mobile_app_name,
+    parse_app_launch_request,
+)
 from app.tools.base import PermissionLevel, registry, task_action_terms
 
-_LOCAL_APP_OPEN_COMMAND = re.compile(
-    r"^\s*(?:(?:hey\s+)?jalora[, ]+)?(?:please\s+)?"
-    r"(?:open|launch|start)\s+(?:the\s+)?"
-    r"(?P<app>[\w][\w .&'()-]{0,118}?)"
-    r"(?:\s+app(?:lication)?)?[.!?]?\s*$",
-    re.I,
-)
 _LOCAL_APP_CLOSE_COMMAND = re.compile(
     r"^\s*(?:(?:hey\s+)?jalora[, ]+)?(?:please\s+)?"
     r"(?:close|quit|exit)\s+(?:the\s+)?"
@@ -64,7 +61,6 @@ _MOBILE_DEVICE_ACTION = re.compile(
     re.I,
 )
 _ANDROID_DEVICE_TARGET = re.compile(r"\b(?:android|phone|tablet|mobile)\b", re.I)
-_ANDROID_APP_TARGET = re.compile(r"\bwhatsapp\b", re.I)
 _IOS_DEVICE_TARGET = re.compile(r"\b(?:iphone|ipad|ios)\b", re.I)
 _WINDOWS_DEVICE_TARGET = re.compile(
     r"\b(?:windows|pc|desktop|laptop|computer)\b", re.I
@@ -118,13 +114,13 @@ def local_app_open_target(text: str) -> str | None:
 def local_app_command(text: str) -> tuple[str, str] | None:
     """Return one exact launch or graceful-close request for a named app."""
     value = text or ""
-    match = _LOCAL_APP_OPEN_COMMAND.fullmatch(value)
-    action = "open"
-    if match is None:
-        match = _LOCAL_APP_CLOSE_COMMAND.fullmatch(value)
-        action = "close"
+    launch = parse_app_launch_request(value)
+    if launch is not None and not launch.follow_up:
+        return "open", launch.app_name
+    match = _LOCAL_APP_CLOSE_COMMAND.fullmatch(value)
     if match is None:
         return None
+    action = "close"
     app_name = re.sub(r"\s+", " ", match.group("app")).strip()
     if (
         not app_name
@@ -204,9 +200,14 @@ def route_request(
         _WINDOWS_COMPANION_REQUEST.search(request_text)
         and _WINDOWS_DEVICE_ACTION.search(request_text)
     )
-    android_app_request = (
-        _ANDROID_APP_TARGET.search(request_text)
-        and re.search(r"\b(?:open|launch|start|use)\b", request_text, re.I)
+    app_launch_request = parse_app_launch_request(request_text)
+    android_app_request = bool(
+        app_launch_request
+        and (
+            sys.platform != "win32"
+            or is_common_mobile_app_name(app_launch_request.app_name)
+            or _ANDROID_DEVICE_TARGET.search(request_text)
+        )
     )
     remote_device_request = (
         _REMOTE_DEVICE_REQUEST.search(request_text)
@@ -229,7 +230,7 @@ def route_request(
             tool_name = "close_local_app"
         elif app_name.casefold() in {"youtube", "youtube.com"}:
             tool_name = "open_youtube"
-        elif sys.platform != "win32" or _ANDROID_APP_TARGET.search(app_name):
+        elif sys.platform != "win32" or is_common_mobile_app_name(app_name):
             tool_name = "open_paired_android_app"
         else:
             tool_name = "open_local_app"
