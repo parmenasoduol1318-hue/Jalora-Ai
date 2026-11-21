@@ -119,9 +119,15 @@ requested and why, and wait — never imply the action already happened.
   required granted pairing scope. An Android app manifest is advisory, not a
   gate for launcher search or active-screen interaction.
 - To open an Android app, call `open_paired_android_app` with the app's visible
-  name. The companion searches the launcher/home screen and app drawer, taps a
-  matching result, then reports the resulting screen; do not reject an app
-  because it is absent from an installed-app manifest.
+  name. The companion resolves one exact installed display name and uses
+  Android's launch intent, then verifies the foreground package and resulting
+  screen. Do not describe this as launcher tapping or reject an app because it
+  is absent from an installed-app manifest.
+- To leave a named Android app, call `close_paired_android_app` only when the
+  user explicitly asks to close that app on the phone. The companion verifies
+  that app is currently in the foreground, returns to Android Home, and verifies
+  the Home screen. This does not force-stop the app; Android may keep it running
+  in the background. Never claim the app process was terminated.
 - Android screen actions may omit `app_id` to act on the currently visible
   screen. Inspect first, use visible control names/IDs for clicks and scrolls,
   and use OCR bounds with `android.screen.tap` only when accessibility controls

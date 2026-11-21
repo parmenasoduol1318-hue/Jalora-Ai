@@ -312,6 +312,21 @@ def test_exact_local_app_close_routes_to_confirmed_close_tool():
     assert "open_local_app" not in (routing.tool_names or [])
 
 
+def test_android_app_close_routes_to_verified_home_navigation():
+    request = "Close WhatsApp on my Android phone"
+    routing = route_request(request)
+
+    assert local_app_command(request) == ("close", "WhatsApp")
+    assert "remote_device_control" in routing.signals
+    assert "request_remote_android_action" in (routing.tool_names or [])
+    assert "close_paired_android_app" in (routing.tool_names or [])
+    assert "close_local_app" not in (routing.tool_names or [])
+    assert direct_app_command_for_route(
+        local_app_command(request),
+        routing,
+    ) == ("close", "WhatsApp")
+
+
 def test_attached_document_turn_always_discovers_document_reader():
     names = set(route_request(
         "Extract the key dates from the attached contract.",

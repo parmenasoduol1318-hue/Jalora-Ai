@@ -35,7 +35,7 @@ conversation turns.
 When Jalora's backend is not running on Windows, an exact Chat or Agent Tasks
 request such as `open WhatsApp` can use one online paired Android companion
 instead. The companion resolves the requested visible app name to a unique
-installed launcher package and starts Android's launch activity; it does not
+installed package and starts Android's launch activity; it does not
 depend on launcher UI search or injected input. An installed-app manifest is
 not required for launch. The pairing must grant the relevant scopes, and Jalora
 reports completion only after the companion verifies the foreground package
@@ -43,6 +43,11 @@ and returns fresh screen evidence. Reading and controlling the Android screen
 still requires the owner to enable Android's Accessibility Service in system
 settings. If multiple paired phones are online, specify the target phone.
 iPhone app launching is not supported by this companion.
+
+An explicit Android request to close a named app returns the phone to Home only
+after verifying that app is in the foreground and confirming the resulting Home
+screen. This is graceful navigation, not a force-stop; Android may keep the app
+running in the background. Android force-stop is unsupported.
 
 Requests that explicitly target a Windows laptop, computer, or desktop are
 routed through live device-capability discovery. The agent can choose an
@@ -180,8 +185,11 @@ idempotency key, expected evidence, and delivery lease. Protocol v1 allows
 `windows.screen.click`, `windows.screen.scroll`, `windows.screen.type`, and
 `windows.screen.key`), and
 bounded Android operations (`android.app.launch`, `android.screen.inspect`,
-`android.launcher.open`, `android.screen.back`, `android.screen.click`,
-`android.screen.tap`, `android.screen.scroll`, and `android.screen.type`).
+`android.launcher.open`, `android.screen.back`, `android.screen.notifications`,
+`android.screen.quick_settings`, `android.screen.app_switcher`,
+`android.screen.home`, `android.screen.key`, `android.screen.set_brightness`,
+`android.screen.click`, `android.screen.long_press`, `android.screen.tap`,
+`android.screen.scroll`, `android.screen.swipe`, and `android.screen.type`).
 Android clients receive at most one command per poll so tasks targeting a phone
 cannot concurrently control its screen. Browser clients poll with
 the default `client_type=browser`; native clients use `client_type=windows` or

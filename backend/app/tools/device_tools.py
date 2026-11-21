@@ -37,6 +37,8 @@ logger = logging.getLogger("jalora.device_tools")
 ANDROID_DEVICE_ONLINE_WINDOW = timedelta(seconds=90)
 ANDROID_LAUNCH_RECEIPT_TIMEOUT_SECONDS = 35.0
 ANDROID_LAUNCH_RECEIPT_POLL_SECONDS = 0.5
+ANDROID_HOME_RECEIPT_TIMEOUT_SECONDS = 20.0
+ANDROID_HOME_RECEIPT_POLL_SECONDS = 0.5
 
 
 async def discover_available_device_capabilities() -> ToolResult:
@@ -163,6 +165,63 @@ async def _await_android_launch_receipt(
         logger.info("Android app-launch receipt verified by the paired phone.")
         return ToolResult.ok(
             f"The phone verified {expected_app_name} is in the foreground.",
+            data,
+        )
+
+
+async def _await_android_home_receipt(
+    command_id: str,
+    expected_app_name: str,
+) -> ToolResult:
+    deadline = (
+        asyncio.get_running_loop().time()
+        + ANDROID_HOME_RECEIPT_TIMEOUT_SECONDS
+    )
+    while True:
+        result = await get_remote_device_action_status(command_id)
+        if not result.success:
+            return result
+        data = result.data
+        protocol_status = data.get("protocol_status")
+        if protocol_status in {"queued", "delivered", "running"}:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return ToolResult.fail(
+                    "ANDROID_ACTION_PENDING",
+                    f"The phone has not confirmed leaving {expected_app_name}. "
+                    "The action may still be running; check its status before retrying.",
+                    data=data,
+                )
+            await asyncio.sleep(
+                min(ANDROID_HOME_RECEIPT_POLL_SECONDS, remaining)
+            )
+            continue
+        evidence = data.get("evidence")
+        operation_result = (
+            evidence.get("operation_result")
+            if isinstance(evidence, dict)
+            else None
+        )
+        if (
+            protocol_status != "succeeded"
+            or data.get("receipt_status") != "succeeded"
+            or not isinstance(operation_result, dict)
+            or operation_result.get("status") != "home_opened"
+            or operation_result.get("verified") is not True
+        ):
+            logger.warning(
+                "Android Home command ended without verified screen evidence "
+                "(protocol_status=%s).",
+                protocol_status if isinstance(protocol_status, str) else "unknown",
+            )
+            return ToolResult.fail(
+                "ANDROID_HOME_UNVERIFIED",
+                f"The phone did not verify that it returned Home from {expected_app_name}.",
+                data=data,
+            )
+        return ToolResult.ok(
+            f"The phone verified it returned to Home from {expected_app_name}. "
+            "Android may keep the app running in the background.",
             data,
         )
 
@@ -375,6 +434,87 @@ async def open_paired_android_app(
 ) -> ToolResult:
     """Find and open an Android app from the paired phone's launcher UI."""
     return await _open_android_app(app_name, follow_up_request)
+
+
+async def close_paired_android_app(app_name: str) -> ToolResult:
+    """Leave a named foreground Android app without force-stopping it."""
+    launch_request = resolve_app_launch_target(app_name)
+    if launch_request is None or launch_request.follow_up:
+        return ToolResult.fail(
+            "INVALID_APP_NAME",
+            "Pass only the displayed name of one Android app to leave.",
+        )
+    validated_name = _validated_app_name(launch_request.app_name)
+    if isinstance(validated_name, ToolResult):
+        return validated_name
+    context = get_tool_context()
+    with SessionLocal() as db:
+        devices = db.scalars(
+            select(DeviceConnection).where(
+                DeviceConnection.user_id == context.user_id,
+                DeviceConnection.platform == "android",
+                DeviceConnection.status == "active",
+            )
+        ).all()
+    authorized = [
+        device for device in devices
+        if {
+            "android.screen.control",
+            "android.screen.read",
+        }.issubset(set(device.scopes or []))
+    ]
+    now = datetime.now(timezone.utc)
+    online = []
+    for device in authorized:
+        last_seen = device.last_seen_at
+        if last_seen is not None and last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=timezone.utc)
+        if (
+            last_seen is not None
+            and last_seen >= now - ANDROID_DEVICE_ONLINE_WINDOW
+        ):
+            online.append(device)
+    if len(online) > 1:
+        return ToolResult.fail(
+            "ANDROID_DEVICE_AMBIGUOUS",
+            "More than one paired phone is online. Specify which phone to use.",
+        )
+    if not online:
+        if not authorized:
+            return ToolResult.fail(
+                "ANDROID_SCOPE_REQUIRED",
+                "The paired phone needs both screen-control and screen-read permission.",
+            )
+        return ToolResult.fail(
+            "ANDROID_DEVICE_OFFLINE",
+            "No authorized paired Android phone has sent a recent heartbeat.",
+        )
+    device = online[0]
+    queued = await _request_remote_native_action(
+        device.id,
+        "android.screen.home",
+        "",
+        platform="android",
+        app_name=validated_name,
+    )
+    if not queued.success:
+        return queued
+    command_id = queued.data.get("command_id")
+    if not isinstance(command_id, str) or not command_id:
+        return ToolResult.fail(
+            "ANDROID_HOME_UNVERIFIED",
+            "The Home request was queued without a command ID, so its result "
+            "cannot be verified.",
+            data=queued.data,
+        )
+    result = await _await_android_home_receipt(command_id, validated_name)
+    if not result.success:
+        return result
+    return ToolResult.ok(
+        f"Returned the paired phone to Home from {validated_name}. Android may "
+        "keep the app running in the background; it was not force-stopped.",
+        result.data,
+    )
 
 
 async def open_registered_local_app(
@@ -723,6 +863,8 @@ async def _request_remote_native_action(
                 "automation_id": automation_id,
                 "percentage": progress,
             }
+        elif action == "android.screen.home":
+            arguments = {"app_name": app_name}
         elif action in {
             "android.screen.notifications",
             "android.screen.quick_settings",
@@ -850,6 +992,7 @@ async def request_remote_android_action(
         "android.screen.notifications",
         "android.screen.quick_settings",
         "android.screen.app_switcher",
+        "android.screen.home",
         "android.screen.key",
         "android.screen.set_brightness",
         "android.screen.click",
@@ -1186,6 +1329,14 @@ registry.register(
     tags=["remote_device", "android", "application", "launch"],
     side_effect="external",
     required_signals=["local_app_control"],
+)
+registry.register(
+    close_paired_android_app,
+    permission=PermissionLevel.AUTO,
+    category="device_control",
+    tags=["remote_device", "android", "application", "navigation"],
+    side_effect="external",
+    required_signals=["remote_device_control"],
 )
 
 registry.register(

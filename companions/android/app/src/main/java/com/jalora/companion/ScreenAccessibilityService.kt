@@ -307,6 +307,7 @@ class ScreenAccessibilityService : AccessibilityService() {
                     GLOBAL_ACTION_RECENTS,
                     "app_switcher",
                 )
+                "android.screen.home" -> goHome(root, arguments)
                 "android.screen.key" -> pressKey(root, arguments)
                 "android.screen.set_brightness" -> setBrightness(root, arguments)
                 "android.screen.click" -> click(root, arguments)
@@ -405,6 +406,47 @@ class ScreenAccessibilityService : AccessibilityService() {
                 screenOcr.imageBase64?.let {
                     result.evidence.put("screen_image_base64", it)
                 }
+        }
+    }
+
+    private fun goHome(root: AccessibilityNodeInfo, arguments: JSONObject): ActionResult {
+        val appName = arguments.optString("app_name").trim()
+        val expectedPackage = matchingLauncherPackage(appName)
+            ?: return ActionResult.failed(
+                "ANDROID_APP_NOT_FOUND",
+                "The requested foreground app could not be matched to one installed app.",
+            )
+        if (root.packageName?.toString() != expectedPackage) {
+            return ActionResult.failed(
+                "ANDROID_FOREGROUND_APP_CHANGED",
+                "The requested app is not in the foreground. Jalora stopped without navigating away.",
+            )
+        }
+        val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val homePackage = packageManager.resolveActivity(
+            homeIntent,
+            PackageManager.MATCH_DEFAULT_ONLY,
+        )?.activityInfo?.packageName
+            ?: return ActionResult.failed(
+                "ANDROID_HOME_UNAVAILABLE",
+                "Android did not expose a Home screen activity.",
+            )
+        if (root.packageName?.toString() == homePackage) {
+            return ActionResult.succeeded("home_opened", verified = true)
+        }
+        if (!performGlobalAction(GLOBAL_ACTION_HOME)) {
+            return ActionResult.failed(
+                "ANDROID_HOME_ACTION_REJECTED",
+                "Android rejected the request to return to the Home screen.",
+            )
+        }
+        return if (waitForForegroundPackage(homePackage)) {
+            ActionResult.succeeded("home_opened", verified = true)
+        } else {
+            ActionResult.uncertain(
+                "ANDROID_HOME_UNVERIFIED",
+                "Android accepted the Home action, but the Home screen was not verified.",
+            )
         }
     }
 
@@ -1326,6 +1368,7 @@ class ScreenAccessibilityService : AccessibilityService() {
             "android.screen.swipe",
             "android.screen.type",
             "android.screen.key",
+            "android.screen.home",
         )
         private val AUTHENTICATION_LABEL_PATTERN = Regex(
             """\b(pin|m[- ]?pin|passcode|password|one[- ]time|otp|verification code|security code)\b""",

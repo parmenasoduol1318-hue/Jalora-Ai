@@ -24,6 +24,14 @@ _LOCAL_APP_CLOSE_COMMAND = re.compile(
     r"(?:\s+app(?:lication)?)?[.!?]?\s*$",
     re.I,
 )
+_APP_DEVICE_SUFFIX = re.compile(
+    r"\s+(?:on|in|using|through)\s+"
+    r"(?:(?:my|the|another|paired|connected|remote)\s+){0,2}"
+    r"(?:(?:android|mobile|windows)\s+)?"
+    r"(?:phone|tablet|device|android|iphone|ipad|ios|computer|laptop|"
+    r"pc|desktop|windows)\s*$",
+    re.I,
+)
 _GENERIC_LOCAL_APP_COMMAND = re.compile(
     r"^\s*(?:please\s+)?(?:open|launch|start)\s+"
     r"(?:(?:any|all|an?|the)\s+)?apps?(?:lication)?[.!?]?\s*$",
@@ -41,9 +49,11 @@ _REMOTE_DEVICE_REQUEST = re.compile(
     r"(?:(?:my|the|another|paired|remote)\s+){0,2}"
     r"(?:(?:android|iphone)\s+)?(?:phone|tablet|device|android|iphone|"
     r"computer|laptop|windows|pc|desktop)\b"
-    r".{0,180}\b(?:youtube|song|video|play|search|open|visit|browse|go to)\b"
+    r".{0,180}\b(?:youtube|song|video|play|search|open|visit|browse|go to|"
+    r"close|quit|exit)\b"
     r"|"
-    r"\b(?:open|visit|browse|go to|play|search|launch|start)\b.{0,120}"
+    r"\b(?:open|visit|browse|go to|play|search|launch|start|"
+    r"close|quit|exit)\b.{0,120}"
     r"\b(?:youtube|song|video|link|website|site|url|app|application)\b"
     r".{0,100}\b(?:on|to|using)\s+"
     r"(?:(?:my|the|another|paired|remote)\s+){0,2}"
@@ -51,7 +61,8 @@ _REMOTE_DEVICE_REQUEST = re.compile(
     re.I,
 )
 _MOBILE_DEVICE_ACTION = re.compile(
-    r"\b(?:open|launch|start|use|check|inspect|read|look at|click|tap|type|"
+    r"\b(?:open|launch|start|close|quit|exit|use|check|inspect|read|look at|"
+    r"click|tap|type|"
     r"search|play|browse|go to|scroll|fill|select|write|create|send|reply|"
     r"post|upload|update|save|delete|share)\b"
     r".{0,180}\b(?:on|in|from|using|through)\s+"
@@ -122,6 +133,7 @@ def local_app_command(text: str) -> tuple[str, str] | None:
         return None
     action = "close"
     app_name = re.sub(r"\s+", " ", match.group("app")).strip()
+    app_name = _APP_DEVICE_SUFFIX.sub("", app_name).strip()
     if (
         not app_name
         or app_name.casefold() in _NON_APP_TARGETS
@@ -176,11 +188,16 @@ def direct_app_command_for_route(
     command: tuple[str, str] | None,
     routing: IntentRouting,
 ) -> tuple[str, str] | None:
-    """Allow only recognized mobile launches through the remote direct path."""
+    """Allow exact mobile launches and Android Home navigation directly."""
     if command is None or "remote_device_control" not in routing.signals:
         return command
     action, app_name = command
     if action == "open" and is_common_mobile_app_name(app_name):
+        return command
+    if (
+        action == "close"
+        and "request_remote_android_action" in (routing.tool_names or [])
+    ):
         return command
     return None
 
@@ -330,6 +347,13 @@ def route_request(
             and registry.get("request_remote_android_action") is not None
         ):
             selected.add("request_remote_android_action")
+            app_command = local_app_command(request_text)
+            if (
+                app_command is not None
+                and app_command[0] == "close"
+                and registry.get("close_paired_android_app") is not None
+            ):
+                selected.add("close_paired_android_app")
         elif (
             not _IOS_DEVICE_TARGET.search(request_text)
             and registry.get("request_remote_windows_action") is not None

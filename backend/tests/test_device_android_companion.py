@@ -553,11 +553,17 @@ def test_android_visual_commands_do_not_require_manifest_and_are_serialized(
         if item["operation"] == "application.launch"
     )
     assert launcher_capability["status"] == "available"
-    assert "launcher" in launcher_capability["label"].lower()
+    assert "installed" in launcher_capability["label"].lower()
     assert {
         item["operation"]: item["status"]
         for item in android_device["companion_capabilities"]
     }["screen.accessibility.inspect"] == "available"
+    application_capabilities = {
+        item["operation"]: item
+        for item in android_device["companion_capabilities"]
+    }
+    assert application_capabilities["application.close"]["status"] == "unsupported"
+    assert "force-stop" in application_capabilities["application.close"]["reason"]
     access_headers = {
         "Authorization": f"Bearer {session.json()['access_token']}"
     }
@@ -987,3 +993,71 @@ def test_android_scroll_is_queued_for_one_approved_accessible_target(
     assert back_command["operation"] == "android.screen.back"
     assert back_command["required_scope"] == "android.screen.control"
     assert back_command["arguments"] == {"app_id": "scrollable-app"}
+
+
+def test_android_home_navigation_is_scoped_and_requires_a_verified_receipt(
+    client, auth_headers
+):
+    owner_headers = auth_headers("android-home@test.com")
+    paired = _paired_android_device(client, owner_headers)
+    device = paired["device"]
+    session = client.post(
+        "/api/devices/protocol/v1/session",
+        headers={"Authorization": f"Bearer {paired['device_token']}"},
+    )
+    assert session.status_code == 200, session.text
+    access_headers = {
+        "Authorization": f"Bearer {session.json()['access_token']}"
+    }
+    with SessionLocal() as db:
+        user = db.query(User).filter_by(email="android-home@test.com").one()
+        context = ToolContext(
+            user_id=user.id,
+            idempotency_key="android-home-step",
+        )
+
+    with bind_tool_execution(context):
+        queued = asyncio.run(
+            request_remote_android_action(
+                device["id"],
+                "android.screen.home",
+                app_name="WhatsApp",
+            )
+        )
+    assert queued.success
+    poll = client.get(
+        "/api/devices/protocol/v1/commands?wait_seconds=0&client_type=android",
+        headers=access_headers,
+    )
+    assert poll.status_code == 200, poll.text
+    command = poll.json()["commands"][0]
+    assert command["operation"] == "android.screen.home"
+    assert command["required_scope"] == "android.screen.control"
+    assert command["arguments"] == {"app_name": "WhatsApp"}
+    decision = client.post(
+        f"/api/devices/protocol/v1/commands/{command['command_id']}/decision",
+        headers=access_headers,
+        json={"nonce": command["nonce"], "approve": True},
+    )
+    assert decision.status_code == 200, decision.text
+    receipt = client.post(
+        f"/api/devices/protocol/v1/commands/{command['command_id']}/receipt",
+        headers=access_headers,
+        json={
+            "nonce": command["nonce"],
+            "status": "succeeded",
+            "evidence": {
+                "operation_result": {
+                    "ok": True,
+                    "status": "home_opened",
+                    "verified": True,
+                },
+                "accessible_controls": [],
+                "screen_ocr_text": "",
+                "screen_ocr_status": "available",
+                "screen_ocr_reason": "",
+            },
+        },
+    )
+    assert receipt.status_code == 200, receipt.text
+    assert receipt.json()["status"] == "succeeded"

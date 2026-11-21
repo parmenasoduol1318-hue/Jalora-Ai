@@ -80,6 +80,10 @@ not treated as success. Installed-app manifests are not used to declare an app
 missing. App controls are executed one command at a time and each receipt
 includes the refreshed screen state for Jalora's next step.
 
+For an explicit request to close a named app, Jalora verifies it is currently
+foreground, returns to Home, and verifies that screen. Android may keep the app
+running in the background; the companion does not force-stop applications.
+
 Reading requires `android.screen.read`; clicking, scrolling, typing, and
 coordinate tapping also require `android.screen.control`. Inspection reports
 at most 24 accessibility controls and 16 on-device OCR text bounds from a
@@ -105,10 +109,10 @@ named controls, app-permission grants, and all coordinate taps require Jalora's
 explicit confirmation before the phone command is queued. Other scope-covered
 navigation and reading do not require an extra phone-side approval.
 
-Back navigation, app switching, notifications, and Quick Settings use Android
-global actions. Screen swipes support all four directions. Long-press uses an
-accessible action with a bounded coordinate-gesture fallback. Enter is sent
-only to the focused accessible control and requires Jalora approval because it
+Back navigation, app switching, Home, notifications, and Quick Settings use
+Android global actions. Screen swipes support all four directions. Long-press
+uses an accessible action with a bounded coordinate-gesture fallback. Enter is
+sent only to the focused accessible control and requires Jalora approval because it
 can submit content. Brightness adjustment is available when Android exposes a
 visible accessible brightness slider with a settable range; the selected
 percentage is checked against the refreshed slider value.
@@ -140,16 +144,17 @@ well as disconnecting locally.
 
 ## Current acceptance status
 
-The Android source implementation and mocked backend protocol tests cover
-manifest-independent launcher commands, active-screen inspection, OCR
-evidence, coordinate taps, sequential delivery, and sensitive-action approval.
-The development environment has no JDK, Gradle, Android SDK, emulator, or
-physical Android target, so the APK has not been built or device-tested here.
-On Windows, install Android Studio with JDK 17, Android SDK Platform 35, and
-Android Build Tools 35; connect an unlocked phone with USB debugging enabled
-and accept its debugging prompt. Run `adb devices -l` and confirm the phone is
-listed as `device`, open `companions/android` in Android Studio and sync Gradle,
-then run `gradle assembleDebug` and
+The Android source implementation and backend protocol tests cover
+manifest-independent launcher commands, active-screen inspection, OCR and
+screenshot evidence, sequential delivery, sensitive-action approval, and
+verified Home navigation. The debug APK builds successfully here with Java
+17.0.21, Gradle 8.9, and Android SDK Platform 35. No physical phone is currently
+connected (`adb devices -l` reports no devices), so installation, pairing,
+heartbeats, screenshots, and real screen actions remain unverified. Connect an
+unlocked phone with USB debugging enabled and accept its debugging prompt. Run
+`adb devices -l` and confirm the phone is listed as `device`, open
+`companions/android` in Android Studio and sync Gradle, then run
+`gradle assembleDebug` and
 `adb install -r app/build/outputs/apk/debug/app-debug.apk` from that project
 directory. Pair the app with Jalora, grant the requested screen scopes, enable
 the Accessibility Service, and leave the companion foreground service running

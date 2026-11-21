@@ -1,6 +1,8 @@
 import io
 import json
 import uuid
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -780,6 +782,90 @@ def test_common_mobile_app_open_does_not_use_windows_local_app_shortcut(
     data = response.json()
     assert data["status"] == "error"
     assert "no Android phone is paired" in data["reply"]
+    assert not fake_router.tape
+
+
+def test_android_app_close_uses_phone_home_action_on_windows_backend(
+    client, fake_router, monkeypatch
+):
+    from app.tools import device_tools
+
+    headers = _token(client, "android-app-close-routing@test.com")
+    monkeypatch.setattr(device_tools.sys, "platform", "win32")
+    monkeypatch.setattr(
+        fake_router,
+        "route",
+        lambda **_: pytest.fail("A direct phone-app close must not use the model."),
+    )
+    device = SimpleNamespace(
+        id="phone-1",
+        name="My Android",
+        platform="android",
+        status="active",
+        scopes=["android.screen.control", "android.screen.read"],
+        last_seen_at=datetime.now(timezone.utc),
+    )
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def scalars(self, _statement):
+            return SimpleNamespace(all=lambda: [device])
+
+    queued = []
+
+    async def queue_home(device_id, action, app_id, *, platform, app_name):
+        queued.append((device_id, action, app_id, platform, app_name))
+        return ToolResult.ok("Queued Home action.", {"command_id": "home-command"})
+
+    async def verified_home(command_id):
+        assert command_id == "home-command"
+        return ToolResult.ok(
+            "Returned the persisted device action outcome.",
+            {
+                "command_id": command_id,
+                "protocol_status": "succeeded",
+                "receipt_status": "succeeded",
+                "evidence": {
+                    "operation_result": {
+                        "status": "home_opened",
+                        "verified": True,
+                    },
+                },
+            },
+        )
+
+    monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
+    monkeypatch.setattr(device_tools, "_request_remote_native_action", queue_home)
+    monkeypatch.setattr(
+        device_tools,
+        "get_remote_device_action_status",
+        verified_home,
+    )
+    monkeypatch.setattr(
+        device_tools.local_device_control,
+        "close_local_app",
+        lambda *_args, **_kwargs: pytest.fail(
+            "An Android close request must not target the Windows app."
+        ),
+    )
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "close WhatsApp on my Android phone"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "completed"
+    assert "not force-stopped" in response.json()["reply"]
+    assert queued == [
+        ("phone-1", "android.screen.home", "", "android", "WhatsApp")
+    ]
     assert not fake_router.tape
 
 

@@ -2480,15 +2480,19 @@ async def execute_chat(
                 graph_entry = "tools"
             elif direct_app_command:
                 direct_action_name, direct_app_name = direct_app_command
-                direct_tool_name = (
-                    "close_local_app"
-                    if direct_action_name == "close"
-                    else "open_youtube"
-                    if direct_app_name.casefold() in {"youtube", "youtube.com"}
-                    else "open_paired_android_app"
-                    if "remote_device_control" in routing.signals
-                    else "open_local_app"
-                )
+                if (
+                    direct_action_name == "close"
+                    and "request_remote_android_action" in (routing.tool_names or [])
+                ):
+                    direct_tool_name = "close_paired_android_app"
+                elif direct_action_name == "close":
+                    direct_tool_name = "close_local_app"
+                elif direct_app_name.casefold() in {"youtube", "youtube.com"}:
+                    direct_tool_name = "open_youtube"
+                elif "remote_device_control" in routing.signals:
+                    direct_tool_name = "open_paired_android_app"
+                else:
+                    direct_tool_name = "open_local_app"
                 direct_call_id = str(uuid.uuid4())
                 direct_arguments = (
                     {}
@@ -2524,6 +2528,17 @@ async def execute_chat(
                             )
                         }
                         if direct_tool_name == "open_paired_android_app"
+                        else {}
+                    ),
+                    **(
+                        {
+                            "success_message": (
+                                f"Returned the paired phone to Home from "
+                                f"{direct_app_name}. Android may keep the app "
+                                "running in the background; it was not force-stopped."
+                            )
+                        }
+                        if direct_tool_name == "close_paired_android_app"
                         else {}
                     ),
                 }

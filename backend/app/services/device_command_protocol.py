@@ -45,6 +45,7 @@ _OPERATION_SCOPES = {
     "android.screen.notifications": "android.screen.control",
     "android.screen.quick_settings": "android.screen.control",
     "android.screen.app_switcher": "android.screen.control",
+    "android.screen.home": "android.screen.control",
     "android.screen.key": "android.screen.control",
     "android.screen.set_brightness": "android.screen.control",
     "android.screen.click": "android.screen.control",
@@ -170,6 +171,26 @@ def _normalize_android_screen_command(
             raise DeviceProtocolError(
                 "The Android screen command has unexpected arguments."
             )
+        return _OPERATION_SCOPES[action], safe_arguments
+    if action == "android.screen.home":
+        if set(arguments) - {"app_id", "app_name"}:
+            raise DeviceProtocolError(
+                "The Android Home command has unexpected arguments."
+            )
+        app_name = arguments.get("app_name")
+        if (
+            not isinstance(app_name, str)
+            or not app_name.strip()
+            or len(app_name) > 120
+            or any(
+                ord(character) < 32 or ord(character) == 127
+                for character in app_name
+            )
+        ):
+            raise DeviceProtocolError(
+                "The Android Home command requires a valid foreground app name."
+            )
+        safe_arguments["app_name"] = app_name.strip()
         return _OPERATION_SCOPES[action], safe_arguments
     if action == "android.screen.swipe":
         if set(arguments) - {"app_id", "direction"}:
@@ -421,6 +442,7 @@ def _normalized_command(
         "android.screen.notifications": "screen.control",
         "android.screen.quick_settings": "screen.control",
         "android.screen.app_switcher": "screen.control",
+        "android.screen.home": "screen.control",
         "android.screen.key": "screen.control",
         "android.screen.set_brightness": "screen.control",
         "android.screen.click": "screen.control",
@@ -447,6 +469,7 @@ def _normalized_command(
         "android.screen.notifications",
         "android.screen.quick_settings",
         "android.screen.app_switcher",
+        "android.screen.home",
         "android.screen.key",
         "android.screen.set_brightness",
     } and (
@@ -732,6 +755,7 @@ def claim_device_commands(
             "android.screen.notifications",
             "android.screen.quick_settings",
             "android.screen.app_switcher",
+            "android.screen.home",
             "android.screen.key",
             "android.screen.set_brightness",
             "android.screen.click",

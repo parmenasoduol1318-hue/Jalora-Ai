@@ -120,7 +120,7 @@ def discover_device_capabilities(
             (
                 "application.launch",
                 (
-                    "Search the Android launcher and open apps"
+                    "Open installed Android apps by displayed name"
                     if device.platform == "android"
                     else "Launch installed applications"
                 ),
@@ -128,7 +128,11 @@ def discover_device_capabilities(
             ),
             (
                 "application.close",
-                "Request a graceful app close",
+                (
+                    "Force-stop an application"
+                    if device.platform == "android"
+                    else "Request a graceful app close"
+                ),
                 f"{native_prefix}.apps.launch",
             ),
             (
@@ -205,7 +209,10 @@ def discover_device_capabilities(
                         f"The paired {device.platform.title()} companion is offline."
                     )
                     if status == "offline"
-                    else "Android does not force-close applications."
+                    else (
+                        "Android does not force-stop applications; Jalora can "
+                        "return to Home without terminating the app."
+                    )
                     if status == "unsupported"
                     else (
                         f"Grant this {device.platform.title()} companion permission "
