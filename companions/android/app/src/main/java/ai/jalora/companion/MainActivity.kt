@@ -83,6 +83,7 @@ class MainActivity : Activity() {
 
         content.addView(sectionTitle("Connection"))
         content.addView(button("Connect / resume") { startCompanion() })
+        content.addView(button("Test Jalora server connection") { testServerConnection() })
         content.addView(button("Pause command polling") {
             startService(Intent(this, DeviceCompanionService::class.java).setAction(DeviceCompanionService.ACTION_PAUSE))
             status.text = "Paused. Commands already delivered remain available for your review."
@@ -127,6 +128,7 @@ class MainActivity : Activity() {
                                 "Device: ${request.optString("name", "Android device")}\n" +
                                 "Server: ${link.origin}\n\n" +
                                 "Requested permissions:\n$permissionText\n\n" +
+                                (localBackendHint(link.origin)?.plus("\n\n") ?: "") +
                                 "This does not grant Android accessibility or notification access. " +
                                 "Those require separate actions in Android Settings.",
                         )
@@ -254,7 +256,48 @@ class MainActivity : Activity() {
         val intent = Intent(this, DeviceCompanionService::class.java)
             .setAction(DeviceCompanionService.ACTION_START)
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
-        status.text = "Connecting securely. Pairing permissions authorize phone actions."
+        status.text = "Connecting securely to ${serverHost(state)}."
+        localBackendHint(state.optString("api_origin"))?.let { status.append("\n$it") }
+    }
+
+    private fun testServerConnection() {
+        val state = try {
+            SecureStore.read(this) ?: error("Pair this Android device first.")
+        } catch (error: Exception) {
+            status.text = error.message
+            return
+        }
+        val origin = state.optString("api_origin")
+        status.text = "Testing the paired device connection to ${serverHost(state)}..."
+        worker.execute {
+            try {
+                CompanionApi.request(
+                    origin,
+                    "/api/devices/heartbeat",
+                    "POST",
+                    token = state.getString("device_token"),
+                    body = JSONObject(),
+                )
+                runOnUiThread {
+                    status.text = "Jalora server reachable; paired-device authentication succeeded."
+                    status.append(
+                        "\n${permissionSummary(state)}\n" +
+                            "Accessibility service: ${accessibilityStatus()}",
+                    )
+                }
+            } catch (error: CompanionHttpException) {
+                val message = if (error.status == 401 || error.status == 403) {
+                    "The server is reachable but rejected this pairing. Revoke and pair the device again."
+                } else {
+                    "Jalora returned HTTP ${error.status}: ${error.message}"
+                }
+                runOnUiThread { status.text = message }
+            } catch (error: Exception) {
+                val message = localBackendHint(origin)
+                    ?: "Could not reach ${serverHost(state)}: ${error.message ?: error.javaClass.simpleName}"
+                runOnUiThread { status.text = message }
+            }
+        }
     }
 
     private fun disconnect() {
@@ -288,11 +331,40 @@ class MainActivity : Activity() {
             return
         }
         appList.text = selectedAppNames(state.optJSONArray("applications") ?: JSONArray())
-        val accessibilityEnabled = isAccessibilityEnabled()
         val notificationEnabled = isNotificationListenerEnabled()
-        status.text = "Paired with ${state.optString("device_name")}.\n" +
-            "Accessibility service: ${if (accessibilityEnabled) "enabled" else "not enabled"}\n" +
+        status.text = "Paired with ${state.optString("device_name")} at ${serverHost(state)}.\n" +
+            "${permissionSummary(state)}\n" +
+            "Accessibility service: ${accessibilityStatus()}\n" +
             "Notification access: ${if (notificationEnabled) "enabled" else "not enabled"}"
+    }
+
+    private fun permissionSummary(state: JSONObject): String =
+        "App launch: ${scopeStatus(state, "android.apps.launch")}; " +
+            "screen read: ${scopeStatus(state, "android.screen.read")}; " +
+            "screen control: ${scopeStatus(state, "android.screen.control")}"
+
+    private fun scopeStatus(state: JSONObject, scope: String): String =
+        if (hasScope(state, scope)) "granted" else "missing"
+
+    private fun accessibilityStatus(): String = when {
+        !isAccessibilityEnabled() -> "not enabled"
+        JaloraAccessibilityService.instance == null -> "enabled but not connected"
+        else -> "connected"
+    }
+
+    private fun serverHost(state: JSONObject): String =
+        serverHost(state.optString("api_origin"))
+
+    private fun serverHost(origin: String): String =
+        Uri.parse(origin).host ?: "configured server"
+
+    private fun localBackendHint(origin: String): String? {
+        if (Uri.parse(origin).host !in setOf("localhost", "127.0.0.1", "::1")) {
+            return null
+        }
+        return "This phone's localhost is not your computer. For a local backend over USB, " +
+            "connect the phone and run `adb reverse tcp:8000 tcp:8000` on the computer; " +
+            "for remote access, pair with a reachable HTTPS server."
     }
 
     private fun isAccessibilityEnabled(): Boolean {

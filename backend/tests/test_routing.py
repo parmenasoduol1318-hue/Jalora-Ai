@@ -11,6 +11,7 @@ from app.services.model_router import JaloraChatModel, ProviderSpec
 from app.tools import registry as real_registry, routing as routing_module
 from app.tools.base import PermissionLevel, ToolRegistry
 from app.tools.routing import (
+    direct_app_command_for_route,
     is_multi_step_request,
     local_app_command,
     local_app_open_target,
@@ -234,6 +235,27 @@ def test_local_app_command_requires_one_named_action(prompt):
 def test_local_app_command_does_not_capture_a_translation_workflow():
     assert local_app_command(
         "Open the source and translate its contents into Swahili."
+    ) is None
+
+
+def test_common_mobile_app_direct_command_uses_the_paired_android_route():
+    routing = route_request("Open WhatsApp")
+
+    assert "remote_device_control" in routing.signals
+    assert "open_paired_android_app" in (routing.tool_names or [])
+    assert direct_app_command_for_route(("open", "WhatsApp"), routing) == (
+        "open",
+        "WhatsApp",
+    )
+
+
+def test_explicit_android_app_request_does_not_use_the_local_app_shortcut():
+    routing = route_request("Open Calculator on my Android phone")
+
+    assert "remote_device_control" in routing.signals
+    assert direct_app_command_for_route(
+        ("open", "Calculator on my Android phone"),
+        routing,
     ) is None
 
 

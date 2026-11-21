@@ -401,6 +401,7 @@ from app.services.visuals import apply_visual_postprocessing
 from app.tools.base import registry
 from app.tools.routing import (
     IntentRouting,
+    direct_app_command_for_route,
     local_app_command,
     resolve_intent_hint,
     route_request,
@@ -1741,6 +1742,10 @@ async def execute_chat(
                     context_text=routing_context,
                     extra_signals=("attached_document",) if attached_documents else (),
                 )
+            direct_app_command = direct_app_command_for_route(
+                direct_app_command,
+                routing,
+            )
             intent = IntentResult(intent=routing.intent, signals=routing.signals)
             emitter.emit("intent", {
                 "intent": routing.intent, "signals": list(routing.signals),
@@ -2480,6 +2485,8 @@ async def execute_chat(
                     if direct_action_name == "close"
                     else "open_youtube"
                     if direct_app_name.casefold() in {"youtube", "youtube.com"}
+                    else "open_paired_android_app"
+                    if "remote_device_control" in routing.signals
                     else "open_local_app"
                 )
                 direct_call_id = str(uuid.uuid4())
@@ -2509,6 +2516,16 @@ async def execute_chat(
                     ),
                     "action": direct_action_name,
                     "execution_mode": "direct_tool",
+                    **(
+                        {
+                            "success_message": (
+                                f"Opened {direct_app_name} on the paired Android "
+                                "phone; the phone verified it is in the foreground."
+                            )
+                        }
+                        if direct_tool_name == "open_paired_android_app"
+                        else {}
+                    ),
                 }
                 tool_names = sorted(set(tool_names) | {direct_tool_name})
                 graph_entry = "tools"

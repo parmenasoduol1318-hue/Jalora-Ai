@@ -1,6 +1,7 @@
 """Consent-gated tools for approved local and paired-device app actions."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import sys
@@ -34,6 +35,8 @@ from sqlalchemy import select
 
 logger = logging.getLogger("jalora.device_tools")
 ANDROID_DEVICE_ONLINE_WINDOW = timedelta(seconds=90)
+ANDROID_LAUNCH_RECEIPT_TIMEOUT_SECONDS = 35.0
+ANDROID_LAUNCH_RECEIPT_POLL_SECONDS = 0.5
 
 
 async def discover_available_device_capabilities() -> ToolResult:
@@ -73,6 +76,83 @@ def _validated_app_name(app_name: str) -> str | ToolResult:
             "Enter an app name between 1 and 120 printable characters.",
         )
     return app_name.strip()
+
+
+async def _await_android_launch_receipt(
+    command_id: str,
+    expected_app_name: str,
+) -> ToolResult:
+    deadline = (
+        asyncio.get_running_loop().time()
+        + ANDROID_LAUNCH_RECEIPT_TIMEOUT_SECONDS
+    )
+    while True:
+        result = await get_remote_device_action_status(command_id)
+        if not result.success:
+            return result
+
+        data = result.data
+        protocol_status = data.get("protocol_status")
+        if protocol_status in {"queued", "delivered", "running"}:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return ToolResult.fail(
+                    "ANDROID_ACTION_PENDING",
+                    f"The phone has not confirmed opening {expected_app_name}. "
+                    "The action may still be running; do not report the app as open "
+                    "or repeat the launch until its status is checked.",
+                    data=data,
+                )
+            await asyncio.sleep(
+                min(ANDROID_LAUNCH_RECEIPT_POLL_SECONDS, remaining)
+            )
+            continue
+
+        evidence = data.get("evidence")
+        operation_result = (
+            evidence.get("operation_result")
+            if isinstance(evidence, dict)
+            else None
+        )
+        if protocol_status != "succeeded":
+            details = (
+                operation_result.get("reason")
+                if isinstance(operation_result, dict)
+                else None
+            ) or data.get("error_code") or (
+                f"The phone reported launch status {protocol_status or 'unknown'}."
+            )
+            code = (
+                "ANDROID_LAUNCH_FAILED"
+                if protocol_status == "failed"
+                else "ANDROID_LAUNCH_UNCERTAIN"
+            )
+            return ToolResult.fail(code, str(details), data=data)
+
+        verified_app = (
+            operation_result.get("app_name")
+            if isinstance(operation_result, dict)
+            else None
+        )
+        if (
+            data.get("receipt_status") != "succeeded"
+            or not isinstance(operation_result, dict)
+            or operation_result.get("verified") is not True
+            or operation_result.get("status") != "app_opened"
+            or not isinstance(verified_app, str)
+            or _normalized_app_name(verified_app)
+            != _normalized_app_name(expected_app_name)
+        ):
+            return ToolResult.fail(
+                "ANDROID_LAUNCH_UNVERIFIED",
+                f"The phone did not verify that {expected_app_name} is in the "
+                "foreground. Jalora will not report the app as open.",
+                data=data,
+            )
+        return ToolResult.ok(
+            f"The phone verified {expected_app_name} is in the foreground.",
+            data,
+        )
 
 
 def _local_app_identity(app_name: str) -> tuple[str, str] | ToolResult:
@@ -182,17 +262,29 @@ async def _open_android_app(
     )
     if not result.success:
         return result
-    if connectivity == "online":
-        message = (
-            f"Searching the Android launcher for '{validated_name}' on {device.name}; "
-            "completion is confirmed after the phone reports its result."
+    command_id = result.data.get("command_id")
+    if not isinstance(command_id, str) or not command_id:
+        return ToolResult.fail(
+            "ANDROID_LAUNCH_UNVERIFIED",
+            "The launch request was queued without a command ID, so its result "
+            "cannot be verified.",
+            data=result.data,
         )
-    else:
-        message = (
-            f"Queued the request to open '{validated_name}' on {device.name}; "
-            "waiting for the paired phone to reconnect. This is not complete until "
-            "the phone reports a verified result."
-        )
+    result = await _await_android_launch_receipt(command_id, validated_name)
+    if not result.success:
+        result.data.update({
+            "app": validated_name,
+            "device_name": device.name,
+            "device_connectivity": connectivity,
+        })
+        if follow_up:
+            result.data["follow_up_request"] = follow_up
+        return result
+
+    message = (
+        f"Opened '{validated_name}' on {device.name}; the phone verified that "
+        "the app is in the foreground."
+    )
     if follow_up:
         message += (
             f" The remaining requested action is: {follow_up}. Continue by inspecting "

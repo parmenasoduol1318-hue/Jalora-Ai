@@ -34,6 +34,12 @@ def test_app_launch_parsing_separates_app_from_follow_up_instructions():
             "read the newest message",
         ),
         ("Open my browser", "Chrome", ""),
+        ("Open Calculator on my Android phone", "Calculator", ""),
+        (
+            "Open WhatsApp on my phone and read unread messages",
+            "WhatsApp",
+            "read unread messages",
+        ),
     )
     for request, expected_app, expected_follow_up in cases:
         parsed = parse_app_launch_request(request)

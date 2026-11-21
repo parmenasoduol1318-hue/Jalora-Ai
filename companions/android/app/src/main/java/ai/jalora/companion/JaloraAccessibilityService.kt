@@ -3,6 +3,8 @@ package ai.jalora.companion
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.app.KeyguardManager
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.ColorSpace
 import android.graphics.Path
@@ -52,21 +54,28 @@ class JaloraAccessibilityService : AccessibilityService() {
         if (appName.isBlank()) {
             return ActionResult.failed("ANDROID_APP_NAME_INVALID", "Enter an app name to search for.")
         }
+        val expectedPackage = matchingLauncherPackage(appName)
+        val launcherPackage = resolveLauncherPackage()
+            ?: return ActionResult.failed(
+                "ANDROID_LAUNCHER_UNAVAILABLE",
+                "Android did not expose a default home app to the companion.",
+            )
         if (!performGlobalAction(GLOBAL_ACTION_HOME)) {
             return ActionResult.failed("ANDROID_HOME_UNAVAILABLE", "Android could not open the home screen.")
         }
-
-        Thread.sleep(LAUNCHER_SETTLE_MS)
-        val launcherPackage = activePackage()
-            ?: return ActionResult.failed(
+        if (!waitForLauncher(launcherPackage)) {
+            return ActionResult.failed(
                 "ANDROID_LAUNCHER_UNAVAILABLE",
-                "Android did not expose the launcher screen to accessibility.",
+                "Android did not switch to its home screen. Jalora stopped before tapping an app.",
             )
+        }
         var appDrawerOpened = false
         var searchAttempted = false
         var searchButtonOpened = false
         repeat(MAX_LAUNCHER_SWIPES + 1) {
-            if (hasLeftLauncher(launcherPackage)) return launchReceipt(appName)
+            if (hasLeftLauncher(launcherPackage)) {
+                return launchReceipt(appName, expectedPackage)
+            }
             val root = rootInActiveWindow
             if (root != null) {
                 val appNode = findExactLabel(root, appName)
@@ -77,7 +86,7 @@ class JaloraAccessibilityService : AccessibilityService() {
                     if (appNode !== root) appNode.recycle()
                     root.recycle()
                     if (clicked && waitForForegroundChange(launcherPackage)) {
-                        return launchReceipt(appName)
+                        return launchReceipt(appName, expectedPackage)
                     }
                     return ActionResult.uncertain(
                         "ANDROID_LAUNCH_UNVERIFIED",
@@ -103,7 +112,9 @@ class JaloraAccessibilityService : AccessibilityService() {
                         root.recycle()
                         if (entered) {
                             Thread.sleep(LAUNCHER_SETTLE_MS)
-                            if (hasLeftLauncher(launcherPackage)) return launchReceipt(appName)
+                            if (hasLeftLauncher(launcherPackage)) {
+                                return launchReceipt(appName, expectedPackage)
+                            }
                             val results = rootInActiveWindow
                             if (results != null) {
                                 val resultNode = findExactLabel(results, appName)
@@ -115,7 +126,7 @@ class JaloraAccessibilityService : AccessibilityService() {
                                     if (resultNode !== results) resultNode.recycle()
                                     results.recycle()
                                     if (clicked && waitForForegroundChange(launcherPackage)) {
-                                        return launchReceipt(appName)
+                                        return launchReceipt(appName, expectedPackage)
                                     }
                                     return ActionResult.uncertain(
                                         "ANDROID_LAUNCH_UNVERIFIED",
@@ -167,12 +178,39 @@ class JaloraAccessibilityService : AccessibilityService() {
         )
     }
 
-    private fun launchReceipt(appName: String): ActionResult {
+    private fun launchReceipt(
+        appName: String,
+        expectedPackage: String?,
+    ): ActionResult {
         val screen = inspectActiveScreen()
-        if (screen.status != "succeeded") {
-            return ActionResult.uncertain(
-                "ANDROID_LAUNCH_SCREEN_UNAVAILABLE",
-                "The launcher opened $appName, but Jalora could not verify the resulting screen.",
+        val foregroundPackage = activePackage()
+        if (
+            screen.status != "succeeded" ||
+            expectedPackage == null ||
+            foregroundPackage != expectedPackage
+        ) {
+            val reason = when {
+                screen.status != "succeeded" ->
+                    "The resulting screen could not be read."
+                expectedPackage == null ->
+                    "The requested app could not be matched to one installed launcher app."
+                else ->
+                    "Android foreground package $foregroundPackage did not match the requested app."
+            }
+            val evidence = JSONObject(screen.evidence.toString())
+            evidence.put(
+                "operation_result",
+                JSONObject()
+                    .put("ok", false)
+                    .put("status", "app_open_unverified")
+                    .put("app_name", appName)
+                    .put("verified", false)
+                    .put("reason", reason),
+            )
+            return ActionResult(
+                "uncertain",
+                evidence,
+                "ANDROID_LAUNCH_UNVERIFIED",
             )
         }
         val evidence = JSONObject(screen.evidence.toString())
@@ -187,6 +225,20 @@ class JaloraAccessibilityService : AccessibilityService() {
         return ActionResult("succeeded", evidence, null)
     }
 
+    private fun matchingLauncherPackage(appName: String): String? {
+        val expected = normalize(appName)
+        val matches = CompanionApi.installedApplications(this)
+            .let { applications ->
+                (0 until applications.length()).mapNotNull { index ->
+                    applications.optJSONObject(index)
+                        ?.takeIf { normalize(it.optString("name")) == expected }
+                        ?.optString("package_name")
+                        ?.takeIf { it.isNotBlank() }
+                }
+            }
+        return matches.singleOrNull()
+    }
+
     private fun activePackage(): String? {
         val root = rootInActiveWindow ?: return null
         return try {
@@ -194,6 +246,30 @@ class JaloraAccessibilityService : AccessibilityService() {
         } finally {
             root.recycle()
         }
+    }
+
+    private fun resolveLauncherPackage(): String? {
+        val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val resolved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.resolveActivity(
+                homeIntent,
+                PackageManager.ResolveInfoFlags.of(
+                    PackageManager.MATCH_DEFAULT_ONLY.toLong(),
+                ),
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
+        }
+        return resolved?.activityInfo?.packageName
+    }
+
+    private fun waitForLauncher(launcherPackage: String): Boolean {
+        repeat(FOREGROUND_CHANGE_ATTEMPTS) {
+            if (activePackage() == launcherPackage) return true
+            Thread.sleep(FOREGROUND_CHANGE_INTERVAL_MS)
+        }
+        return false
     }
 
     private fun hasLeftLauncher(launcherPackage: String): Boolean {
@@ -204,9 +280,9 @@ class JaloraAccessibilityService : AccessibilityService() {
     }
 
     private fun waitForForegroundChange(launcherPackage: String): Boolean {
-        repeat(20) {
+        repeat(FOREGROUND_CHANGE_ATTEMPTS) {
             if (hasLeftLauncher(launcherPackage)) return true
-            Thread.sleep(250)
+            Thread.sleep(FOREGROUND_CHANGE_INTERVAL_MS)
         }
         return false
     }
@@ -755,7 +831,19 @@ class JaloraAccessibilityService : AccessibilityService() {
                     }
 
                     override fun onFailure(errorCode: Int) {
-                        failure = "Android screenshot capture failed (code $errorCode)."
+                        failure = when (errorCode) {
+                            AccessibilityService.ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS ->
+                                "Android denied screenshot access. Re-enable Jalora Accessibility and update the companion."
+                            AccessibilityService.ERROR_TAKE_SCREENSHOT_SECURE_WINDOW ->
+                                "Android blocked screenshots for this secure app screen."
+                            AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT ->
+                                "Android rejected the screenshot because the previous capture was too recent."
+                            AccessibilityService.ERROR_TAKE_SCREENSHOT_INVALID_DISPLAY ->
+                                "Android could not capture the requested display."
+                            AccessibilityService.ERROR_TAKE_SCREENSHOT_INVALID_WINDOW ->
+                                "Android could not capture the active window."
+                            else -> "Android screenshot capture failed (code $errorCode)."
+                        }
                         completed.countDown()
                     }
                 },
@@ -920,7 +1008,9 @@ class JaloraAccessibilityService : AccessibilityService() {
                 "ANDROID_KEY_TARGET_UNAVAILABLE",
                 "Enter requires a focused accessible control.",
             )
-        val accepted = target.performAction(AccessibilityNodeInfo.ACTION_IME_ENTER)
+        val accepted = target.performAction(
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id,
+        )
         if (target !== root) target.recycle()
         if (!accepted) {
             return ActionResult.failed(
@@ -994,7 +1084,7 @@ class JaloraAccessibilityService : AccessibilityService() {
         }
         val value = range.min + (range.max - range.min) * percentage / 100f
         val accepted = target.performAction(
-            AccessibilityNodeInfo.ACTION_SET_PROGRESS,
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.id,
             Bundle().apply {
                 putFloat(
                     AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE,
@@ -1406,6 +1496,8 @@ class JaloraAccessibilityService : AccessibilityService() {
         private const val OCR_TIMEOUT_MS = 8_000L
         private const val MAX_LAUNCHER_SWIPES = 8
         private const val LAUNCHER_SETTLE_MS = 500L
+        private const val FOREGROUND_CHANGE_ATTEMPTS = 20
+        private const val FOREGROUND_CHANGE_INTERVAL_MS = 250L
         private const val SEARCH_SETTLE_MS = 300L
         private const val SWIPE_DURATION_MS = 400L
         private const val TAP_DURATION_MS = 80L

@@ -172,6 +172,19 @@ class IntentRouting:
     tool_names: list[str] | None
 
 
+def direct_app_command_for_route(
+    command: tuple[str, str] | None,
+    routing: IntentRouting,
+) -> tuple[str, str] | None:
+    """Allow only recognized mobile launches through the remote direct path."""
+    if command is None or "remote_device_control" not in routing.signals:
+        return command
+    action, app_name = command
+    if action == "open" and is_common_mobile_app_name(app_name):
+        return command
+    return None
+
+
 def route_request(
     text: str,
     *,

@@ -14,6 +14,7 @@ from app.models.user import User
 from app.services.device_command_protocol import (
     android_action_requires_user_approval,
 )
+from app.tools import device_tools
 from app.tools.device_tools import (
     get_remote_device_action_status,
     open_paired_android_app,
@@ -527,7 +528,7 @@ def test_android_companion_rejects_mismatched_scopes_and_unapproved_app(
 
 
 def test_android_visual_commands_do_not_require_manifest_and_are_serialized(
-    client, auth_headers
+    client, auth_headers, monkeypatch
 ):
     owner_headers = auth_headers("android-visual-no-manifest@test.com")
     paired = _paired_android_device(client, owner_headers)
@@ -573,9 +574,16 @@ def test_android_visual_commands_do_not_require_manifest_and_are_serialized(
             for index in range(4)
         ]
 
+    monkeypatch.setattr(
+        device_tools,
+        "ANDROID_LAUNCH_RECEIPT_TIMEOUT_SECONDS",
+        0,
+    )
     with bind_tool_execution(contexts[0]):
         launched = asyncio.run(open_paired_android_app("App missing from manifest"))
-    assert launched.success
+    assert not launched.success
+    assert launched.error is not None
+    assert launched.error.code == "ANDROID_ACTION_PENDING"
     assert launched.data["action"] == "android.launcher.open"
 
     with bind_tool_execution(contexts[1]):

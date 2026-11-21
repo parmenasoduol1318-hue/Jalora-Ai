@@ -105,6 +105,33 @@ async def test_open_local_app_uses_paired_android_when_backend_is_not_windows(mo
     monkeypatch.setattr(device_tools.sys, "platform", "linux")
     monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
     monkeypatch.setattr(device_tools, "_request_remote_native_action", queue_launch)
+
+    async def verified_receipt(command_id):
+        assert command_id == "command-1"
+        return device_tools.ToolResult.ok(
+            "Returned the persisted device action outcome.",
+            {
+                "command_id": command_id,
+                "device_id": "phone-1",
+                "action": "android.launcher.open",
+                "protocol_status": "succeeded",
+                "receipt_status": "succeeded",
+                "evidence": {
+                    "operation_result": {
+                        "ok": True,
+                        "status": "app_opened",
+                        "app_name": "WhatsApp",
+                        "verified": True,
+                    },
+                },
+            },
+        )
+
+    monkeypatch.setattr(
+        device_tools,
+        "get_remote_device_action_status",
+        verified_receipt,
+    )
     set_tool_context(ToolContext(user_id="user-1"))
     try:
         result = await device_tools.open_local_app(
@@ -114,14 +141,11 @@ async def test_open_local_app_uses_paired_android_when_backend_is_not_windows(mo
         set_tool_context(None)
 
     assert result.success
-    assert result.data == {
-        "command_id": "command-1",
-        "status": "pending",
-        "app": "WhatsApp",
-        "device_name": "My Android",
-        "device_connectivity": "online",
-        "follow_up_request": "tell me who sent unread messages",
-    }
+    assert result.data["protocol_status"] == "succeeded"
+    assert result.data["app"] == "WhatsApp"
+    assert result.data["device_name"] == "My Android"
+    assert result.data["device_connectivity"] == "online"
+    assert result.data["follow_up_request"] == "tell me who sent unread messages"
     assert queued == [
         (
             "phone-1",
@@ -181,18 +205,77 @@ async def test_open_local_app_queues_for_one_paired_phone_without_recent_heartbe
     monkeypatch.setattr(device_tools.sys, "platform", "linux")
     monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
     monkeypatch.setattr(device_tools, "_request_remote_native_action", queue_launch)
+    monkeypatch.setattr(
+        device_tools,
+        "ANDROID_LAUNCH_RECEIPT_TIMEOUT_SECONDS",
+        0,
+    )
+
+    async def pending_status(command_id):
+        return device_tools.ToolResult.ok(
+            "This device action is still pending.",
+            {
+                "command_id": command_id,
+                "protocol_status": "queued",
+                "receipt_status": None,
+                "evidence": {},
+            },
+        )
+
+    monkeypatch.setattr(
+        device_tools,
+        "get_remote_device_action_status",
+        pending_status,
+    )
     set_tool_context(ToolContext(user_id="user-1"))
     try:
         result = await device_tools.open_local_app("WhatsApp")
     finally:
         set_tool_context(None)
 
-    assert result.success
+    assert not result.success
+    assert result.error is not None
+    assert result.error.code == "ANDROID_ACTION_PENDING"
+    assert "not confirmed" in result.message
     assert result.data["device_connectivity"] == connectivity
-    assert "waiting for the paired phone to reconnect" in result.message
     assert queued == [
         ("phone-1", "android.launcher.open", "", "android", "WhatsApp", "")
     ]
+
+
+@pytest.mark.asyncio
+async def test_android_launch_rejects_success_receipt_for_a_different_app(monkeypatch):
+    async def wrong_app_receipt(_command_id):
+        return device_tools.ToolResult.ok(
+            "Returned the persisted device action outcome.",
+            {
+                "protocol_status": "succeeded",
+                "receipt_status": "succeeded",
+                "evidence": {
+                    "operation_result": {
+                        "ok": True,
+                        "status": "app_opened",
+                        "app_name": "Settings",
+                        "verified": True,
+                    },
+                },
+            },
+        )
+
+    monkeypatch.setattr(
+        device_tools,
+        "get_remote_device_action_status",
+        wrong_app_receipt,
+    )
+    result = await device_tools._await_android_launch_receipt(
+        "command-wrong-app",
+        "WhatsApp",
+    )
+
+    assert not result.success
+    assert result.error is not None
+    assert result.error.code == "ANDROID_LAUNCH_UNVERIFIED"
+    assert "will not report the app as open" in result.message
 
 
 @pytest.mark.parametrize(
@@ -300,13 +383,37 @@ async def test_open_local_app_searches_launcher_without_manifest_match(monkeypat
     monkeypatch.setattr(device_tools.sys, "platform", "linux")
     monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
     monkeypatch.setattr(device_tools, "_request_remote_native_action", queue_launch)
+    monkeypatch.setattr(
+        device_tools,
+        "ANDROID_LAUNCH_RECEIPT_TIMEOUT_SECONDS",
+        0,
+    )
+
+    async def pending_status(command_id):
+        return device_tools.ToolResult.ok(
+            "This device action is still pending.",
+            {
+                "command_id": command_id,
+                "protocol_status": "queued",
+                "receipt_status": None,
+                "evidence": {},
+            },
+        )
+
+    monkeypatch.setattr(
+        device_tools,
+        "get_remote_device_action_status",
+        pending_status,
+    )
     set_tool_context(ToolContext(user_id="user-1"))
     try:
         result = await device_tools.open_local_app("WhatsApp")
     finally:
         set_tool_context(None)
 
-    assert result.success
+    assert not result.success
+    assert result.error is not None
+    assert result.error.code == "ANDROID_ACTION_PENDING"
     assert result.data["app"] == "WhatsApp"
     assert queued == [
         ("phone-1", "android.launcher.open", "", "android", "WhatsApp", "")

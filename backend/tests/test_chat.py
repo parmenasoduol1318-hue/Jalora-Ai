@@ -750,6 +750,39 @@ def test_exact_app_open_from_chat_works_without_an_ai_provider(
     assert not fake_router.tape
 
 
+def test_common_mobile_app_open_does_not_use_windows_local_app_shortcut(
+    client, fake_router, monkeypatch
+):
+    from app.tools import device_tools
+
+    headers = _token(client, "android-app-open-routing@test.com")
+    monkeypatch.setattr(device_tools.sys, "platform", "win32")
+    monkeypatch.setattr(
+        fake_router,
+        "route",
+        lambda **_: pytest.fail("A direct phone-app launch must not use the model."),
+    )
+    monkeypatch.setattr(
+        device_tools.local_device_control,
+        "launch_app_from_start_menu",
+        lambda *_args, **_kwargs: pytest.fail(
+            "A phone-app request must not launch a Windows desktop app."
+        ),
+    )
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "open WhatsApp"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["status"] == "error"
+    assert "no Android phone is paired" in data["reply"]
+    assert not fake_router.tape
+
+
 def test_normal_conversation_persists(client, fake_router):
     fake_router.script.append(AIMessage(content="Hello! How can I help?"))
     headers = _token(client)

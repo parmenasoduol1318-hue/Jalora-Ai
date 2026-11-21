@@ -19,6 +19,13 @@ _FOLLOW_UP = re.compile(
 )
 _APP_PREFIX = re.compile(r"^(?:(?:my|the)\s+)+", re.IGNORECASE)
 _APP_SUFFIX = re.compile(r"\s+(?:app|application)$", re.IGNORECASE)
+_DEVICE_SUFFIX = re.compile(
+    r"\s+(?:on|in|using|through)\s+"
+    r"(?:(?:my|the|paired|connected|remote)\s+)*"
+    r"(?:(?:android|mobile)\s+)?"
+    r"(?:phone|tablet|device|android|iphone|ipad|ios)\s*$",
+    re.IGNORECASE,
+)
 _INSTRUCTION_PREFIX = re.compile(
     r"^\s*(?:tell\s+me|who|what|check|read|summari[sz]e|search|find|"
     r"look|inspect|open|launch|start|send|reply|scroll|click|tap|type)\b",
@@ -59,6 +66,7 @@ def parse_app_launch_request(value: str) -> AppLaunchRequest | None:
         target = target[:clause.start()].strip(" \t\r\n.!?,;")
 
     target = _APP_PREFIX.sub("", target)
+    target = _DEVICE_SUFFIX.sub("", target).strip(" \t\r\n.!?,;")
     target = _APP_SUFFIX.sub("", target).strip(" \t\r\n.!?,;")
     if not target or len(target) > 120 or any(
         ord(character) < 32 or ord(character) == 127 for character in target

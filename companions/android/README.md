@@ -49,6 +49,15 @@ keystore or signing credentials.
 6. Connect from the foreground activity. Android requires a visible
    foreground-service notification while the connection is active.
 
+For a local Jalora backend on the same computer, connect the phone over USB
+with USB debugging authorized and run `adb reverse tcp:8000 tcp:8000` before
+pairing or reconnecting. The companion's `localhost` URL refers to the phone;
+without this forwarding, it cannot reach the computer's backend. Keep the USB
+connection and reverse rule active while testing. For a phone not connected to
+that computer, pair with a reachable HTTPS backend origin. Use **Test Jalora
+server connection** in the companion to check its saved pairing and server
+reachability before trying an app or screen action.
+
 A `messages.read`-only pairing can connect and forward opted-in notifications
 without granting app-operation scopes. It reports an empty app manifest and
 cannot execute Android application commands.
@@ -56,25 +65,29 @@ cannot execute Android application commands.
 In Jalora chat, ask for an app by its visible name and describe the task, for
 example: “Open Maps on my Android phone and inspect the route.” Jalora discovers
 a live paired phone with the required scopes. The companion searches the home
-screen/app drawer, taps the matching launcher item, and verifies that the
-foreground screen changed; installed-app manifests are not used to declare an
-app missing. App controls are executed one command at a time and each receipt
-includes the refreshed screen state for Jalora's next step.
+screen/app drawer, taps the matching launcher item, and reports success only
+when the foreground package matches the requested app and fresh screen evidence
+is available. A queued command or a transition to a different app is not treated
+as success; uncertain launches are reported as such. Installed-app manifests
+are not used to declare an app missing. App controls are executed one command
+at a time and each receipt includes the refreshed screen state for Jalora's next
+step.
 
 Reading requires `android.screen.read`; clicking, scrolling, typing, and
 coordinate tapping also require `android.screen.control`. Inspection reports
 at most 24 accessibility controls and 16 on-device OCR text bounds from a
 bounded accessibility-tree scan. OCR uses an in-memory screenshot on Android
-11+, and the companion also sends a downscaled, size-limited JPEG snapshot with
-the command receipt. Jalora stores that image in paired-device task evidence
-and supplies the latest screen image to the task model through the existing
-image-modality route; the model also receives structured OCR and accessibility
-controls. Grant `android.screen.read` only if you consent to sending visible
-screen content to your Jalora backend and configured model provider. Older
-Android versions, secure windows, and unavailable screenshot capture still
-return accessibility data with an explicit OCR-unavailable status. When OCR
-detects authentication fields, screenshot OCR and screenshot transfer are
-redacted.
+11+; the accessibility-service configuration explicitly requests Android's
+screenshot capability. The companion also sends a downscaled, size-limited JPEG
+snapshot with the command receipt. Jalora stores the image in paired-device
+task evidence and supplies the latest screen image to the task model through
+the existing image-modality route; the model also receives structured OCR and
+accessibility controls. Grant `android.screen.read` only if you consent to
+sending visible screen content to your Jalora backend and configured model
+provider. Older Android versions, secure windows, and unavailable screenshot
+capture still return accessibility data with an explicit OCR-unavailable
+status. When OCR detects authentication fields, screenshot OCR and screenshot
+transfer are redacted.
 
 Named clicks require one exact accessible control. If no scrollable control is
 available, scrolling uses a bounded screen swipe. Coordinate taps are supported
