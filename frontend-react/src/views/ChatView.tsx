@@ -51,6 +51,7 @@ interface UiMessage {
   text: string;
   finalized?: boolean;
   error?: boolean;
+  progress?: string;
   tools?: ToolChip[];
   sources?: SourceRef[];
   intent?: string;
@@ -67,13 +68,71 @@ const STEP_ICON: Record<string, string> = {
 };
 
 const RECOGNIZED_TOOLS: Record<string, string> = {
+  discover_available_device_capabilities: "checkingDevice",
   search_web: "webSearching",
   browse_page: "browsingPage",
   open_url: "openingPage",
+  request_remote_url: "openingPage",
+  close_local_app: "closingApp",
+  close_paired_android_app: "returningHome",
+  get_remote_device_action_status: "checkingActionResult",
+  inspect_local_app: "readingScreen",
+  open_registered_local_app: "openingApp",
+  open_youtube: "openingPage",
+  request_remote_android_url: "openingOnPhone",
+  request_remote_windows_action: "controllingComputer",
+  click_local_app_control: "interactingWithApp",
+  type_local_app_text: "typingInApp",
+  press_local_app_key: "usingAppKeyboard",
+  request_remote_android_action: "controllingPhone",
 };
 
 const toolLabel = (name: string, t: (k: string) => string): string =>
   RECOGNIZED_TOOLS[name] ? t(RECOGNIZED_TOOLS[name]) : name;
+
+const ANDROID_ACTION_ACTIVITY: Record<string, string> = {
+  "android.screen.inspect": "readingScreen",
+  "android.screen.click": "interactingWithPhone",
+  "android.screen.tap": "interactingWithPhone",
+  "android.screen.long_press": "interactingWithPhone",
+  "android.screen.scroll": "scrollingPhone",
+  "android.screen.swipe": "scrollingPhone",
+  "android.screen.type": "typingOnPhone",
+  "android.screen.key": "usingPhoneKeyboard",
+  "android.screen.back": "navigatingPhone",
+  "android.screen.home": "returningHome",
+  "android.screen.notifications": "checkingNotifications",
+  "android.screen.quick_settings": "openingPhoneSettings",
+  "android.screen.app_switcher": "navigatingPhone",
+  "android.screen.set_brightness": "adjustingPhoneBrightness",
+};
+
+const toolActivityLabel = (
+  name: string,
+  args: Record<string, unknown>,
+  t: (k: string) => string,
+): string => {
+  const action = typeof args.action === "string" ? args.action : "";
+  const launchesAndroidApp = name === "request_remote_android_action"
+    && ["android.app.launch", "android.launcher.open"].includes(action);
+  if (
+    name === "open_paired_android_app"
+    || name === "open_local_app"
+    || launchesAndroidApp
+  ) {
+    const rawAppName = typeof args.app_name === "string" ? args.app_name.trim() : "";
+    const appName = rawAppName.length <= 40 && !/[\u0000-\u001f\u007f]/.test(rawAppName)
+      ? rawAppName
+      : "";
+    return appName ? `${t("opening")} ${appName}…` : t("openingApp");
+  }
+  if (name === "request_remote_android_action") {
+    const activityKey = ANDROID_ACTION_ACTIVITY[action];
+    if (activityKey) return t(activityKey);
+  }
+  const label = toolLabel(name, t);
+  return label.endsWith("…") ? label : `${label}…`;
+};
 
 interface EmailTaskResult {
   status: string;
@@ -846,21 +905,25 @@ export function ChatView({
             const tk = (event.text as string) || "";
             if (!streamed) {
               liveText += tk;
-              finalize(replyIdx, { text: liveText, finalized: false });
+              finalize(replyIdx, { text: liveText, finalized: false, progress: undefined });
             }
             break;
           }
           case "tool_start": {
             const name = String(event.name || "tool");
             const callId = String(event.call_id || "");
+            const rawArgs = event.args;
+            const args = rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
+              ? rawArgs as Record<string, unknown>
+              : {};
             setMessages((prev) => prev.map((m, i) => {
               if (i !== replyIdx) return m;
               const tools = [...(m.tools || []), {
-                name, status: "running" as const, label: `${toolLabel(name, t)}…`,
+                name, status: "running" as const, label: toolActivityLabel(name, args, t),
                 call_id: callId || undefined,
               }];
               if (callId) runningChip.current.add(callId);
-              return { ...m, tools, finalized: false };
+              return { ...m, tools, progress: undefined, finalized: false };
             }));
             break;
           }
@@ -877,14 +940,22 @@ export function ChatView({
                   : (c.name === (event.name as string || "") && c.status === "running");
                 // Coding/exec tools carry full output via `detail`; keep the
                 // chip label short and expose the rest in the expandable feed.
+                const activity = c.label.endsWith("…") ? c.label.slice(0, -1) : c.label;
                 const label = detailText
-                  ? `${toolLabel(c.name, t)} ${ok ? "✓" : "✗"}`
-                  : `${toolLabel(c.name, t)} ${ok ? "✓" : "✗"}${msg ? ` — ${msg.slice(0, 80)}` : ""}`;
+                  ? `${activity} ${ok ? "✓" : "✗"}`
+                  : `${activity} ${ok ? "✓" : "✗"}${msg ? ` — ${msg.slice(0, 80)}` : ""}`;
                 return match
                   ? { ...c, status: ok ? ("ok" as const) : ("fail" as const), detail, label }
                   : c;
               });
-              return { ...m, tools };
+              const hasRunningTool = tools.some((tool) => tool.status === "running");
+              return {
+                ...m,
+                tools,
+                progress: hasRunningTool
+                  ? undefined
+                  : t(ok ? "evaluatingResults" : "checkingActionResult"),
+              };
             }));
             if (callId) runningChip.current.delete(callId);
             break;
@@ -899,10 +970,14 @@ export function ChatView({
               finalize(replyIdx, {
                 intent,
                 agentic: intent === "task" || signals.includes("multi_step"),
+                progress: intent === "research" ? t("searchingResearch") : t("planningTask"),
               });
             }
             break;
           }
+          case "status":
+            finalize(replyIdx, { progress: t("switchingModel") });
+            break;
           case "plan": {
             const steps = (event.steps as PlanStep[]) || [];
             const reason = (event.reason as string) || undefined;
@@ -960,6 +1035,7 @@ export function ChatView({
             finalize(replyIdx, {
               text: terminalReply,
               finalized: true,
+              progress: undefined,
               created_at: new Date().toISOString(),
               sources: (event.sources as SourceRef[]) || [],
               intent: String(event.intent || "") || undefined,
@@ -991,6 +1067,7 @@ export function ChatView({
               text: friendlyError(err?.code, err?.details, t),
               finalized: true,
               error: true,
+              progress: undefined,
             });
             break;
           }
@@ -1036,11 +1113,12 @@ export function ChatView({
             ? `${liveText}\n\n⏹ ${t("stopped")}`
             : `⏹ ${t("stopped")}`,
           finalized: true,
+          progress: undefined,
         });
       } else {
         const message = errorMessage(err, t);
         if (!String(message).includes("Invalid JSON")) {
-          finalize(replyIdx, { text: message, finalized: true, error: true });
+          finalize(replyIdx, { text: message, finalized: true, error: true, progress: undefined });
         }
       }
     } finally {
@@ -1614,12 +1692,14 @@ export function ChatView({
                 )}
                 {Array.isArray(m.tools) && m.tools.length > 0 && (
                   <div>
-                    {m.tools.map((c, ci) => (
-                      <span key={ci} className={`tool-chip ${c.status === "running" ? "" : c.status}`}>
-                        <span className="dot" />
-                        <span className="label">{c.label}</span>
-                      </span>
-                    ))}
+                    <div className="ws-tools" role="status" aria-live="polite">
+                      {m.tools.map((c, ci) => (
+                        <span key={ci} className={`tool-chip ${c.status === "running" ? "" : c.status}`}>
+                          <span className="dot" />
+                          <span className="label">{c.label}</span>
+                        </span>
+                      ))}
+                    </div>
                     {m.tools.some((c) => toolDetailText(c.detail)) && (
                       <div className="ws-tool-details">
                         {m.tools.filter((c) => toolDetailText(c.detail)).map((c, ci) => (
@@ -1636,12 +1716,13 @@ export function ChatView({
                   !m.finalized &&
                   !m.text &&
                   !m.error &&
-                  (!Array.isArray(m.tools) || m.tools.length === 0) &&
-                  !m.plan &&
-                  (m.artifacts ?? []).length === 0 &&
-                  (m.sources ?? []).length === 0 && (
-                    <div className="thinking">
-                      <span className="pm-spinner">…</span> {m.intent === "research" ? t("searchingResearch") : t("searchingThink")}
+                  (m.progress ||
+                    ((!Array.isArray(m.tools) || m.tools.length === 0) &&
+                      !m.plan &&
+                      (m.artifacts ?? []).length === 0 &&
+                      (m.sources ?? []).length === 0)) && (
+                    <div className="thinking" role="status" aria-live="polite">
+                      <span className="pm-spinner">…</span> {m.progress || (m.intent === "research" ? t("searchingResearch") : t("searchingThink"))}
                     </div>
                   )}
                 {Array.isArray(m.artifacts) && m.artifacts.length > 0 && (

@@ -104,9 +104,12 @@ async def _await_android_launch_receipt(
                 )
                 return ToolResult.fail(
                     "ANDROID_ACTION_PENDING",
-                    f"The phone has not confirmed opening {expected_app_name}. "
-                    "The action may still be running; do not report the app as open "
-                    "or repeat the launch until its status is checked.",
+                    "No verified completion receipt arrived for "
+                    f"opening {expected_app_name}. "
+                    "It may already be open, but Jalora cannot confirm from the "
+                    "backend. "
+                    "Check the companion connection and command status; do not report "
+                    "the launch as successful or retry until reconciled.",
                     data=data,
                 )
             await asyncio.sleep(
@@ -188,8 +191,10 @@ async def _await_android_home_receipt(
             if remaining <= 0:
                 return ToolResult.fail(
                     "ANDROID_ACTION_PENDING",
-                    f"The phone has not confirmed leaving {expected_app_name}. "
-                    "The action may still be running; check its status before retrying.",
+                    "No verified completion receipt arrived for returning from "
+                    f"{expected_app_name} to Home. "
+                    "The app may still be foreground; check the companion "
+                    "connection and command status before retrying.",
                     data=data,
                 )
             await asyncio.sleep(

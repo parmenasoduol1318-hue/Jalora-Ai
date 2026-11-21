@@ -332,7 +332,9 @@ async def test_open_local_app_queues_for_one_paired_phone_without_recent_heartbe
     assert not result.success
     assert result.error is not None
     assert result.error.code == "ANDROID_ACTION_PENDING"
-    assert "not confirmed" in result.message
+    assert "No verified completion receipt arrived" in result.message
+    assert "It may already be open" in result.message
+    assert "do not report the launch as successful" in result.message
     assert result.data["device_connectivity"] == connectivity
     assert queued == [
         ("phone-1", "android.launcher.open", "", "android", "WhatsApp", "")
