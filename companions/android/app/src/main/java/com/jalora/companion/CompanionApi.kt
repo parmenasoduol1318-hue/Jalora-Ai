@@ -1,4 +1,4 @@
-package ai.jalora.companion
+package com.jalora.companion
 
 import android.content.Context
 import android.content.Intent

@@ -1,4 +1,4 @@
-package ai.jalora.companion
+package com.jalora.companion
 
 import android.app.Activity
 import android.app.AlertDialog
@@ -326,7 +326,13 @@ class MainActivity : Activity() {
             return
         }
         if (state == null) {
-            status.text = "Not paired."
+            status.text = if (SecureStore.hasLegacyCredentials(this)) {
+                "Previous companion credentials were found, but that app used an " +
+                    "outdated device protocol. Create and approve a new Android " +
+                    "pairing in Jalora, then revoke the old device."
+            } else {
+                "Not paired."
+            }
             appList.text = "No notification-sharing apps selected."
             return
         }
@@ -348,7 +354,7 @@ class MainActivity : Activity() {
 
     private fun accessibilityStatus(): String = when {
         !isAccessibilityEnabled() -> "not enabled"
-        JaloraAccessibilityService.instance == null -> "enabled but not connected"
+        ScreenAccessibilityService.instance == null -> "enabled but not connected"
         else -> "connected"
     }
 
@@ -368,7 +374,7 @@ class MainActivity : Activity() {
     }
 
     private fun isAccessibilityEnabled(): Boolean {
-        val expected = ComponentName(this, JaloraAccessibilityService::class.java).flattenToString()
+        val expected = ComponentName(this, ScreenAccessibilityService::class.java).flattenToString()
         val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
             ?: return false
         return enabled.split(':').any { it.equals(expected, ignoreCase = true) }

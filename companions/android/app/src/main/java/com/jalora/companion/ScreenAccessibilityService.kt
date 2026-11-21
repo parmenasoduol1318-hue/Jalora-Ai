@@ -1,4 +1,4 @@
-package ai.jalora.companion
+package com.jalora.companion
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
@@ -29,7 +29,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 
-class JaloraAccessibilityService : AccessibilityService() {
+class ScreenAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent?) = Unit
 
     override fun onInterrupt() = Unit
@@ -1518,7 +1518,7 @@ class JaloraAccessibilityService : AccessibilityService() {
         )
 
         @Volatile
-        var instance: JaloraAccessibilityService? = null
+        var instance: ScreenAccessibilityService? = null
             private set
     }
 }

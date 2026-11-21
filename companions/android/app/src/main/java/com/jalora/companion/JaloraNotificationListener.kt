@@ -1,4 +1,4 @@
-package ai.jalora.companion
+package com.jalora.companion
 
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification

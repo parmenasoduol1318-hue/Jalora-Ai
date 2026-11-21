@@ -34,7 +34,7 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
         <service
-            android:name=".JaloraAccessibilityService"
+            android:name=".ScreenAccessibilityService"
             android:exported="true"
             android:label="Jalora screen access"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">

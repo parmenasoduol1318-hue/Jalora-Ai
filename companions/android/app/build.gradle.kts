@@ -4,15 +4,15 @@ plugins {
 }
 
 android {
-    namespace = "ai.jalora.companion"
+    namespace = "com.jalora.companion"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "ai.jalora.companion"
+        applicationId = "com.jalora.companion"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     dependencies {

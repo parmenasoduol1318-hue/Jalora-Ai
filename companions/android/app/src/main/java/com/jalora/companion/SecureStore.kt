@@ -1,4 +1,4 @@
-package ai.jalora.companion
+package com.jalora.companion
 
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
@@ -15,6 +15,11 @@ object SecureStore {
     private const val alias = "jalora-device-companion-v1"
     private const val preferences = "jalora_companion_secure"
     private const val valueKey = "encrypted_state"
+
+    fun hasLegacyCredentials(context: Context): Boolean {
+        val legacy = context.getSharedPreferences("jalora_companion", Context.MODE_PRIVATE)
+        return legacy.contains("device_token") && legacy.contains("device_token_iv")
+    }
 
     @Synchronized
     fun read(context: Context): JSONObject? {

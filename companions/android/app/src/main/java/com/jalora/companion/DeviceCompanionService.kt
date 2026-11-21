@@ -1,4 +1,4 @@
-package ai.jalora.companion
+package com.jalora.companion
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -271,7 +271,7 @@ class DeviceCompanionService : Service() {
             if (!hasScope(state, "android.apps.launch")) {
                 return ActionResult.failed("ANDROID_SCOPE_REQUIRED", "App-launch permission was not granted.")
             }
-            val accessibility = JaloraAccessibilityService.instance
+            val accessibility = ScreenAccessibilityService.instance
                 ?: return ActionResult.uncertain(
                     "ANDROID_ACCESSIBILITY_REQUIRED",
                     "Enable Jalora Accessibility in Android Settings to search the launcher and open apps.",
@@ -295,7 +295,7 @@ class DeviceCompanionService : Service() {
                     "Screen control requires the screen-read pairing permission.",
                 )
             }
-            val service = JaloraAccessibilityService.instance
+            val service = ScreenAccessibilityService.instance
                 ?: return ActionResult.failed(
                     "ANDROID_ACCESSIBILITY_REQUIRED",
                     "Enable the Jalora accessibility service in Android Settings.",
@@ -316,7 +316,7 @@ class DeviceCompanionService : Service() {
                 if (!hasScope(state, "android.apps.launch")) {
                     return ActionResult.failed("ANDROID_SCOPE_REQUIRED", "App-launch permission was not granted.")
                 }
-                val accessibility = JaloraAccessibilityService.instance
+                val accessibility = ScreenAccessibilityService.instance
                     ?: return ActionResult.uncertain(
                         "ANDROID_ACCESSIBILITY_REQUIRED",
                         "Enable Jalora Accessibility in Android Settings to find and open the app from the launcher.",
@@ -444,10 +444,10 @@ class DeviceCompanionService : Service() {
     }
 
     companion object {
-        const val ACTION_START = "ai.jalora.companion.START"
-        const val ACTION_STOP = "ai.jalora.companion.STOP"
-        const val ACTION_PAUSE = "ai.jalora.companion.PAUSE"
-        const val ACTION_RESUME = "ai.jalora.companion.RESUME"
+        const val ACTION_START = "com.jalora.companion.START"
+        const val ACTION_STOP = "com.jalora.companion.STOP"
+        const val ACTION_PAUSE = "com.jalora.companion.PAUSE"
+        const val ACTION_RESUME = "com.jalora.companion.RESUME"
         private const val STATUS_CHANNEL = "jalora_status"
         private const val NOTIFICATION_ID = 7412
         private const val RETRY_DELAY_MS = 2500L

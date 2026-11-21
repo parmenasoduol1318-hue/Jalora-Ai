@@ -29,6 +29,13 @@ keystore or signing credentials.
 
 ## Pairing and permissions
 
+The companion package is `com.jalora.companion`, matching the previously
+installed Jalora Android app so this build updates it instead of creating a
+second app. Pairing credentials from the retired screen-command protocol are
+not reused; the app identifies those credentials and asks you to create and
+approve a fresh Android pairing using the current permissions. Revoke the old
+device in Jalora after the replacement phone reports online.
+
 1. In Jalora Integrations, create an Android pairing request and select the
    scopes to grant. App launch, screen reading, and screen control are selected
    by default; public browser links are also available.

@@ -1,4 +1,4 @@
-package ai.jalora.companion
+package com.jalora.companion
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -17,8 +17,8 @@ class CompanionActionReceiver : BroadcastReceiver() {
     }
 
     companion object {
-        const val ACTION_PAUSE = "ai.jalora.companion.PAUSE"
-        const val ACTION_RESUME = "ai.jalora.companion.RESUME"
-        const val ACTION_STOP = "ai.jalora.companion.STOP"
+        const val ACTION_PAUSE = "com.jalora.companion.PAUSE"
+        const val ACTION_RESUME = "com.jalora.companion.RESUME"
+        const val ACTION_STOP = "com.jalora.companion.STOP"
     }
 }
