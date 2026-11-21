@@ -5,8 +5,11 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -19,6 +22,8 @@ data class PairingLink(
 
 object CompanionApi {
     private const val MAX_LAUNCHER_APPS = 500
+    private const val TAG = "JaloraCompanionApi"
+    private val DYNAMIC_PATH_SEGMENT = Regex("/[A-Za-z0-9_-]{20,}(?=/|$)")
 
     fun installedApplications(context: Context): JSONArray {
         val packageManager = context.packageManager
@@ -101,16 +106,42 @@ object CompanionApi {
         connection.instanceFollowRedirects = false
         connection.setRequestProperty("Accept", "application/json")
         token?.let { connection.setRequestProperty("Authorization", "Bearer $it") }
-        if (body != null) {
-            connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+        val safePath = path.substringBefore('?').replace(DYNAMIC_PATH_SEGMENT, "/{id}")
+        val (status, text) = try {
+            if (body != null) {
+                connection.doOutput = true
+                connection.setRequestProperty("Content-Type", "application/json")
+                connection.outputStream.use {
+                    it.write(body.toString().toByteArray(Charsets.UTF_8))
+                }
+            }
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: "{}"
+            status to text
+        } catch (error: IOException) {
+            Log.w(TAG, "$method $safePath failed (${error.javaClass.simpleName}).")
+            throw error
+        } finally {
+            connection.disconnect()
         }
-        val status = connection.responseCode
-        val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-        val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: "{}"
-        connection.disconnect()
-        val response = JSONObject(text)
+        if (status in 200..299) {
+            Log.i(TAG, "$method $safePath -> HTTP $status.")
+        } else {
+            Log.w(TAG, "$method $safePath -> HTTP $status.")
+        }
+        val response = try {
+            JSONObject(text)
+        } catch (error: JSONException) {
+            Log.w(TAG, "$method $safePath returned non-JSON HTTP $status.")
+            if (status !in 200..299) {
+                throw CompanionHttpException(
+                    status,
+                    "Jalora returned HTTP $status with an unreadable error response.",
+                )
+            }
+            throw IOException("Jalora returned malformed JSON (HTTP $status).", error)
+        }
         if (status !in 200..299) {
             val message = response.optJSONObject("error")?.optString("details")
                 ?.takeIf { it.isNotBlank() } ?: "Jalora returned HTTP $status."

@@ -96,6 +96,10 @@ async def _await_android_launch_receipt(
         if protocol_status in {"queued", "delivered", "running"}:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
+                logger.warning(
+                    "Android app-launch receipt timed out at protocol_status=%s.",
+                    protocol_status,
+                )
                 return ToolResult.fail(
                     "ANDROID_ACTION_PENDING",
                     f"The phone has not confirmed opening {expected_app_name}. "
@@ -115,6 +119,10 @@ async def _await_android_launch_receipt(
             else None
         )
         if protocol_status != "succeeded":
+            logger.warning(
+                "Android app-launch command ended at protocol_status=%s.",
+                protocol_status if isinstance(protocol_status, str) else "unknown",
+            )
             details = (
                 operation_result.get("reason")
                 if isinstance(operation_result, dict)
@@ -143,12 +151,16 @@ async def _await_android_launch_receipt(
             or _normalized_app_name(verified_app)
             != _normalized_app_name(expected_app_name)
         ):
+            logger.warning(
+                "Android app-launch receipt lacked verified foreground evidence."
+            )
             return ToolResult.fail(
                 "ANDROID_LAUNCH_UNVERIFIED",
                 f"The phone did not verify that {expected_app_name} is in the "
                 "foreground. Jalora will not report the app as open.",
                 data=data,
             )
+        logger.info("Android app-launch receipt verified by the paired phone.")
         return ToolResult.ok(
             f"The phone verified {expected_app_name} is in the foreground.",
             data,

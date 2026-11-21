@@ -43,7 +43,7 @@ device in Jalora after the replacement phone reports online.
    server origin, and requested scopes before approving on-device.
 3. App launch and screen control do not require manually selecting apps.
    The companion may report launcher-app metadata for compatibility, but
-   Android launcher search and active-screen control do not depend on that
+   app-name resolution and active-screen control do not depend on that
    manifest. Package names stay on this phone. The optional app selector is
    only for notification sharing when `messages.read` is granted.
 4. Enable Android's Jalora Accessibility Service only if `android.screen.read`
@@ -71,14 +71,14 @@ cannot execute Android application commands.
 
 In Jalora chat, ask for an app by its visible name and describe the task, for
 example: “Open Maps on my Android phone and inspect the route.” Jalora discovers
-a live paired phone with the required scopes. The companion searches the home
-screen/app drawer, taps the matching launcher item, and reports success only
-when the foreground package matches the requested app and fresh screen evidence
-is available. A queued command or a transition to a different app is not treated
-as success; uncertain launches are reported as such. Installed-app manifests
-are not used to declare an app missing. App controls are executed one command
-at a time and each receipt includes the refreshed screen state for Jalora's next
-step.
+a live paired phone with the required scopes. The companion resolves the
+displayed name to one installed launcher package and requests its Android launch
+activity; it does not depend on launcher UI search or ADB input. It reports
+success only when the foreground package matches the requested app and fresh
+screen evidence is available. A queued command or an unverified transition is
+not treated as success. Installed-app manifests are not used to declare an app
+missing. App controls are executed one command at a time and each receipt
+includes the refreshed screen state for Jalora's next step.
 
 Reading requires `android.screen.read`; clicking, scrolling, typing, and
 coordinate tapping also require `android.screen.control`. Inspection reports

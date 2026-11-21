@@ -9,6 +9,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
@@ -87,6 +88,7 @@ class DeviceCompanionService : Service() {
                 if (!running.get()) return
             } catch (error: Exception) {
                 failures = (failures + 1).coerceAtMost(5)
+                Log.w(TAG, "Heartbeat request failed (${error.javaClass.simpleName}).")
                 updateStatus(
                     "Heartbeat failed; reconnecting: ${error.message ?: error.javaClass.simpleName}",
                 )
@@ -146,6 +148,7 @@ class DeviceCompanionService : Service() {
                     }
                     updateStatus("Connected. Waiting for a Jalora task.")
                 } catch (error: CompanionHttpException) {
+                    Log.w(TAG, "Companion request returned HTTP ${error.status}.")
                     if (error.status == 401) {
                         accessToken = ""
                         if (error.message?.contains("invalid or revoked", true) == true) {
@@ -160,6 +163,7 @@ class DeviceCompanionService : Service() {
                 } catch (error: InterruptedException) {
                     if (!running.get()) return
                 } catch (error: Exception) {
+                    Log.w(TAG, "Companion loop failed (${error.javaClass.simpleName}).")
                     updateStatus("Companion error: ${error.message ?: error.javaClass.simpleName}")
                     Thread.sleep(RETRY_DELAY_MS)
                 }
@@ -199,6 +203,7 @@ class DeviceCompanionService : Service() {
         val nonce = command.getString("nonce")
         val operation = command.getString("operation")
         val arguments = command.optJSONObject("arguments") ?: JSONObject()
+        Log.i(TAG, "Received protocol command operation=$operation.")
         val origin = state.getString("api_origin")
         val result = CompanionApi.request(
             origin,
@@ -208,6 +213,7 @@ class DeviceCompanionService : Service() {
             JSONObject().put("nonce", nonce).put("approve", true),
         )
         if (!result.optBoolean("execute")) {
+            Log.w(TAG, "Phone rejected the protocol command decision.")
             updateStatus("The phone did not authorize this command.")
             return
         }
@@ -228,6 +234,11 @@ class DeviceCompanionService : Service() {
         state.remove("inflight_command")
         SecureStore.write(this, state)
         deliverSavedReceipt(state)
+        Log.i(
+            TAG,
+            "Protocol command finished operation=$operation status=${actionResult.status} " +
+                "error_code=${actionResult.errorCode ?: "none"}.",
+        )
         updateStatus("Action receipt recorded as ${actionResult.status}.")
     }
 
@@ -276,7 +287,7 @@ class DeviceCompanionService : Service() {
                     "ANDROID_ACCESSIBILITY_REQUIRED",
                     "Enable Jalora Accessibility in Android Settings to search the launcher and open apps.",
                 )
-            return accessibility.launchAppThroughLauncher(arguments.optString("app_name"))
+            return accessibility.launchInstalledApp(arguments.optString("app_name"))
         }
         if (operation.startsWith("android.screen.")) {
             val requiredScope = if (operation == "android.screen.inspect") {
@@ -321,7 +332,7 @@ class DeviceCompanionService : Service() {
                         "ANDROID_ACCESSIBILITY_REQUIRED",
                         "Enable Jalora Accessibility in Android Settings to find and open the app from the launcher.",
                     )
-                accessibility.launchAppThroughLauncher(app.optString("name"))
+                accessibility.launchInstalledApp(app.optString("name"))
             }
             else -> ActionResult.failed("ANDROID_OPERATION_UNSUPPORTED", "This Android operation is not supported.")
         }
@@ -444,6 +455,7 @@ class DeviceCompanionService : Service() {
     }
 
     companion object {
+        private const val TAG = "JaloraDeviceCompanion"
         const val ACTION_START = "com.jalora.companion.START"
         const val ACTION_STOP = "com.jalora.companion.STOP"
         const val ACTION_PAUSE = "com.jalora.companion.PAUSE"

@@ -34,13 +34,15 @@ conversation turns.
 
 When Jalora's backend is not running on Windows, an exact Chat or Agent Tasks
 request such as `open WhatsApp` can use one online paired Android companion
-instead. The companion searches the launcher/home screen and app drawer by the
-requested visible app name; an installed-app manifest is not required for
-launch. The pairing must grant the relevant scopes, and Jalora reports
-completion only after the companion returns a receipt. Reading and controlling
-the Android screen still requires the owner to enable Android's Accessibility
-Service in system settings. If multiple paired phones are online, specify the
-target phone. iPhone app launching is not supported by this companion.
+instead. The companion resolves the requested visible app name to a unique
+installed launcher package and starts Android's launch activity; it does not
+depend on launcher UI search or injected input. An installed-app manifest is
+not required for launch. The pairing must grant the relevant scopes, and Jalora
+reports completion only after the companion verifies the foreground package
+and returns fresh screen evidence. Reading and controlling the Android screen
+still requires the owner to enable Android's Accessibility Service in system
+settings. If multiple paired phones are online, specify the target phone.
+iPhone app launching is not supported by this companion.
 
 Requests that explicitly target a Windows laptop, computer, or desktop are
 routed through live device-capability discovery. The agent can choose an
@@ -191,7 +193,7 @@ The Windows and Android clients report authenticated manifests to
 reported by Android and capabilities permitted by the pairing scopes. Windows
 executable paths and hashes, and Android package names, remain on the device.
 Windows and legacy app-specific Android commands verify the current manifest.
-The Android launcher-search and active-screen commands instead rely on the
+The Android app-launch and active-screen commands instead rely on the
 phone's granted `android.apps.launch`, `android.screen.read`, and
 `android.screen.control` scopes, and do not require an app to appear in the
 manifest. Input actions require screen-read permission as well as screen
@@ -271,7 +273,7 @@ Available scopes:
 | `windows.apps.launch` | Launch an app explicitly added to the Windows companion allowlist |
 | `windows.screen.read` | Read accessible controls or OCR text from an approved Windows app |
 | `windows.screen.control` | Click or scroll accessible controls, or type into an approved app |
-| `android.apps.launch` | Search the Android launcher by visible app name and open the result |
+| `android.apps.launch` | Resolve a visible app name to one installed app and request its Android launch activity |
 | `android.screen.read` | Read accessibility controls and available on-device OCR from the active screen |
 | `android.screen.control` | Click/scroll accessible controls, use coordinate taps, or enter text in non-password fields |
 
