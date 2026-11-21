@@ -374,10 +374,12 @@ class MainActivity : Activity() {
     }
 
     private fun isAccessibilityEnabled(): Boolean {
-        val expected = ComponentName(this, ScreenAccessibilityService::class.java).flattenToString()
+        val expected = ComponentName(this, ScreenAccessibilityService::class.java)
         val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
             ?: return false
-        return enabled.split(':').any { it.equals(expected, ignoreCase = true) }
+        return enabled.split(':').any {
+            ComponentName.unflattenFromString(it) == expected
+        }
     }
 
     private fun isNotificationListenerEnabled(): Boolean {
