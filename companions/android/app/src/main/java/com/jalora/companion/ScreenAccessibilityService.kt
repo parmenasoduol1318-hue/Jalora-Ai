@@ -290,7 +290,11 @@ class ScreenAccessibilityService : AccessibilityService() {
                 )
             }
             val action = when (operation) {
-                "android.screen.inspect" -> inspect(root, appName)
+                "android.screen.inspect" -> inspect(
+                    root,
+                    appName,
+                    arguments.optBoolean("include_editable_values", false),
+                )
                 "android.screen.back" -> back(root)
                 "android.screen.notifications" -> openSystemPanel(
                     root,
@@ -328,7 +332,11 @@ class ScreenAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun inspect(root: AccessibilityNodeInfo, appName: String): ActionResult {
+    private fun inspect(
+        root: AccessibilityNodeInfo,
+        appName: String,
+        includeEditableValues: Boolean = false,
+    ): ActionResult {
         val controls = JSONArray()
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         queue.add(root)
@@ -337,20 +345,46 @@ class ScreenAccessibilityService : AccessibilityService() {
         while (queue.isNotEmpty() && visited < MAX_NODES) {
             val node = queue.removeFirst()
             visited += 1
-            val name = nodeName(node)
+            val name = if (
+                includeEditableValues &&
+                node.isEditable &&
+                node.isFocused &&
+                !node.isPassword
+            ) {
+                node.hintText?.toString()
+                    ?.takeIf { it.isNotBlank() }
+                    ?: node.contentDescription?.toString().orEmpty()
+            } else {
+                nodeName(node)
+            }
             if (name.isNotBlank() || node.isClickable || node.isEditable) {
                 if (controls.length() < ACCESSIBILITY_CONTROL_LIMIT) {
                     val bounds = Rect().also(node::getBoundsInScreen)
-                    controls.put(
-                        JSONObject()
+                    val control = JSONObject()
                             .put("name", name.take(80))
                             .put("control_type", node.className?.toString()?.take(40) ?: "")
                             .put("automation_id", node.viewIdResourceName?.take(60) ?: "")
                             .put("enabled", node.isEnabled)
                             .put("visible", node.isVisibleToUser)
+                            .put("editable", node.isEditable)
+                            .put("focused", node.isFocused)
                             .put("scrollable", node.isScrollable)
-                            .put("bounds", normalizedBounds(bounds)),
-                    )
+                            .put("bounds", normalizedBounds(bounds))
+                    if (includeEditableValues && node.isEditable && node.isFocused) {
+                        if (node.isPassword) {
+                            control.put("value_status", "redacted_password")
+                        } else {
+                            val editableValue = node.text?.toString()
+                            if (editableValue == null) {
+                                control.put("value_status", "unavailable")
+                            } else {
+                                control
+                                    .put("value", editableValue.take(500))
+                                    .put("value_status", "available")
+                            }
+                        }
+                    }
+                    controls.put(control)
                 } else {
                     controlsTruncated = true
                 }
@@ -381,9 +415,24 @@ class ScreenAccessibilityService : AccessibilityService() {
             }
         }
         val metrics = resources.displayMetrics
+        val foregroundPackage = root.packageName?.toString().orEmpty()
+        val foregroundAppName = if (foregroundPackage.isBlank()) {
+            appName
+        } else {
+            try {
+                packageManager.getApplicationInfo(foregroundPackage, 0)
+                    .loadLabel(packageManager)
+                    .toString()
+                    .take(120)
+            } catch (_: PackageManager.NameNotFoundException) {
+                appName
+            }
+        }
         val result = JSONObject()
             .put("ok", true)
             .put("app_name", appName)
+            .put("foreground_app_name", foregroundAppName)
+            .put("foreground_package", foregroundPackage.take(255))
             .put("status", "inspected")
             .put("control_count", visited)
             .put(

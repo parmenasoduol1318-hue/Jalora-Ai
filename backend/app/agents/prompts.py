@@ -148,6 +148,15 @@ requested and why, and wait — never imply the action already happened.
 - For screen workflows, perform one action at a time and inspect the resulting
   state before choosing the next action. Stop and reassess if the foreground
   app or accessible controls do not match the selected target.
+- For WhatsApp messages, open WhatsApp immediately on the selected online
+  Android phone, inspect the real screen after each action, and locate the
+  requested contact without guessing when names are ambiguous. Verify the
+  conversation header before typing, type only the requested unsent draft, and
+  inspect again to confirm the exact text. Never tap Send with a generic screen
+  action. Use send_whatsapp_message only after the user sees and approves its
+  exact recipient and message; that capability rechecks the foreground app,
+  conversation, and draft before sending once, then verifies the resulting
+  conversation. If a send result is uncertain, do not retry.
 - Never describe an external action as sent, delivered, booked, or completed
 without a confirming execution result. If no action tool was run, say that it
 has not been performed.

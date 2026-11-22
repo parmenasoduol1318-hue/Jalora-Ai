@@ -37,6 +37,7 @@ from app.services.device_command_protocol import (
     DeviceProtocolError,
     approve_device_command,
     claim_device_commands,
+    cancel_unstarted_device_command,
     issue_device_access_token,
     record_device_receipt,
     verify_command_nonce,
@@ -897,24 +898,13 @@ def cancel_remote_command(
         "queued",
         "delivered",
     }:
-        cancelled = db.execute(
-            update(DeviceRemoteCommand)
-            .where(
-                DeviceRemoteCommand.id == command.id,
-                DeviceRemoteCommand.user_id == user.id,
-                DeviceRemoteCommand.status == "pending",
-                DeviceRemoteCommand.protocol_status.in_(("queued", "delivered")),
-            )
-            .values(
-                status="cancelled",
-                protocol_status="cancelled",
-                error_code="USER_CANCELLED",
-                completed_at=now,
-            )
-        )
-        if cancelled.rowcount != 1:
+        if not cancel_unstarted_device_command(
+            db,
+            user_id=user.id,
+            command_id=command.id,
+            error_code="USER_CANCELLED",
+        ):
             raise ConflictError("The remote command changed while cancellation was requested.")
-        db.commit()
         return {"status": "cancelled", "cancellation_confirmed": True}
     if command.status == "approved" and command.protocol_status == "running":
         marked_uncertain = db.execute(

@@ -13,12 +13,13 @@ from app.config import get_settings
 from app.context import ToolContext, bind_tool_execution
 from app.database.session import SessionLocal
 from app.models.agent import AgentRun
-from app.models.device import DeviceRemoteCommand
+from app.models.device import DeviceConnection, DeviceRemoteCommand
 from app.models.task import Task, TaskStep
 from app.models.user import User, utcnow
 from app.services.device_command_protocol import (
     DeviceProtocolError,
     _normalized_command,
+    cancel_unstarted_device_command,
 )
 from app.tools.device_tools import request_remote_android_url
 
@@ -136,6 +137,109 @@ def test_android_visual_actions_validate_directions_and_control_targets():
             {"name": "Brightness", "percentage": 101},
             device,
         )
+
+
+def test_android_screen_inspection_can_request_only_focused_editable_values():
+    device = SimpleNamespace(
+        platform="android",
+        scopes=["android.screen.read"],
+        capability_manifest={"applications": []},
+    )
+
+    scope, arguments = _normalized_command(
+        "android.screen.inspect",
+        {"include_editable_values": True},
+        device,
+    )
+    assert scope == "android.screen.read"
+    assert arguments == {"include_editable_values": True}
+    with pytest.raises(DeviceProtocolError, match="boolean"):
+        _normalized_command(
+            "android.screen.inspect",
+            {"include_editable_values": "yes"},
+            device,
+        )
+
+
+def test_cancel_unstarted_device_command_cannot_cancel_running_action(
+    client, auth_headers
+):
+    headers = auth_headers("cancel-device-command@test.com")
+    pair = client.post(
+        "/api/devices/pair-requests",
+        headers=headers,
+        json={
+            "name": "Cancel protocol phone",
+            "platform": "android",
+            "scopes": ["android.apps.launch"],
+            "consent_confirmed": True,
+        },
+    )
+    assert pair.status_code == 200, pair.text
+    pair_body = pair.json()
+    pair_code = parse_qs(urlsplit(pair_body["pairing_url"]).fragment)
+    approved = client.post(
+        f"/api/devices/pair-requests/{pair_code['pair_request_id'][0]}/approve",
+        json={
+            "confirm": True,
+            "pairing_code": pair_code["pair_code"][0],
+        },
+    )
+    assert approved.status_code == 200, approved.text
+
+    with SessionLocal() as db:
+        user = db.query(User).filter_by(email="cancel-device-command@test.com").one()
+        device = db.get(DeviceConnection, approved.json()["device"]["id"])
+        queued = DeviceRemoteCommand(
+            user_id=user.id,
+            device_id=device.id,
+            action="android.launcher.open",
+            target_url="",
+            required_scope="android.apps.launch",
+            command_nonce="a" * 64,
+            idempotency_key="b" * 64,
+            payload_digest="c" * 64,
+            expected_evidence=["operation_result"],
+            expires_at=utcnow() + timedelta(minutes=5),
+        )
+        running = DeviceRemoteCommand(
+            user_id=user.id,
+            device_id=device.id,
+            action="android.launcher.open",
+            target_url="",
+            required_scope="android.apps.launch",
+            command_nonce="d" * 64,
+            idempotency_key="e" * 64,
+            payload_digest="f" * 64,
+            expected_evidence=["operation_result"],
+            status="approved",
+            protocol_status="running",
+            expires_at=utcnow() + timedelta(minutes=5),
+        )
+        db.add_all([queued, running])
+        db.commit()
+        queued_id = queued.id
+        running_id = running.id
+        user_id = user.id
+
+        assert cancel_unstarted_device_command(
+            db,
+            user_id=user_id,
+            command_id=queued_id,
+            error_code="DEVICE_ACK_TIMEOUT",
+        )
+        assert not cancel_unstarted_device_command(
+            db,
+            user_id=user_id,
+            command_id=running_id,
+            error_code="DEVICE_ACK_TIMEOUT",
+        )
+        db.refresh(queued)
+        db.refresh(running)
+
+        assert queued.protocol_status == "cancelled"
+        assert queued.error_code == "DEVICE_ACK_TIMEOUT"
+        assert running.protocol_status == "running"
 
 
 def _approved_device(client, owner_headers):

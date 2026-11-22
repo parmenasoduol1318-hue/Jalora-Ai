@@ -2899,6 +2899,7 @@ def build_graph(
                 continue
             needs_approval = decision.require_approval or name in {
                 "send_email",
+                "send_whatsapp_message",
                 "request_user_input",
             }
 

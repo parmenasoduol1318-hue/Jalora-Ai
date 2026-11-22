@@ -6,6 +6,14 @@ function argumentText(
   return typeof value === "string" ? value.trim() : "";
 }
 
+function exactArgumentText(
+  argumentsValue: Record<string, unknown>,
+  key: string,
+): string {
+  const value = argumentsValue[key];
+  return typeof value === "string" ? value : "";
+}
+
 export function approvalDescription(
   toolName: string,
   argumentsValue: Record<string, unknown> | null | undefined,
@@ -14,6 +22,12 @@ export function approvalDescription(
   const action = argumentText(args, "action");
   const appName = argumentText(args, "app_name");
   const device = argumentText(args, "device_name") || "your connected phone";
+
+  if (toolName === "send_whatsapp_message") {
+    const recipient = argumentText(args, "recipient");
+    const message = exactArgumentText(args, "message");
+    return `WhatsApp send approval · Recipient: ${recipient || "unverified"} · Exact message:\n${message}`;
+  }
 
   if (
     (toolName === "open_paired_android_app" || action === "android.launcher.open")

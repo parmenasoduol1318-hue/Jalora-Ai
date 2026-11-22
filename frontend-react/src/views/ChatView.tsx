@@ -57,6 +57,11 @@ interface UiMessage {
   intent?: string;
   agentic?: boolean;
   plan?: ChatPlan;
+  deviceEvents?: Array<{
+    key: string;
+    label: string;
+    latencyMs?: number;
+  }>;
   artifacts?: Artifact[];
   citations?: CitationRef[];
   diagrams?: DiagramRef[];
@@ -85,6 +90,23 @@ const RECOGNIZED_TOOLS: Record<string, string> = {
   type_local_app_text: "typingInApp",
   press_local_app_key: "usingAppKeyboard",
   request_remote_android_action: "controllingPhone",
+  send_whatsapp_message: "sendingWhatsAppMessage",
+};
+
+const DEVICE_PROGRESS_LABELS: Record<string, string> = {
+  device_online: "phoneHeartbeatRecent",
+  device_offline: "phoneOffline",
+  command_queued: "phoneCommandQueued",
+  device_received: "phoneCommandReceived",
+  action_executing: "phoneActionExecuting",
+  action_verified: "phoneActionVerified",
+  action_failed: "phoneActionFailed",
+  action_unconfirmed: "phoneActionUnconfirmed",
+  action_cancelled: "phoneActionCancelled",
+  phone_text_entered: "phoneTextEntered",
+  whatsapp_draft_verified: "whatsappDraftVerified",
+  whatsapp_send_approved: "whatsappSendApproved",
+  whatsapp_message_submitted: "whatsappMessageSubmitted",
 };
 
 const toolLabel = (name: string, t: (k: string) => string): string =>
@@ -978,6 +1000,46 @@ export function ChatView({
           case "status":
             finalize(replyIdx, { progress: t("switchingModel") });
             break;
+          case "device_progress": {
+            const activeRun = runRef.current;
+            const runId = String(event.run_id || "");
+            const taskId = String(event.task_id || "");
+            const stage = String(event.stage || "");
+            const labelKey = DEVICE_PROGRESS_LABELS[stage];
+            if (
+              !activeRun?.runId
+              || !activeRun.taskId
+              || runId !== activeRun.runId
+              || taskId !== activeRun.taskId
+              || !labelKey
+            ) {
+              break;
+            }
+            const commandId = String(event.command_id || "");
+            const toolCallId = String(event.tool_call_id || "");
+            const key = `${runId}:${taskId}:${commandId || toolCallId || "device"}:${stage}`;
+            const latency = Number(event.latency_ms);
+            setMessages((prev) => prev.map((m, i) => {
+              if (i !== replyIdx || m.finalized) return m;
+              const deviceEvents = m.deviceEvents || [];
+              if (deviceEvents.some((item) => item.key === key)) return m;
+              return {
+                ...m,
+                progress: t(labelKey),
+                deviceEvents: [
+                  ...deviceEvents,
+                  {
+                    key,
+                    label: t(labelKey),
+                    ...(Number.isFinite(latency) && latency >= 0
+                      ? { latencyMs: latency }
+                      : {}),
+                  },
+                ],
+              };
+            }));
+            break;
+          }
           case "plan": {
             const steps = (event.steps as PlanStep[]) || [];
             const reason = (event.reason as string) || undefined;
@@ -1690,6 +1752,26 @@ export function ChatView({
                     )}
                   </div>
                 )}
+                {m.deviceEvents && m.deviceEvents.length > 0 && (
+                  <div
+                    className="device-progress-events"
+                    role="log"
+                    aria-label={t("phoneProgress")}
+                    aria-live="polite"
+                  >
+                    {m.deviceEvents.map((event) => (
+                      <div className="device-progress-event" key={event.key}>
+                        <span className="device-progress-dot" aria-hidden="true">●</span>
+                        <span>{event.label}</span>
+                        {event.latencyMs != null && (
+                          <span className="device-progress-latency">
+                            {event.latencyMs} ms
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {Array.isArray(m.tools) && m.tools.length > 0 && (
                   <div>
                     <div className="ws-tools" role="status" aria-live="polite">
@@ -1909,7 +1991,7 @@ export function ChatView({
               )}
             </span>
             {approvalDescription(approval.tool_name, approval.arguments) && (
-              <p className="muted small">
+              <p className={`muted small${approval.tool_name === "send_whatsapp_message" ? " whatsapp-send-description" : ""}`}>
                 {approvalDescription(approval.tool_name, approval.arguments)}
               </p>
             )}
@@ -1925,8 +2007,12 @@ export function ChatView({
                   {t("taskOpenDetails")}
                 </button>
               )}{" "}
-              <button className="btn small" onClick={() => decide(false)}>{t("deny")}</button>{" "}
-              <button className="btn primary small" onClick={() => decide(true)}>{t("approve")}</button>
+              <button className="btn small" onClick={() => decide(false)}>
+                {t(approval.tool_name === "send_whatsapp_message" ? "cancel" : "deny")}
+              </button>{" "}
+              <button className="btn primary small" onClick={() => decide(true)}>
+                {t(approval.tool_name === "send_whatsapp_message" ? "approveSend" : "approve")}
+              </button>
             </span>
           </div>
         )}
@@ -2225,7 +2311,7 @@ export function ChatView({
                 </div>
               ) : (
                 <>
-                  <div className={["send_email", "send_email_batch"].includes(approval?.tool_name || "") ? "approval-modal-content" : undefined}>
+                  <div className={["send_email", "send_email_batch", "send_whatsapp_message"].includes(approval?.tool_name || "") ? "approval-modal-content" : undefined}>
                     {approval?.tool_name !== "request_user_input" && (
                       <p>
                         {approval?.tool_name === "send_email_batch"
@@ -2237,7 +2323,21 @@ export function ChatView({
                             .replace("{level}", String(approval?.level || ""))}
                       </p>
                     )}
-                    {approval?.tool_name === "make_call" ? (
+                    {approval?.tool_name === "send_whatsapp_message" ? (
+                      <div className="whatsapp-approval-card">
+                        <p>
+                          <strong>{t("applicationName")}:</strong> WhatsApp
+                        </p>
+                        <p>
+                          <strong>{t("recipientLabel")}:</strong>{" "}
+                          {String(approval.arguments?.recipient || "")}
+                        </p>
+                        <p><strong>{t("exactMessage")}:</strong></p>
+                        <pre className="whatsapp-approval-message">
+                          {String(approval.arguments?.message ?? "")}
+                        </pre>
+                      </div>
+                    ) : approval?.tool_name === "make_call" ? (
                       <div className="approval-call">
                         <div className="approval-call-line">
                           📞{" "}
@@ -2338,7 +2438,7 @@ export function ChatView({
               {!needsCredentials && (
                 <p className="muted small">{t("taskApprovalScopeHint")}</p>
               )}
-              <div className={`row end gap${["send_email", "send_email_batch"].includes(approval?.tool_name || "") ? " approval-modal-actions" : ""}`}>
+              <div className={`row end gap${["send_email", "send_email_batch", "send_whatsapp_message"].includes(approval?.tool_name || "") ? " approval-modal-actions" : ""}`}>
                 {approval?.run_id && onOpenRun && (
                   <button
                     className="btn small"
@@ -2351,11 +2451,17 @@ export function ChatView({
                   </button>
                 )}
                 <button className="btn danger" disabled={approving} onClick={() => decide(false)}>
-                  {approval?.tool_name === "request_user_input" ? t("userInputCancel") : t("deny")}
+                  {approval?.tool_name === "request_user_input"
+                    ? t("userInputCancel")
+                    : approval?.tool_name === "send_whatsapp_message"
+                      ? t("cancel")
+                      : t("deny")}
                 </button>
                 <button className="btn primary" disabled={approving} onClick={() => decide(true)}>
                   {approval?.tool_name === "request_user_input"
                     ? t("userInputContinue")
+                    : approval?.tool_name === "send_whatsapp_message"
+                      ? t("approveSend")
                     : needsCredentials
                       ? t("saveAndApprove")
                       : t("approve")}

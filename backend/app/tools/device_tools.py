@@ -2,18 +2,21 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import sys
 import uuid
 import webbrowser
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-from app.context import get_tool_context, get_tool_model_router
+from app.context import ToolContext, get_tool_context, get_tool_model_router
 from app.database.session import SessionLocal
 from app.errors import JaloraError, ToolResult
+from app.events import emit
 from app.models.device import (
     DeviceConnection,
     DeviceMessage,
@@ -26,6 +29,7 @@ from app.services.device_intent import resolve_app_launch_target
 from app.services.device_command_protocol import (
     DeviceIdempotencyConflict,
     DeviceProtocolError,
+    cancel_unstarted_device_command,
     queue_device_command,
 )
 from app.services.url_safety import validate_external_url
@@ -39,6 +43,45 @@ ANDROID_LAUNCH_RECEIPT_TIMEOUT_SECONDS = 35.0
 ANDROID_LAUNCH_RECEIPT_POLL_SECONDS = 0.5
 ANDROID_HOME_RECEIPT_TIMEOUT_SECONDS = 20.0
 ANDROID_HOME_RECEIPT_POLL_SECONDS = 0.5
+ANDROID_ACTION_RECEIPT_TIMEOUT_SECONDS = 35.0
+ANDROID_ACTION_RECEIPT_POLL_SECONDS = 0.5
+
+
+def _emit_device_progress(
+    *,
+    stage: str,
+    context: ToolContext,
+    command_id: str | None = None,
+    device_id: str | None = None,
+    device_name: str | None = None,
+    action: str | None = None,
+    app_name: str | None = None,
+    occurred_at: str | datetime | None = None,
+    latency_ms: int | None = None,
+) -> None:
+    if not context.task_id or not context.run_id:
+        return
+    event_time = (
+        occurred_at.isoformat()
+        if isinstance(occurred_at, datetime)
+        else occurred_at
+    )
+    event: dict[str, Any] = {
+        "stage": stage,
+        "task_id": context.task_id,
+        "run_id": context.run_id,
+        "tool_call_id": context.tool_call_id,
+        "command_id": command_id,
+        "device_id": device_id,
+        "device_name": device_name,
+        "action": action,
+        "occurred_at": event_time or datetime.now(timezone.utc).isoformat(),
+    }
+    if app_name:
+        event["app_name"] = app_name[:120]
+    if latency_ms is not None:
+        event["latency_ms"] = max(0, latency_ms)
+    emit("device_progress", event)
 
 
 async def discover_available_device_capabilities() -> ToolResult:
@@ -66,6 +109,30 @@ def _normalized_app_name(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold()
 
 
+def _command_latency_ms(started_at: Any, ended_at: Any) -> int | None:
+    def as_datetime(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        else:
+            return None
+        return (
+            parsed.replace(tzinfo=timezone.utc)
+            if parsed.tzinfo is None
+            else parsed.astimezone(timezone.utc)
+        )
+
+    start = as_datetime(started_at)
+    end = as_datetime(ended_at)
+    if start is None or end is None:
+        return None
+    return max(0, round((end - start).total_seconds() * 1000))
+
+
 def _validated_app_name(app_name: str) -> str | ToolResult:
     normalized_name = _normalized_app_name(app_name)
     if (
@@ -83,11 +150,40 @@ def _validated_app_name(app_name: str) -> str | ToolResult:
 async def _await_android_launch_receipt(
     command_id: str,
     expected_app_name: str,
+    *,
+    device_id: str | None = None,
+    device_name: str | None = None,
+    context: ToolContext | None = None,
+) -> ToolResult:
+    return await _await_android_command_receipt(
+        command_id,
+        action="android.launcher.open",
+        expected_app_name=expected_app_name,
+        device_id=device_id,
+        device_name=device_name,
+        context=context or get_tool_context(),
+        timeout_seconds=ANDROID_LAUNCH_RECEIPT_TIMEOUT_SECONDS,
+        poll_seconds=ANDROID_LAUNCH_RECEIPT_POLL_SECONDS,
+    )
+
+
+async def _await_android_command_receipt(
+    command_id: str,
+    *,
+    action: str,
+    expected_app_name: str | None,
+    device_id: str | None,
+    device_name: str | None,
+    context: ToolContext,
+    timeout_seconds: float = ANDROID_ACTION_RECEIPT_TIMEOUT_SECONDS,
+    poll_seconds: float = ANDROID_ACTION_RECEIPT_POLL_SECONDS,
 ) -> ToolResult:
     deadline = (
         asyncio.get_running_loop().time()
-        + ANDROID_LAUNCH_RECEIPT_TIMEOUT_SECONDS
+        + timeout_seconds
     )
+    started_at = asyncio.get_running_loop().time()
+    emitted: set[str] = set()
     while True:
         result = await get_remote_device_action_status(command_id)
         if not result.success:
@@ -95,26 +191,103 @@ async def _await_android_launch_receipt(
 
         data = result.data
         protocol_status = data.get("protocol_status")
+        transition = {
+            "delivered": "device_received",
+            "running": "action_executing",
+            "failed": "action_failed",
+            "uncertain": "action_unconfirmed",
+            "expired": "action_failed",
+            "cancelled": "action_cancelled",
+        }.get(protocol_status)
+        if transition and transition not in emitted:
+            emitted.add(transition)
+            event_ended_at = data.get(
+                {
+                    "delivered": "delivered_at",
+                    "running": "running_at",
+                }.get(protocol_status, "completed_at")
+            )
+            _emit_device_progress(
+                stage=transition,
+                context=context,
+                command_id=command_id,
+                device_id=device_id or data.get("device_id"),
+                device_name=device_name,
+                action=action,
+                app_name=expected_app_name,
+                occurred_at=event_ended_at,
+                latency_ms=(
+                    _command_latency_ms(data.get("created_at"), event_ended_at)
+                    or round(
+                        (asyncio.get_running_loop().time() - started_at) * 1000
+                    )
+                ),
+            )
         if protocol_status in {"queued", "delivered", "running"}:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
+                if protocol_status in {"queued", "delivered"}:
+                    with SessionLocal() as db:
+                        cancelled = cancel_unstarted_device_command(
+                            db,
+                            user_id=context.user_id,
+                            command_id=command_id,
+                            error_code="DEVICE_ACK_TIMEOUT",
+                        )
+                    if cancelled:
+                        logger.warning(
+                            "Android command cancelled before execution after "
+                            "acknowledgement timeout (command_id=%s, action=%s).",
+                            command_id,
+                            action,
+                        )
+                        _emit_device_progress(
+                            stage="action_cancelled",
+                            context=context,
+                            command_id=command_id,
+                            device_id=device_id or data.get("device_id"),
+                            device_name=device_name,
+                            action=action,
+                            app_name=expected_app_name,
+                        )
+                        return ToolResult.fail(
+                            "ANDROID_DEVICE_NOT_ACKNOWLEDGED",
+                            "The phone did not acknowledge the command before the "
+                            "timeout. Jalora cancelled it before execution; reconnect "
+                            "the companion and try again.",
+                            data={**data, "protocol_status": "cancelled"},
+                        )
+                    latest = await get_remote_device_action_status(command_id)
+                    if latest.success:
+                        data = latest.data
+                        protocol_status = data.get("protocol_status")
+                        if protocol_status not in {"queued", "delivered"}:
+                            continue
                 logger.warning(
-                    "Android app-launch receipt timed out at protocol_status=%s.",
+                    "Android command completion timed out (command_id=%s, "
+                    "action=%s, protocol_status=%s).",
+                    command_id,
+                    action,
                     protocol_status,
                 )
+                _emit_device_progress(
+                    stage="action_unconfirmed",
+                    context=context,
+                    command_id=command_id,
+                    device_id=device_id or data.get("device_id"),
+                    device_name=device_name,
+                    action=action,
+                    app_name=expected_app_name,
+                )
                 return ToolResult.fail(
-                    "ANDROID_ACTION_PENDING",
-                    "No verified completion receipt arrived for "
-                    f"opening {expected_app_name}. "
-                    "It may already be open, but Jalora cannot confirm from the "
-                    "backend. "
-                    "Check the companion connection and command status; do not report "
-                    "the launch as successful or retry until reconciled.",
+                    "ANDROID_ACTION_UNCONFIRMED",
+                    "The phone command is still "
+                    f"'{protocol_status}' and no completion receipt arrived before "
+                    "the timeout. Its result is unconfirmed; check the companion "
+                    "connection and command status before retrying.",
                     data=data,
                 )
-            await asyncio.sleep(
-                min(ANDROID_LAUNCH_RECEIPT_POLL_SECONDS, remaining)
-            )
+            await asyncio.sleep(min(poll_seconds, remaining))
             continue
 
         evidence = data.get("evidence")
@@ -125,49 +298,113 @@ async def _await_android_launch_receipt(
         )
         if protocol_status != "succeeded":
             logger.warning(
-                "Android app-launch command ended at protocol_status=%s.",
+                "Android command ended at protocol_status=%s (command_id=%s).",
                 protocol_status if isinstance(protocol_status, str) else "unknown",
+                command_id,
             )
             details = (
                 operation_result.get("reason")
                 if isinstance(operation_result, dict)
                 else None
             ) or data.get("error_code") or (
-                f"The phone reported launch status {protocol_status or 'unknown'}."
+                f"The phone reported action status {protocol_status or 'unknown'}."
             )
-            code = (
-                "ANDROID_LAUNCH_FAILED"
-                if protocol_status == "failed"
-                else "ANDROID_LAUNCH_UNCERTAIN"
-            )
-            return ToolResult.fail(code, str(details), data=data)
+            if protocol_status == "cancelled":
+                error_code = "ANDROID_ACTION_CANCELLED"
+            elif protocol_status == "failed":
+                error_code = (
+                    "ANDROID_LAUNCH_FAILED"
+                    if action == "android.launcher.open"
+                    else "ANDROID_ACTION_FAILED"
+                )
+            else:
+                error_code = (
+                    "ANDROID_LAUNCH_UNCERTAIN"
+                    if action == "android.launcher.open"
+                    else "ANDROID_ACTION_UNCONFIRMED"
+                )
+            return ToolResult.fail(error_code, str(details), data=data)
 
-        verified_app = (
-            operation_result.get("app_name")
-            if isinstance(operation_result, dict)
-            else None
-        )
-        if (
-            data.get("receipt_status") != "succeeded"
-            or not isinstance(operation_result, dict)
-            or operation_result.get("verified") is not True
-            or operation_result.get("status") != "app_opened"
-            or not isinstance(verified_app, str)
-            or _normalized_app_name(verified_app)
-            != _normalized_app_name(expected_app_name)
-        ):
-            logger.warning(
-                "Android app-launch receipt lacked verified foreground evidence."
+        if data.get("receipt_status") != "succeeded":
+            _emit_device_progress(
+                stage="action_unconfirmed",
+                context=context,
+                command_id=command_id,
+                device_id=device_id or data.get("device_id"),
+                device_name=device_name,
+                action=action,
+                app_name=expected_app_name,
             )
             return ToolResult.fail(
-                "ANDROID_LAUNCH_UNVERIFIED",
-                f"The phone did not verify that {expected_app_name} is in the "
-                "foreground. Jalora will not report the app as open.",
+                "ANDROID_ACTION_UNCONFIRMED",
+                "The phone did not return a successful execution receipt.",
                 data=data,
             )
-        logger.info("Android app-launch receipt verified by the paired phone.")
+        if expected_app_name is not None:
+            verified_app = (
+                operation_result.get("app_name")
+                if isinstance(operation_result, dict)
+                else None
+            )
+            if (
+                not isinstance(operation_result, dict)
+                or operation_result.get("verified") is not True
+                or operation_result.get("status") != "app_opened"
+                or not isinstance(verified_app, str)
+                or _normalized_app_name(verified_app)
+                != _normalized_app_name(expected_app_name)
+            ):
+                logger.warning(
+                    "Android app-launch receipt lacked verified foreground "
+                    "evidence (command_id=%s).",
+                    command_id,
+                )
+                _emit_device_progress(
+                    stage="action_unconfirmed",
+                    context=context,
+                    command_id=command_id,
+                    device_id=device_id or data.get("device_id"),
+                    device_name=device_name,
+                    action=action,
+                    app_name=expected_app_name,
+                )
+                return ToolResult.fail(
+                    "ANDROID_LAUNCH_UNVERIFIED",
+                    f"The phone did not verify that {expected_app_name} is in the "
+                    "foreground. Jalora will not report the app as open.",
+                    data=data,
+                )
+        logger.info("Android command completed with a successful phone receipt.")
+        _emit_device_progress(
+            stage="action_verified",
+            context=context,
+            command_id=command_id,
+            device_id=device_id or data.get("device_id"),
+            device_name=device_name,
+            action=action,
+            app_name=expected_app_name,
+            occurred_at=data.get("completed_at"),
+        )
+        if action == "android.screen.type":
+            _emit_device_progress(
+                stage="phone_text_entered",
+                context=context,
+                command_id=command_id,
+                device_id=device_id or data.get("device_id"),
+                device_name=device_name,
+                action=action,
+                occurred_at=data.get("completed_at"),
+            )
+        data["latency_ms"] = (
+            _command_latency_ms(data.get("created_at"), data.get("completed_at"))
+            or round((asyncio.get_running_loop().time() - started_at) * 1000)
+        )
         return ToolResult.ok(
-            f"The phone verified {expected_app_name} is in the foreground.",
+            (
+                f"The phone verified {expected_app_name} is in the foreground."
+                if expected_app_name is not None
+                else "The phone reported successful execution of the Android action."
+            ),
             data,
         )
 
@@ -191,10 +428,10 @@ async def _await_android_home_receipt(
             if remaining <= 0:
                 return ToolResult.fail(
                     "ANDROID_ACTION_PENDING",
-                    "No verified completion receipt arrived for returning from "
-                    f"{expected_app_name} to Home. "
-                    "The app may still be foreground; check the companion "
-                    "connection and command status before retrying.",
+                    "No completion receipt arrived for returning from "
+                    f"{expected_app_name} to Home; the result is unconfirmed. "
+                    "Check the companion connection and command status before "
+                    "retrying.",
                     data=data,
                 )
             await asyncio.sleep(
@@ -311,14 +548,17 @@ async def _open_android_app(
         )
     if online_devices:
         device = online_devices[0]
-    elif len(authorized_devices) == 1:
-        device = authorized_devices[0]
     elif authorized_devices:
-        device_names = ", ".join(sorted(device.name for device in authorized_devices))
+        connectivity = (
+            "unknown"
+            if all(connectivity_by_id[item.id] == "unknown" for item in authorized_devices)
+            else "offline"
+        )
         return ToolResult.fail(
-            "ANDROID_DEVICE_AMBIGUOUS",
-            "No paired phone has a recent connection. Specify which phone should "
-            f"receive '{validated_name}' ({device_names}).",
+            "ANDROID_DEVICE_OFFLINE",
+            "No paired Android phone has a recent heartbeat. Open the Jalora "
+            "Companion and restore its backend connection before retrying.",
+            data={"device_connectivity": connectivity},
         )
     else:
         return ToolResult.fail(
@@ -335,6 +575,7 @@ async def _open_android_app(
         platform="android",
         app_name=validated_name,
         follow_up_request=follow_up,
+        await_receipt=False,
     )
     if not result.success:
         return result
@@ -346,7 +587,13 @@ async def _open_android_app(
             "cannot be verified.",
             data=result.data,
         )
-    result = await _await_android_launch_receipt(command_id, validated_name)
+    result = await _await_android_launch_receipt(
+        command_id,
+        validated_name,
+        device_id=device.id,
+        device_name=device.name,
+        context=context,
+    )
     if not result.success:
         result.data.update({
             "app": validated_name,
@@ -501,6 +748,7 @@ async def close_paired_android_app(app_name: str) -> ToolResult:
         "",
         platform="android",
         app_name=validated_name,
+        await_receipt=False,
     )
     if not queued.success:
         return queued
@@ -803,13 +1051,18 @@ async def _request_remote_native_action(
     x: int | None = None,
     y: int | None = None,
     progress: int | None = None,
+    await_receipt: bool = True,
+    include_editable_values: bool = False,
+    tool_context: ToolContext | None = None,
 ) -> ToolResult:
     """Queue one scoped operation for an explicitly paired native device.
 
     Android pairing scopes are standing authorization for phone-side execution;
     Windows companion commands continue to require target approval.
     """
-    context = get_tool_context()
+    context = tool_context or get_tool_context()
+    receipt_command: tuple[str, str, str | None, str, str] | None = None
+    queued_result: ToolResult | None = None
     with SessionLocal() as db:
         device = db.get(DeviceConnection, device_id)
         if (
@@ -835,6 +1088,40 @@ async def _request_remote_native_action(
                 return ToolResult.fail(
                     "WINDOWS_DEVICE_OFFLINE",
                     "The Windows companion is currently offline.",
+                )
+        else:
+            last_seen = device.last_seen_at
+            if last_seen is None:
+                _emit_device_progress(
+                    stage="device_offline",
+                    context=context,
+                    device_id=device.id,
+                    device_name=device.name,
+                    action=action,
+                    app_name=app_name,
+                )
+                return ToolResult.fail(
+                    "ANDROID_DEVICE_OFFLINE",
+                    "The paired Android phone has not sent a heartbeat. Reconnect "
+                    "the Jalora Companion before retrying.",
+                    data={"device_id": device.id, "connectivity": "unknown"},
+                )
+            if last_seen.tzinfo is None:
+                last_seen = last_seen.replace(tzinfo=timezone.utc)
+            if last_seen < datetime.now(timezone.utc) - ANDROID_DEVICE_ONLINE_WINDOW:
+                _emit_device_progress(
+                    stage="device_offline",
+                    context=context,
+                    device_id=device.id,
+                    device_name=device.name,
+                    action=action,
+                    app_name=app_name,
+                )
+                return ToolResult.fail(
+                    "ANDROID_DEVICE_OFFLINE",
+                    "The paired Android phone is offline. Reconnect the Jalora "
+                    "Companion before retrying.",
+                    data={"device_id": device.id, "connectivity": "offline"},
                 )
 
         launch_request = None
@@ -870,6 +1157,10 @@ async def _request_remote_native_action(
             }
         elif action == "android.screen.home":
             arguments = {"app_name": app_name}
+        elif action == "android.screen.inspect":
+            arguments = dict(app_arguments)
+            if include_editable_values:
+                arguments["include_editable_values"] = True
         elif action in {
             "android.screen.notifications",
             "android.screen.quick_settings",
@@ -915,6 +1206,15 @@ async def _request_remote_native_action(
             return ToolResult.fail("IDEMPOTENCY_CONFLICT", str(exc))
         except DeviceProtocolError as exc:
             db.rollback()
+            if platform == "android" and any(
+                marker in str(exc).casefold()
+                for marker in ("scope", "permission", "granted")
+            ):
+                return ToolResult.fail(
+                    "ANDROID_SCOPE_REQUIRED",
+                    str(exc),
+                    data={"device_id": device.id, "action": action},
+                )
             return ToolResult.fail("DEVICE_COMMAND_INVALID", str(exc))
         db.refresh(command)
         resolved_follow_up = (
@@ -933,12 +1233,70 @@ async def _request_remote_native_action(
             "task_id": command.task_id,
             "run_id": command.run_id,
             "task_step_id": command.task_step_id,
+            "created_at": (
+                command.created_at.isoformat()
+                if command.created_at is not None
+                else None
+            ),
             "already_queued": already_queued,
             "target_approval_required": target_approval_required,
         }
         if resolved_follow_up:
             result_data["follow_up_request"] = resolved_follow_up
-        return ToolResult.ok(
+        logger.info(
+            "Device action queued (command_id=%s, device_id=%s, action=%s, "
+            "protocol_status=%s).",
+            command.id,
+            device.id,
+            command.action,
+            command.protocol_status,
+        )
+        if platform == "android":
+            _emit_device_progress(
+                stage="device_online",
+                context=context,
+                command_id=command.id,
+                device_id=device.id,
+                device_name=device.name,
+                action=command.action,
+                app_name=(
+                    launch_request.app_name
+                    if launch_request is not None
+                    else app_name or None
+                ),
+                occurred_at=(
+                    device.last_seen_at.isoformat()
+                    if device.last_seen_at is not None
+                    else None
+                ),
+            )
+            _emit_device_progress(
+                stage="command_queued",
+                context=context,
+                command_id=command.id,
+                device_id=device.id,
+                device_name=device.name,
+                action=command.action,
+                app_name=(
+                    launch_request.app_name
+                    if launch_request is not None
+                    else app_name or None
+                ),
+                occurred_at=result_data["created_at"],
+            )
+            if await_receipt:
+                receipt_command = (
+                    command.id,
+                    command.action,
+                    (
+                        launch_request.app_name
+                        if launch_request is not None
+                        else None
+                    ),
+                    device.id,
+                    device.name,
+                )
+        queued_result = ToolResult.ok(
             (
                 f"Queued '{action}' for '{device.name}'. The paired Android scope "
                 "authorizes this action; completion is not confirmed until the "
@@ -950,6 +1308,24 @@ async def _request_remote_native_action(
             ),
             result_data,
         )
+    if receipt_command is not None:
+        command_id, command_action, expected_app, queued_device_id, queued_device_name = (
+            receipt_command
+        )
+        return await _await_android_command_receipt(
+            command_id,
+            action=command_action,
+            expected_app_name=expected_app,
+            device_id=queued_device_id,
+            device_name=queued_device_name,
+            context=context,
+        )
+    if queued_result is None:
+        return ToolResult.fail(
+            "DEVICE_COMMAND_INVALID",
+            "The device command was not queued.",
+        )
+    return queued_result
 
 
 async def request_remote_windows_action(
@@ -1038,6 +1414,366 @@ async def request_remote_android_action(
     )
 
 
+def _whatsapp_evidence_texts(evidence: dict[str, Any]) -> list[str]:
+    controls = evidence.get("accessible_controls")
+    if not isinstance(controls, list):
+        return []
+    return [
+        control["name"]
+        for control in controls
+        if isinstance(control, dict)
+        and control.get("visible") is not False
+        and control.get("editable") is not True
+        and isinstance(control.get("name"), str)
+        and control["name"].strip()
+    ]
+
+
+def _whatsapp_recipient_is_visible(
+    evidence: dict[str, Any],
+    recipient: str,
+) -> bool:
+    target = re.sub(r"\s+", " ", recipient).strip().casefold()
+    if not target:
+        return False
+    for label in _whatsapp_evidence_texts(evidence):
+        normalized = re.sub(r"\s+", " ", label).strip().casefold()
+        if normalized == target or normalized.startswith(
+            (f"{target},", f"{target} ·", f"{target} |")
+        ):
+            return True
+    return False
+
+
+def _whatsapp_foreground_matches(evidence: dict[str, Any]) -> bool:
+    operation_result = evidence.get("operation_result")
+    package_name = (
+        operation_result.get("foreground_package")
+        if isinstance(operation_result, dict)
+        else None
+    )
+    return isinstance(package_name, str) and package_name.casefold() in {
+        "com.whatsapp",
+        "com.whatsapp.w4b",
+    }
+
+
+def _focused_whatsapp_draft(evidence: dict[str, Any]) -> tuple[str | None, str | None]:
+    controls = evidence.get("accessible_controls")
+    if not isinstance(controls, list):
+        return None, "The phone did not return accessible composer controls."
+    for control in controls:
+        if not isinstance(control, dict) or control.get("focused") is not True:
+            continue
+        if control.get("editable") is not True:
+            continue
+        if control.get("value_status") == "redacted_password":
+            return None, "Android redacted the focused field as a password."
+        if control.get("value_status") != "available":
+            return None, "Android could not read the focused message composer."
+        value = control.get("value")
+        if isinstance(value, str):
+            return value, None
+    return None, "No focused editable WhatsApp message composer was verified."
+
+
+def _whatsapp_send_control(
+    evidence: dict[str, Any],
+) -> tuple[str, str] | None:
+    controls = evidence.get("accessible_controls")
+    if not isinstance(controls, list):
+        return None
+    matches = []
+    for control in controls:
+        if not isinstance(control, dict):
+            continue
+        label = control.get("name")
+        automation_id = control.get("automation_id")
+        if (
+            control.get("visible") is not True
+            or control.get("enabled") is not True
+            or not isinstance(label, str)
+            or not isinstance(automation_id, str)
+        ):
+            continue
+        if (
+            re.fullmatch(r"send(?: message)?", label.strip(), re.IGNORECASE)
+            or re.search(r"(?:^|[/_])send(?:[/_]|$)", automation_id, re.IGNORECASE)
+        ):
+            matches.append((label, automation_id))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _message_control_count(evidence: dict[str, Any], message: str) -> int:
+    return sum(message in label for label in _whatsapp_evidence_texts(evidence))
+
+
+def _whatsapp_stage_context(
+    context: ToolContext,
+    stage: str,
+) -> ToolContext | None:
+    base_key = context.idempotency_key or context.tool_call_id
+    if not base_key:
+        return None
+    stage_key = hashlib.sha256(
+        f"{base_key}:whatsapp-send:{stage}".encode("utf-8")
+    ).hexdigest()
+    return replace(context, idempotency_key=stage_key)
+
+
+async def send_whatsapp_message(
+    device_id: str,
+    recipient: str,
+    message: str,
+) -> ToolResult:
+    """Send one approved WhatsApp message after revalidating the visible draft."""
+    normalized_recipient = recipient.strip()
+    if (
+        not normalized_recipient
+        or len(normalized_recipient) > 120
+        or any(ord(character) < 32 or ord(character) == 127 for character in recipient)
+    ):
+        return ToolResult.fail(
+            "INVALID_WHATSAPP_RECIPIENT",
+            "Provide one WhatsApp contact name between 1 and 120 printable characters.",
+        )
+    if (
+        not message.strip()
+        or len(message) > 500
+        or any(ord(character) == 127 for character in message)
+    ):
+        return ToolResult.fail(
+            "INVALID_WHATSAPP_MESSAGE",
+            "The exact WhatsApp message must contain 1 to 500 characters.",
+        )
+    if not device_id.strip():
+        return ToolResult.fail(
+            "ANDROID_DEVICE_NOT_AVAILABLE",
+            "Select an online paired Android phone before sending a WhatsApp message.",
+        )
+
+    context = get_tool_context()
+    if not context.task_id or not context.run_id or not context.tool_call_id:
+        return ToolResult.fail(
+            "ANDROID_SEND_CONTEXT_REQUIRED",
+            "A task-correlated approval is required before sending a WhatsApp message.",
+        )
+    with SessionLocal() as db:
+        device = db.get(DeviceConnection, device_id)
+        if (
+            device is None
+            or device.user_id != context.user_id
+            or device.platform != "android"
+            or device.status != "active"
+        ):
+            return ToolResult.fail(
+                "ANDROID_DEVICE_NOT_AVAILABLE",
+                "The selected active paired Android phone was not found.",
+            )
+        scopes = set(device.scopes or [])
+        required_scopes = {"android.screen.read", "android.screen.control"}
+        missing_scopes = required_scopes - scopes
+        if missing_scopes:
+            return ToolResult.fail(
+                "ANDROID_SCOPE_REQUIRED",
+                "WhatsApp screen automation requires both Android screen-read and "
+                "screen-control pairing permissions.",
+                data={"missing_scopes": sorted(missing_scopes)},
+            )
+        last_seen = device.last_seen_at
+        device_name = device.name
+    if last_seen is None:
+        return ToolResult.fail(
+            "ANDROID_DEVICE_OFFLINE",
+            "The paired Android phone has not sent a heartbeat. Reconnect it before retrying.",
+            data={"device_id": device_id, "connectivity": "unknown"},
+        )
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    if last_seen < datetime.now(timezone.utc) - ANDROID_DEVICE_ONLINE_WINDOW:
+        return ToolResult.fail(
+            "ANDROID_DEVICE_OFFLINE",
+            "The paired Android phone is offline. Reconnect it before retrying.",
+            data={"device_id": device_id, "connectivity": "offline"},
+        )
+
+    inspect_context = _whatsapp_stage_context(context, "preflight")
+    if inspect_context is None:
+        return ToolResult.fail(
+            "ANDROID_SEND_CONTEXT_REQUIRED",
+            "A stable command identity is required to prevent duplicate sends.",
+        )
+    before = await _request_remote_native_action(
+        device_id,
+        "android.screen.inspect",
+        "",
+        platform="android",
+        app_name="WhatsApp",
+        include_editable_values=True,
+        tool_context=inspect_context,
+    )
+    if not before.success:
+        return before
+    before_evidence = before.data.get("evidence")
+    if not isinstance(before_evidence, dict) or not _whatsapp_foreground_matches(
+        before_evidence
+    ):
+        return ToolResult.fail(
+            "WHATSAPP_NOT_FOREGROUND",
+            "The phone did not verify WhatsApp in the foreground. No message was sent.",
+            data={"device_id": device_id, "command_id": before.data.get("command_id")},
+        )
+    if not _whatsapp_recipient_is_visible(before_evidence, normalized_recipient):
+        return ToolResult.fail(
+            "WHATSAPP_RECIPIENT_UNVERIFIED",
+            "The visible WhatsApp conversation does not match the approved recipient. "
+            "No message was sent.",
+            data={"device_id": device_id, "command_id": before.data.get("command_id")},
+        )
+    draft, draft_error = _focused_whatsapp_draft(before_evidence)
+    if draft_error is not None or draft != message:
+        return ToolResult.fail(
+            "WHATSAPP_DRAFT_MISMATCH",
+            draft_error
+            or "The visible unsent WhatsApp draft does not exactly match the approved message.",
+            data={"device_id": device_id, "command_id": before.data.get("command_id")},
+        )
+    send_control = _whatsapp_send_control(before_evidence)
+    if send_control is None:
+        return ToolResult.fail(
+            "WHATSAPP_SEND_CONTROL_UNVERIFIED",
+            "The phone did not expose one enabled, accessible WhatsApp Send control. "
+            "No message was sent.",
+            data={"device_id": device_id, "command_id": before.data.get("command_id")},
+        )
+
+    send_context = _whatsapp_stage_context(context, "send")
+    if send_context is None:
+        return ToolResult.fail(
+            "ANDROID_SEND_CONTEXT_REQUIRED",
+            "A stable command identity is required to prevent duplicate sends.",
+        )
+    _emit_device_progress(
+        stage="whatsapp_draft_verified",
+        context=context,
+        command_id=before.data.get("command_id"),
+        device_id=device_id,
+        device_name=device_name,
+        action="android.screen.inspect",
+        app_name="WhatsApp",
+        occurred_at=before.data.get("completed_at"),
+    )
+    _emit_device_progress(
+        stage="whatsapp_send_approved",
+        context=context,
+        device_id=device_id,
+        device_name=device_name,
+        action="android.screen.click",
+        app_name="WhatsApp",
+    )
+    sent = await _request_remote_native_action(
+        device_id,
+        "android.screen.click",
+        "",
+        name=send_control[0],
+        automation_id=send_control[1],
+        platform="android",
+        app_name="WhatsApp",
+        tool_context=send_context,
+    )
+    if not sent.success:
+        return sent
+
+    verify_context = _whatsapp_stage_context(context, "post-send-verification")
+    if verify_context is None:
+        return ToolResult.fail(
+            "ANDROID_SEND_CONTEXT_REQUIRED",
+            "The send action was issued but its result could not be reconciled.",
+            data={"send_attempted": True, "command_id": sent.data.get("command_id")},
+        )
+    after = await _request_remote_native_action(
+        device_id,
+        "android.screen.inspect",
+        "",
+        platform="android",
+        app_name="WhatsApp",
+        include_editable_values=True,
+        tool_context=verify_context,
+    )
+    if not after.success:
+        return ToolResult.fail(
+            "WHATSAPP_MESSAGE_SEND_UNCONFIRMED",
+            "The Send control was activated, but the phone did not return a "
+            "verification screen. Do not retry until the conversation is checked.",
+            data={
+                "send_attempted": True,
+                "command_id": sent.data.get("command_id"),
+                "verification_command_id": after.data.get("command_id"),
+            },
+        )
+    after_evidence = after.data.get("evidence")
+    if (
+        not isinstance(after_evidence, dict)
+        or not _whatsapp_foreground_matches(after_evidence)
+        or not _whatsapp_recipient_is_visible(after_evidence, normalized_recipient)
+    ):
+        return ToolResult.fail(
+            "WHATSAPP_MESSAGE_SEND_UNCONFIRMED",
+            "The phone changed screens after the Send action, so message submission "
+            "could not be verified. Do not retry until the conversation is checked.",
+            data={
+                "send_attempted": True,
+                "command_id": sent.data.get("command_id"),
+                "verification_command_id": after.data.get("command_id"),
+            },
+        )
+    after_draft, after_draft_error = _focused_whatsapp_draft(after_evidence)
+    message_count_before = _message_control_count(before_evidence, message)
+    message_count_after = _message_control_count(after_evidence, message)
+    if (
+        after_draft_error is not None
+        or after_draft != ""
+        or message_count_after <= message_count_before
+    ):
+        return ToolResult.fail(
+            "WHATSAPP_MESSAGE_SEND_UNCONFIRMED",
+            "The phone did not verify that the exact message appeared in the "
+            "conversation and left the composer. The send result is unconfirmed; "
+            "do not retry until the conversation is checked.",
+            data={
+                "send_attempted": True,
+                "command_id": sent.data.get("command_id"),
+                "verification_command_id": after.data.get("command_id"),
+            },
+        )
+    _emit_device_progress(
+        stage="whatsapp_message_submitted",
+        context=context,
+        command_id=sent.data.get("command_id"),
+        device_id=device_id,
+        device_name=device_name,
+        action="android.screen.click",
+        app_name="WhatsApp",
+        occurred_at=sent.data.get("completed_at"),
+    )
+    return ToolResult.ok(
+        "The phone verified the approved message appeared in the WhatsApp "
+        "conversation and left the composer. Delivery status is not confirmed.",
+        {
+            "app": "WhatsApp",
+            "recipient": normalized_recipient,
+            "message": message,
+            "device_id": device_id,
+            "device_name": device_name,
+            "command_id": sent.data.get("command_id"),
+            "verification_command_id": after.data.get("command_id"),
+            "send_attempted": True,
+            "message_submitted_verified": True,
+            "delivery_status": "unconfirmed",
+        },
+    )
+
+
 async def get_remote_device_action_status(command_id: str) -> ToolResult:
     """Read the persisted result of a command queued for this user's device."""
     context = get_tool_context()
@@ -1065,6 +1801,9 @@ async def get_remote_device_action_status(command_id: str) -> ToolResult:
             "status": command.status,
             "protocol_status": command.protocol_status,
             "error_code": command.error_code,
+            "created_at": command.created_at,
+            "delivered_at": command.delivered_at,
+            "running_at": command.running_at,
             "receipt_status": (
                 command.receipt.get("status")
                 if isinstance(command.receipt, dict)
@@ -1393,6 +2132,16 @@ registry.register(
     category="device_control",
     tags=["remote_device", "android", "application", "screen"],
     side_effect="external",
+    required_signals=["remote_device_control"],
+)
+registry.register(
+    send_whatsapp_message,
+    permission=PermissionLevel.CONFIRM,
+    category="device_control",
+    tags=["remote_device", "android", "whatsapp", "messages", "send"],
+    side_effect="external",
+    idempotent=True,
+    retryable=False,
     required_signals=["remote_device_control"],
 )
 registry.register(

@@ -203,7 +203,7 @@ class DeviceCompanionService : Service() {
         val nonce = command.getString("nonce")
         val operation = command.getString("operation")
         val arguments = command.optJSONObject("arguments") ?: JSONObject()
-        Log.i(TAG, "Received protocol command operation=$operation.")
+        Log.i(TAG, "Received protocol command id=$id operation=$operation.")
         val origin = state.getString("api_origin")
         val result = CompanionApi.request(
             origin,
@@ -213,7 +213,7 @@ class DeviceCompanionService : Service() {
             JSONObject().put("nonce", nonce).put("approve", true),
         )
         if (!result.optBoolean("execute")) {
-            Log.w(TAG, "Phone rejected the protocol command decision.")
+            Log.w(TAG, "Phone rejected protocol command decision id=$id.")
             updateStatus("The phone did not authorize this command.")
             return
         }
@@ -236,7 +236,7 @@ class DeviceCompanionService : Service() {
         deliverSavedReceipt(state)
         Log.i(
             TAG,
-            "Protocol command finished operation=$operation status=${actionResult.status} " +
+            "Protocol command finished id=$id operation=$operation status=${actionResult.status} " +
                 "error_code=${actionResult.errorCode ?: "none"}.",
         )
         updateStatus("Action receipt recorded as ${actionResult.status}.")

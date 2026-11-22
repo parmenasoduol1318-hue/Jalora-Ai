@@ -167,10 +167,21 @@ def _normalize_android_screen_command(
         "android.screen.quick_settings",
         "android.screen.app_switcher",
     }:
-        if set(arguments) - {"app_id"}:
+        if set(arguments) - {"app_id", "include_editable_values"}:
             raise DeviceProtocolError(
                 "The Android screen command has unexpected arguments."
             )
+        include_editable_values = arguments.get("include_editable_values", False)
+        if not isinstance(include_editable_values, bool):
+            raise DeviceProtocolError(
+                "The Android editable-value inspection flag must be boolean."
+            )
+        if action != "android.screen.inspect" and include_editable_values:
+            raise DeviceProtocolError(
+                "Editable values are supported only by Android screen inspection."
+            )
+        if include_editable_values:
+            safe_arguments["include_editable_values"] = True
         return _OPERATION_SCOPES[action], safe_arguments
     if action == "android.screen.home":
         if set(arguments) - {"app_id", "app_name"}:
@@ -678,6 +689,38 @@ def queue_device_command(
     return command, False
 
 
+def cancel_unstarted_device_command(
+    db: Session,
+    *,
+    user_id: str,
+    command_id: str,
+    error_code: str,
+) -> bool:
+    """Atomically cancel only commands the companion has not started executing."""
+    if not _ERROR_CODE.fullmatch(error_code):
+        raise DeviceProtocolError("The device-command cancellation code is invalid.")
+    cancelled = db.execute(
+        update(DeviceRemoteCommand)
+        .where(
+            DeviceRemoteCommand.id == command_id,
+            DeviceRemoteCommand.user_id == user_id,
+            DeviceRemoteCommand.status == "pending",
+            DeviceRemoteCommand.protocol_status.in_(("queued", "delivered")),
+        )
+        .values(
+            status="cancelled",
+            protocol_status="cancelled",
+            error_code=error_code,
+            completed_at=datetime.now(timezone.utc),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if cancelled.rowcount == 1:
+        db.commit()
+        return True
+    return False
+
+
 def command_envelope(
     command: DeviceRemoteCommand,
     device: DeviceConnection | None = None,
@@ -1018,6 +1061,8 @@ def _normalize_receipt(
         allowed_result_keys = {
             "ok",
             "app_name",
+            "foreground_app_name",
+            "foreground_package",
             "status",
             "verified",
             "control_count",
@@ -1041,6 +1086,17 @@ def _normalize_receipt(
             not isinstance(result["app_name"], str) or len(result["app_name"]) > 120
         ):
             raise DeviceProtocolError("The reported app name is invalid.")
+        if "foreground_app_name" in result and (
+            not isinstance(result["foreground_app_name"], str)
+            or len(result["foreground_app_name"]) > 120
+        ):
+            raise DeviceProtocolError("The reported foreground app name is invalid.")
+        if "foreground_package" in result and (
+            not isinstance(result["foreground_package"], str)
+            or len(result["foreground_package"]) > 255
+            or not re.fullmatch(r"[A-Za-z0-9._]{1,255}", result["foreground_package"])
+        ):
+            raise DeviceProtocolError("The reported foreground package is invalid.")
         if "status" in result and (
             not isinstance(result["status"], str) or len(result["status"]) > 40
         ):
@@ -1095,6 +1151,8 @@ def _normalize_receipt(
                 "automation_id",
                 "enabled",
                 "visible",
+                "editable",
+                "focused",
                 "value",
                 "value_status",
                 "scrollable",
@@ -1113,7 +1171,7 @@ def _normalize_receipt(
                 raise DeviceProtocolError("An accessible control field is invalid.")
             if any(
                 key in control and not isinstance(control[key], bool)
-                for key in ("enabled", "visible", "scrollable")
+                for key in ("enabled", "visible", "editable", "focused", "scrollable")
             ):
                 raise DeviceProtocolError("An accessible control flag is invalid.")
             if "bounds" in control:

@@ -92,8 +92,10 @@ async def test_open_local_app_uses_paired_android_when_backend_is_not_windows(mo
     queued = []
 
     async def queue_launch(
-        device_id, action, app_id, *, platform, app_name, follow_up_request=""
+        device_id, action, app_id, *, platform, app_name, follow_up_request="",
+        await_receipt=True,
     ):
+        assert await_receipt is False
         queued.append(
             (device_id, action, app_id, platform, app_name, follow_up_request)
         )
@@ -181,7 +183,10 @@ async def test_close_paired_android_app_only_reports_verified_home_navigation(mo
 
     queued = []
 
-    async def queue_home(device_id, action, app_id, *, platform, app_name):
+    async def queue_home(
+        device_id, action, app_id, *, platform, app_name, await_receipt=True
+    ):
+        assert await_receipt is False
         queued.append((device_id, action, app_id, platform, app_name))
         return device_tools.ToolResult.ok(
             "Queued Home action.",
@@ -254,6 +259,7 @@ async def test_android_home_receipt_rejects_unverified_navigation(monkeypatch):
     assert result.error.code == "ANDROID_HOME_UNVERIFIED"
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("last_seen_at", "connectivity"),
     [
@@ -261,8 +267,7 @@ async def test_android_home_receipt_rejects_unverified_navigation(monkeypatch):
         (datetime.now(timezone.utc) - timedelta(minutes=3), "offline"),
     ],
 )
-@pytest.mark.asyncio
-async def test_open_local_app_queues_for_one_paired_phone_without_recent_heartbeat(
+async def test_open_local_app_refuses_phone_without_recent_heartbeat(
     monkeypatch, last_seen_at, connectivity
 ):
     device = SimpleNamespace(
@@ -288,8 +293,10 @@ async def test_open_local_app_queues_for_one_paired_phone_without_recent_heartbe
     queued = []
 
     async def queue_launch(
-        device_id, action, app_id, *, platform, app_name, follow_up_request=""
+        device_id, action, app_id, *, platform, app_name, follow_up_request="",
+        await_receipt=True,
     ):
+        assert await_receipt is False
         queued.append(
             (device_id, action, app_id, platform, app_name, follow_up_request)
         )
@@ -301,28 +308,6 @@ async def test_open_local_app_queues_for_one_paired_phone_without_recent_heartbe
     monkeypatch.setattr(device_tools.sys, "platform", "linux")
     monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
     monkeypatch.setattr(device_tools, "_request_remote_native_action", queue_launch)
-    monkeypatch.setattr(
-        device_tools,
-        "ANDROID_LAUNCH_RECEIPT_TIMEOUT_SECONDS",
-        0,
-    )
-
-    async def pending_status(command_id):
-        return device_tools.ToolResult.ok(
-            "This device action is still pending.",
-            {
-                "command_id": command_id,
-                "protocol_status": "queued",
-                "receipt_status": None,
-                "evidence": {},
-            },
-        )
-
-    monkeypatch.setattr(
-        device_tools,
-        "get_remote_device_action_status",
-        pending_status,
-    )
     set_tool_context(ToolContext(user_id="user-1"))
     try:
         result = await device_tools.open_local_app("WhatsApp")
@@ -331,14 +316,9 @@ async def test_open_local_app_queues_for_one_paired_phone_without_recent_heartbe
 
     assert not result.success
     assert result.error is not None
-    assert result.error.code == "ANDROID_ACTION_PENDING"
-    assert "No verified completion receipt arrived" in result.message
-    assert "It may already be open" in result.message
-    assert "do not report the launch as successful" in result.message
+    assert result.error.code == "ANDROID_DEVICE_OFFLINE"
     assert result.data["device_connectivity"] == connectivity
-    assert queued == [
-        ("phone-1", "android.launcher.open", "", "android", "WhatsApp", "")
-    ]
+    assert queued == []
 
 
 @pytest.mark.asyncio
@@ -365,10 +345,14 @@ async def test_android_launch_rejects_success_receipt_for_a_different_app(monkey
         "get_remote_device_action_status",
         wrong_app_receipt,
     )
-    result = await device_tools._await_android_launch_receipt(
-        "command-wrong-app",
-        "WhatsApp",
-    )
+    set_tool_context(ToolContext(user_id="user-1"))
+    try:
+        result = await device_tools._await_android_launch_receipt(
+            "command-wrong-app",
+            "WhatsApp",
+        )
+    finally:
+        set_tool_context(None)
 
     assert not result.success
     assert result.error is not None
@@ -381,7 +365,7 @@ async def test_android_launch_rejects_success_receipt_for_a_different_app(monkey
     [None, datetime.now(timezone.utc) - timedelta(minutes=3)],
 )
 @pytest.mark.asyncio
-async def test_android_action_queue_does_not_reject_a_stale_heartbeat(
+async def test_android_action_queue_rejects_a_stale_heartbeat(
     monkeypatch, last_seen_at
 ):
     device = SimpleNamespace(
@@ -393,14 +377,62 @@ async def test_android_action_queue_does_not_reject_a_stale_heartbeat(
         scopes=["android.apps.launch"],
         last_seen_at=last_seen_at,
     )
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, _model, _device_id):
+            return device
+
+    monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
+    monkeypatch.setattr(
+        device_tools,
+        "queue_device_command",
+        lambda *_args, **_kwargs: pytest.fail("offline device command was queued"),
+    )
+    set_tool_context(ToolContext(user_id="user-1"))
+    try:
+        result = await device_tools._request_remote_native_action(
+            "phone-1",
+            "android.launcher.open",
+            "",
+            platform="android",
+            app_name="WhatsApp",
+        )
+    finally:
+        set_tool_context(None)
+
+    assert not result.success
+    assert result.error is not None
+    assert result.error.code == "ANDROID_DEVICE_OFFLINE"
+
+
+@pytest.mark.asyncio
+async def test_android_action_waits_for_receipt_and_emits_correlated_progress(
+    monkeypatch,
+):
+    created_at = datetime.now(timezone.utc)
+    device = SimpleNamespace(
+        id="phone-1",
+        user_id="user-1",
+        name="My Android",
+        platform="android",
+        status="active",
+        scopes=["android.screen.read", "android.screen.control"],
+        last_seen_at=created_at,
+    )
     command = SimpleNamespace(
-        id="command-reconnect",
-        action="android.launcher.open",
+        id="command-screen-inspect",
+        action="android.screen.inspect",
         status="pending",
         protocol_status="queued",
-        task_id=None,
-        run_id=None,
-        task_step_id=None,
+        task_id="task-1",
+        run_id="run-1",
+        task_step_id="step-1",
+        created_at=created_at,
     )
 
     class FakeSession:
@@ -414,33 +446,73 @@ async def test_android_action_queue_does_not_reject_a_stale_heartbeat(
             return device
 
         def commit(self):
-            pass
+            return None
 
         def refresh(self, _command):
-            pass
+            return None
 
     def queue_command(_db, **kwargs):
         assert kwargs["device"] is device
-        assert kwargs["action"] == "android.launcher.open"
+        assert kwargs["action"] == "android.screen.inspect"
         return command, False
+
+    events = []
+    status_calls = []
+
+    async def completed_status(command_id):
+        status_calls.append(command_id)
+        return device_tools.ToolResult.ok(
+            "The phone reported successful execution.",
+            {
+                "command_id": command_id,
+                "device_id": "phone-1",
+                "protocol_status": "succeeded",
+                "receipt_status": "succeeded",
+                "created_at": created_at,
+                "completed_at": datetime.now(timezone.utc),
+                "evidence": {"operation_result": {"ok": True, "status": "inspected"}},
+            },
+        )
 
     monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
     monkeypatch.setattr(device_tools, "queue_device_command", queue_command)
-    set_tool_context(ToolContext(user_id="user-1"))
+    monkeypatch.setattr(device_tools, "get_remote_device_action_status", completed_status)
+    monkeypatch.setattr(
+        device_tools,
+        "emit",
+        lambda event_name, payload: events.append((event_name, payload)),
+    )
+    set_tool_context(ToolContext(
+        user_id="user-1",
+        task_id="task-1",
+        run_id="run-1",
+        tool_call_id="call-1",
+    ))
     try:
         result = await device_tools._request_remote_native_action(
             "phone-1",
-            "android.launcher.open",
+            "android.screen.inspect",
             "",
             platform="android",
-            app_name="WhatsApp",
         )
     finally:
         set_tool_context(None)
 
     assert result.success
-    assert result.data["command_id"] == "command-reconnect"
-    assert result.data["protocol_status"] == "queued"
+    assert result.data["protocol_status"] == "succeeded"
+    assert status_calls == ["command-screen-inspect"]
+    assert [payload["stage"] for _name, payload in events] == [
+        "device_online",
+        "command_queued",
+        "action_verified",
+    ]
+    assert all(
+        payload["task_id"] == "task-1"
+        and payload["run_id"] == "run-1"
+        and payload["command_id"] == "command-screen-inspect"
+        and payload["device_id"] == "phone-1"
+        for _name, payload in events
+    )
 
 
 @pytest.mark.asyncio
@@ -468,8 +540,10 @@ async def test_open_local_app_searches_launcher_without_manifest_match(monkeypat
     queued = []
 
     async def queue_launch(
-        device_id, action, app_id, *, platform, app_name, follow_up_request=""
+        device_id, action, app_id, *, platform, app_name, follow_up_request="",
+        await_receipt=True,
     ):
+        assert await_receipt is False
         queued.append(
             (device_id, action, app_id, platform, app_name, follow_up_request)
         )
@@ -503,6 +577,11 @@ async def test_open_local_app_searches_launcher_without_manifest_match(monkeypat
         "get_remote_device_action_status",
         pending_status,
     )
+    monkeypatch.setattr(
+        device_tools,
+        "cancel_unstarted_device_command",
+        lambda *_args, **_kwargs: True,
+    )
     set_tool_context(ToolContext(user_id="user-1"))
     try:
         result = await device_tools.open_local_app("WhatsApp")
@@ -511,7 +590,8 @@ async def test_open_local_app_searches_launcher_without_manifest_match(monkeypat
 
     assert not result.success
     assert result.error is not None
-    assert result.error.code == "ANDROID_ACTION_PENDING"
+    assert result.error.code == "ANDROID_DEVICE_NOT_ACKNOWLEDGED"
+    assert "cancelled it before execution" in result.message
     assert result.data["app"] == "WhatsApp"
     assert queued == [
         ("phone-1", "android.launcher.open", "", "android", "WhatsApp", "")
@@ -546,6 +626,7 @@ def test_local_app_agent_tools_respect_permission_levels():
         "discover_available_device_capabilities": PermissionLevel.AUTO,
         "get_remote_device_action_status": PermissionLevel.AUTO,
         "delete_device_message": PermissionLevel.STRICT,
+        "send_whatsapp_message": PermissionLevel.CONFIRM,
     }
     for name, permission in expected_permissions.items():
         assert specs[name].permission == permission
@@ -554,6 +635,207 @@ def test_local_app_agent_tools_respect_permission_levels():
         for name, spec in specs.items()
         if name not in expected_permissions
     )
+
+
+def _whatsapp_screen_evidence(draft, messages=(), recipient="Mom"):
+    controls = [
+        {
+            "name": recipient,
+            "visible": True,
+            "editable": False,
+            "enabled": True,
+            "automation_id": "com.whatsapp:id/conversation_contact_name",
+        },
+        {
+            "name": "Message",
+            "visible": True,
+            "editable": True,
+            "focused": True,
+            "value_status": "available",
+            "value": draft,
+        },
+    ]
+    controls.extend(
+        {
+            "name": item,
+            "visible": True,
+            "editable": False,
+            "enabled": True,
+            "automation_id": f"com.whatsapp:id/message_{index}",
+        }
+        for index, item in enumerate(messages)
+    )
+    if draft:
+        controls.append({
+            "name": "Send",
+            "visible": True,
+            "editable": False,
+            "enabled": True,
+            "automation_id": "com.whatsapp:id/send",
+        })
+    return {
+        "operation_result": {"foreground_package": "com.whatsapp"},
+        "accessible_controls": controls,
+    }
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_send_revalidates_exact_draft_and_sends_once(monkeypatch):
+    device = SimpleNamespace(
+        id="phone-1",
+        user_id="user-1",
+        name="My Android",
+        platform="android",
+        status="active",
+        scopes=["android.screen.read", "android.screen.control"],
+        last_seen_at=datetime.now(timezone.utc),
+    )
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, _model, _device_id):
+            return device
+
+    calls = []
+
+    async def request_action(
+        device_id,
+        action,
+        app_id,
+        *,
+        platform,
+        app_name="",
+        name="",
+        automation_id="",
+        include_editable_values=False,
+        tool_context=None,
+        **_kwargs,
+    ):
+        calls.append((action, name, automation_id, include_editable_values, tool_context))
+        if action == "android.screen.click":
+            return device_tools.ToolResult.ok(
+                "The phone reported successful execution of the Android action.",
+                {"command_id": "send-command", "completed_at": datetime.now(timezone.utc)},
+            )
+        inspection_number = sum(
+            item[0] == "android.screen.inspect" for item in calls
+        )
+        evidence = (
+            _whatsapp_screen_evidence("", ("Hi",))
+            if inspection_number == 2
+            else _whatsapp_screen_evidence("Hi")
+        )
+        return device_tools.ToolResult.ok(
+            "The phone verified the screen.",
+            {
+                "command_id": f"inspect-{inspection_number}",
+                "completed_at": datetime.now(timezone.utc),
+                "evidence": evidence,
+            },
+        )
+
+    monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
+    monkeypatch.setattr(device_tools, "_request_remote_native_action", request_action)
+    context = ToolContext(
+        user_id="user-1",
+        task_id="task-1",
+        run_id="run-1",
+        tool_call_id="call-1",
+        idempotency_key="a" * 64,
+    )
+    set_tool_context(context)
+    try:
+        result = await device_tools.send_whatsapp_message(
+            "phone-1",
+            "Mom",
+            "Hi",
+        )
+    finally:
+        set_tool_context(None)
+
+    assert result.success
+    assert result.data["message_submitted_verified"] is True
+    assert result.data["delivery_status"] == "unconfirmed"
+    assert [item[0] for item in calls] == [
+        "android.screen.inspect",
+        "android.screen.click",
+        "android.screen.inspect",
+    ]
+    assert calls[0][3] is True and calls[2][3] is True
+    assert calls[1][1:4] == ("Send", "com.whatsapp:id/send", False)
+    keys = [item[4].idempotency_key for item in calls]
+    assert len(set(keys)) == 3
+    assert all(len(key) == 64 for key in keys)
+    assert device_tools._whatsapp_stage_context(context, "send").idempotency_key == keys[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("draft", "visible_recipient", "expected_code"),
+    [
+        ("Different text", "Mom", "WHATSAPP_DRAFT_MISMATCH"),
+        ("Hi", "Another Contact", "WHATSAPP_RECIPIENT_UNVERIFIED"),
+    ],
+)
+async def test_whatsapp_send_stops_when_recipient_or_draft_is_unverified(
+    monkeypatch, draft, visible_recipient, expected_code
+):
+    device = SimpleNamespace(
+        id="phone-1",
+        user_id="user-1",
+        name="My Android",
+        platform="android",
+        status="active",
+        scopes=["android.screen.read", "android.screen.control"],
+        last_seen_at=datetime.now(timezone.utc),
+    )
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, _model, _device_id):
+            return device
+
+    calls = []
+
+    async def request_action(*_args, **_kwargs):
+        calls.append(_args[1])
+        return device_tools.ToolResult.ok(
+            "The phone verified the screen.",
+            {
+                "evidence": _whatsapp_screen_evidence(
+                    draft,
+                    recipient=visible_recipient,
+                )
+            },
+        )
+
+    monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
+    monkeypatch.setattr(device_tools, "_request_remote_native_action", request_action)
+    set_tool_context(ToolContext(
+        user_id="user-1",
+        task_id="task-1",
+        run_id="run-1",
+        tool_call_id="call-2",
+    ))
+    try:
+        result = await device_tools.send_whatsapp_message("phone-1", "Mom", "Hi")
+    finally:
+        set_tool_context(None)
+
+    assert not result.success
+    assert result.error is not None
+    assert result.error.code == expected_code
+    assert calls == ["android.screen.inspect"]
 
 
 @pytest.mark.asyncio

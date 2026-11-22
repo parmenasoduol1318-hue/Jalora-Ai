@@ -1267,6 +1267,39 @@ def test_send_email_tool_pauses_for_approval_in_graph(
     assert email_service._MOCK.sent_count(env["user_id"]) == 1
 
 
+def test_whatsapp_send_requires_explicit_approval_even_with_automatic_policy(
+    client, fake_router, auth_headers
+):
+    env = _register_user(client, auth_headers)
+    _set_autonomy(env["user_id"], 4)
+    _set_tool_policy(env["user_id"], "send_whatsapp_message", "automatic")
+    fake_router.script.append(AIMessage(
+        content="", tool_calls=[{
+            "name": "send_whatsapp_message",
+            "args": {
+                "device_id": "phone-selected-by-user",
+                "recipient": "Mom",
+                "message": "Hi",
+            },
+            "id": "call_whatsapp_send_1",
+            "type": "tool_call",
+        }],
+    ))
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "Send Hi to Mom on WhatsApp"},
+        headers=env["headers"],
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["status"] == "paused_approval"
+    assert data["approval"]["tool_name"] == "send_whatsapp_message"
+    assert data["approval"]["arguments"]["recipient"] == "Mom"
+    assert data["approval"]["arguments"]["message"] == "Hi"
+
+
 def test_task_engine_email_requires_approval_even_at_full_autonomy():
     from app.services.task_engine import AgentSpec, EmailAgentHandler, TaskEngine
 

@@ -295,6 +295,25 @@ def test_android_app_screen_workflow_routes_to_paired_android_companion():
     assert "request_remote_windows_action" not in (routing.tool_names or [])
 
 
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "Open WhatsApp and send Hi to Mom",
+        "Send Hi to Mom on WhatsApp",
+    ],
+)
+def test_whatsapp_message_request_routes_to_approval_gated_phone_tool(request_text):
+    routing = route_request(request_text)
+
+    assert "remote_device_control" in routing.signals
+    assert {
+        "discover_available_device_capabilities",
+        "open_paired_android_app",
+        "request_remote_android_action",
+        "send_whatsapp_message",
+    } <= set(routing.tool_names or [])
+
+
 def test_untargeted_local_app_request_keeps_same_host_route():
     routing = route_request("Open Calculator")
 

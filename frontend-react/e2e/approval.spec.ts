@@ -2,6 +2,61 @@ import { test, expect } from './fixtures/test-fixtures';
 
 /** E2E: Approval flow — the assistant asks for approval before an action. */
 test.describe('Approval flow', () => {
+  test('shows the exact WhatsApp recipient and message before explicit send approval', async ({
+    authenticatedPage,
+  }) => {
+    const approval = {
+      approval_id: 'approval-whatsapp-send-e2e',
+      run_id: 'run-whatsapp-send-e2e',
+      tool_name: 'send_whatsapp_message',
+      arguments: {
+        device_id: 'phone-e2e',
+        recipient: 'Mom',
+        message: 'Hi',
+      },
+      level: 3,
+      kind: 'tool',
+    };
+    await authenticatedPage.route('**/api/chat', async (route) => {
+      const events = [
+        { type: 'approval', ...approval },
+        {
+          type: 'done',
+          status: 'paused_approval',
+          reply: 'Review the WhatsApp send request.',
+          intent: 'task',
+          approval,
+        },
+      ];
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''),
+      });
+    });
+
+    await authenticatedPage.locator('#composer').fill('Send Hi to Mom on WhatsApp');
+    await authenticatedPage.locator('#composer').press('Enter');
+
+    await expect(authenticatedPage.locator('.whatsapp-approval-card')).toContainText(
+      'Application: WhatsApp',
+    );
+    await expect(authenticatedPage.locator('.whatsapp-approval-card')).toContainText(
+      'Recipient: Mom',
+    );
+    await expect(authenticatedPage.locator('.whatsapp-approval-message')).toHaveText('Hi');
+    await expect(
+      authenticatedPage
+        .locator('.approval-modal-actions')
+        .getByRole('button', { name: 'Approve Send' }),
+    ).toBeVisible();
+    await expect(
+      authenticatedPage.locator('.approval-modal-actions').getByRole('button', {
+        name: 'Cancel',
+      }),
+    ).toBeVisible();
+  });
+
   test('approval modal appears for tool calls requiring approval', async ({
     authenticatedPage,
   }) => {

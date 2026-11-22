@@ -101,6 +101,11 @@ _DEVICE_MESSAGE_REPLY_REQUEST = re.compile(
     r"(?:message|notification|text|sms)\b.{0,80}\b(?:reply|respond|send)\b",
     re.I,
 )
+_WHATSAPP_SEND_REQUEST = re.compile(
+    r"\bwhatsapp\b.{0,160}\b(?:send|text)\b"
+    r"|\b(?:send|text)\b.{0,160}\bwhatsapp\b",
+    re.I,
+)
 _NON_APP_TARGETS = frozenset({
     "all apps", "an app", "any", "any app", "any application",
     "app", "application",
@@ -231,6 +236,7 @@ def route_request(
         and _WINDOWS_DEVICE_ACTION.search(request_text)
     )
     app_launch_request = parse_app_launch_request(request_text)
+    whatsapp_send_request = bool(_WHATSAPP_SEND_REQUEST.search(request_text))
     android_app_request = bool(
         app_launch_request
         and (
@@ -244,6 +250,7 @@ def route_request(
         or mobile_device_action
         or windows_device_request
         or android_app_request
+        or whatsapp_send_request
     )
     app_command = (
         None
@@ -281,6 +288,8 @@ def route_request(
         active_signals.add("local_app_control")
     if android_app_request:
         active_signals.add("local_app_control")
+    if whatsapp_send_request:
+        active_signals.update({"local_app_control", "remote_device_control"})
     if remote_device_request:
         active_signals.add("remote_device_control")
     if _DEVICE_MESSAGE_REPLY_REQUEST.search(request_text):
@@ -329,6 +338,14 @@ def route_request(
             selected.add("get_remote_device_action_status")
         if android_app_request and registry.get("open_paired_android_app") is not None:
             selected.add("open_paired_android_app")
+        if whatsapp_send_request:
+            for name in (
+                "open_paired_android_app",
+                "request_remote_android_action",
+                "send_whatsapp_message",
+            ):
+                if registry.get(name) is not None:
+                    selected.add(name)
         android_target = (
             _ANDROID_DEVICE_TARGET.search(request_text)
             and not _IOS_DEVICE_TARGET.search(request_text)

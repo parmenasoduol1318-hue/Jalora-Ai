@@ -25,6 +25,43 @@ test.describe('Chat & streaming', () => {
     );
   });
 
+  test('shows only live device progress correlated to the active task and run', async ({
+    authenticatedPage,
+  }) => {
+    const currentRun = { run_id: 'run-phone-current', task_id: 'task-phone-current' };
+    const events = [
+      { type: 'meta', ...currentRun },
+      {
+        type: 'device_progress',
+        stage: 'action_verified',
+        run_id: 'run-phone-stale',
+        task_id: 'task-phone-stale',
+        command_id: 'command-stale',
+      },
+      {
+        type: 'device_progress',
+        stage: 'device_received',
+        ...currentRun,
+        command_id: 'command-current',
+        device_id: 'phone-current',
+      },
+    ];
+    await authenticatedPage.route('**/api/chat', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''),
+      });
+    });
+
+    await authenticatedPage.locator('#composer').fill('Open WhatsApp');
+    await authenticatedPage.locator('#composer').press('Enter');
+
+    const progress = authenticatedPage.locator('.device-progress-events');
+    await expect(progress).toContainText('Phone received the command.');
+    await expect(progress).not.toContainText('Phone verified the action.');
+  });
+
   test('message input is cleared after sending', async ({ authenticatedPage }) => {
     const input = authenticatedPage.locator('#composer');
     await input.fill('Another test message');
