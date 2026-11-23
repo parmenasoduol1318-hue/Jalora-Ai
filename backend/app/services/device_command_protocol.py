@@ -1153,9 +1153,11 @@ def _normalize_receipt(
                 "visible",
                 "editable",
                 "focused",
+                "clickable",
                 "value",
                 "value_status",
                 "scrollable",
+                "child_labels",
                 "bounds",
             }:
                 raise DeviceProtocolError("An accessible control has unsupported fields.")
@@ -1171,9 +1173,25 @@ def _normalize_receipt(
                 raise DeviceProtocolError("An accessible control field is invalid.")
             if any(
                 key in control and not isinstance(control[key], bool)
-                for key in ("enabled", "visible", "editable", "focused", "scrollable")
+                for key in (
+                    "enabled",
+                    "visible",
+                    "editable",
+                    "focused",
+                    "clickable",
+                    "scrollable",
+                )
             ):
                 raise DeviceProtocolError("An accessible control flag is invalid.")
+            if "child_labels" in control and (
+                not isinstance(control["child_labels"], list)
+                or len(control["child_labels"]) > 8
+                or any(
+                    not isinstance(label, str) or len(label) > 80
+                    for label in control["child_labels"]
+                )
+            ):
+                raise DeviceProtocolError("An accessible control's child labels are invalid.")
             if "bounds" in control:
                 bounds = control["bounds"]
                 if (

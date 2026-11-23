@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+
 from app.context import ToolContext, set_tool_context
 from app.tools import device_tools
 from app.tools.base import PermissionLevel, registry
@@ -361,6 +362,56 @@ async def test_android_launch_rejects_success_receipt_for_a_different_app(monkey
 
 
 @pytest.mark.parametrize(
+    ("protocol_status", "error_code", "reason"),
+    [
+        (
+            "uncertain",
+            "ANDROID_ACCESSIBILITY_REQUIRED",
+            "Enable Jalora's accessibility service in Android Settings.",
+        ),
+        (
+            "failed",
+            "ANDROID_APP_NOT_FOUND",
+            "No launchable installed app matched 'WhatsApp'.",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_android_launch_preserves_device_failure_code_and_reason(
+    monkeypatch, protocol_status, error_code, reason
+):
+    async def device_failure(_command_id):
+        return device_tools.ToolResult.ok(
+            "Returned the persisted device action outcome.",
+            {
+                "protocol_status": protocol_status,
+                "receipt_status": protocol_status,
+                "error_code": error_code,
+                "evidence": {"reason": reason},
+            },
+        )
+
+    monkeypatch.setattr(
+        device_tools,
+        "get_remote_device_action_status",
+        device_failure,
+    )
+    set_tool_context(ToolContext(user_id="user-1"))
+    try:
+        result = await device_tools._await_android_launch_receipt(
+            "command-device-failure",
+            "WhatsApp",
+        )
+    finally:
+        set_tool_context(None)
+
+    assert not result.success
+    assert result.error is not None
+    assert result.error.code == error_code
+    assert result.error.details == reason
+
+
+@pytest.mark.parametrize(
     "last_seen_at",
     [None, datetime.now(timezone.utc) - timedelta(minutes=3)],
 )
@@ -620,6 +671,8 @@ def test_local_app_agent_tools_respect_permission_levels():
         "open_paired_android_app": PermissionLevel.AUTO,
         "close_paired_android_app": PermissionLevel.AUTO,
         "request_remote_android_action": PermissionLevel.AUTO,
+        "execute_android_action_plan": PermissionLevel.AUTO,
+        "prepare_whatsapp_message_draft": PermissionLevel.AUTO,
         "request_remote_android_url": PermissionLevel.AUTO,
         "assist_device_message": PermissionLevel.AUTO,
         "save_device_reply_draft": PermissionLevel.AUTO,
@@ -637,6 +690,551 @@ def test_local_app_agent_tools_respect_permission_levels():
     )
 
 
+def _action_step(action, purpose, precondition, verification, **kwargs):
+    return device_tools.AndroidActionStep(
+        action=action,
+        purpose=purpose,
+        precondition=precondition,
+        verification=verification,
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_android_action_plan_inspects_then_clicks_unique_accessible_control(
+    monkeypatch,
+):
+    calls = []
+    evidence = {
+        "accessible_controls": [{
+            "name": "Search",
+            "visible": True,
+            "enabled": True,
+            "clickable": True,
+            "automation_id": "search",
+        }],
+    }
+
+    async def command(device_id, action, context, *, stage, **kwargs):
+        calls.append((action, stage, kwargs))
+        return device_tools.ToolResult.ok(
+            "Phone action verified.",
+            {
+                "command_id": f"command-{len(calls)}",
+                "action": action,
+                "evidence": evidence,
+            },
+        )
+
+    monkeypatch.setattr(device_tools, "_android_plan_command", command)
+    set_tool_context(ToolContext(
+        user_id="user-1",
+        task_id="task-1",
+        run_id="run-1",
+        tool_call_id="call-1",
+    ))
+    try:
+        result = await device_tools.execute_android_action_plan(
+            "phone-1",
+            [
+                _action_step(
+                    "inspect_screen",
+                    "Inspect the visible app",
+                    "online_device",
+                    "fresh_screen",
+                ),
+                _action_step(
+                    "tap_control",
+                    "Open contact search",
+                    "unique_visible_control",
+                    "screen_refreshed",
+                    target="Search",
+                ),
+            ],
+        )
+    finally:
+        set_tool_context(None)
+
+    assert result.success
+    assert [call[0] for call in calls] == [
+        "android.screen.inspect",
+        "android.screen.click",
+    ]
+    assert calls[1][2]["target"]["automation_id"] == "search"
+    assert result.data["completed_steps"][1]["status"] == "verified"
+
+
+@pytest.mark.asyncio
+async def test_android_action_plan_refuses_sensitive_control_alias(monkeypatch):
+    calls = []
+    evidence = {
+        "accessible_controls": [{
+            "name": "Send",
+            "child_labels": ["paper-plane icon"],
+            "visible": True,
+            "enabled": True,
+            "clickable": True,
+            "automation_id": "com.whatsapp:id/send",
+        }],
+    }
+
+    async def command(_device_id, action, _context, **_kwargs):
+        calls.append(action)
+        return device_tools.ToolResult.ok(
+            "Phone action verified.",
+            {
+                "command_id": "inspect-1",
+                "evidence": evidence,
+            },
+        )
+
+    monkeypatch.setattr(device_tools, "_android_plan_command", command)
+    set_tool_context(ToolContext(
+        user_id="user-1",
+        task_id="task-1",
+        run_id="run-1",
+        tool_call_id="call-2",
+    ))
+    try:
+        result = await device_tools.execute_android_action_plan(
+            "phone-1",
+            [
+                _action_step(
+                    "inspect_screen",
+                    "Inspect the current screen",
+                    "online_device",
+                    "fresh_screen",
+                ),
+                _action_step(
+                    "tap_control",
+                    "Select the icon",
+                    "unique_visible_control",
+                    "screen_refreshed",
+                    target="paper-plane icon",
+                ),
+            ],
+        )
+    finally:
+        set_tool_context(None)
+
+    assert not result.success
+    assert result.error is not None
+    assert result.error.code == "ANDROID_SENSITIVE_ACTION_REQUIRES_APPROVAL"
+    assert calls == ["android.screen.inspect"]
+
+
+@pytest.mark.asyncio
+async def test_android_action_plan_types_text_only_after_exact_field_verification(
+    monkeypatch,
+):
+    calls = []
+    current_value = ""
+
+    async def command(_device_id, action, _context, *, stage, **kwargs):
+        nonlocal current_value
+        calls.append(action)
+        if action == "android.screen.type":
+            current_value = kwargs["text"]
+            return device_tools.ToolResult.ok(
+                "The phone reported successful execution.",
+                {"command_id": "type-1"},
+            )
+        return device_tools.ToolResult.ok(
+            "Phone screen inspected.",
+            {
+                "command_id": f"inspect-{len(calls)}",
+                "evidence": {
+                    "accessible_controls": [{
+                        "name": "Message",
+                        "visible": True,
+                        "enabled": True,
+                        "editable": True,
+                        "focused": True,
+                        "value_status": "available",
+                        "value": current_value,
+                        "automation_id": "message",
+                    }],
+                },
+            },
+        )
+
+    monkeypatch.setattr(device_tools, "_android_plan_command", command)
+    set_tool_context(ToolContext(
+        user_id="user-1",
+        task_id="task-1",
+        run_id="run-1",
+        tool_call_id="call-3",
+    ))
+    try:
+        result = await device_tools.execute_android_action_plan(
+            "phone-1",
+            [
+                _action_step(
+                    "inspect_screen",
+                    "Inspect the message composer",
+                    "online_device",
+                    "fresh_screen",
+                    include_editable_values=True,
+                ),
+                _action_step(
+                    "enter_text",
+                    "Enter the requested draft",
+                    "focused_editable_field",
+                    "exact_text_value",
+                    text="Hi",
+                ),
+            ],
+        )
+    finally:
+        set_tool_context(None)
+
+    assert result.success
+    assert calls == [
+        "android.screen.inspect",
+        "android.screen.type",
+        "android.screen.inspect",
+    ]
+    assert result.data["completed_steps"][1]["action"] == "enter_text"
+
+
+def _whatsapp_contact_evidence(
+    *,
+    search_value="",
+    result_contacts=(),
+    composer_value="",
+    composer_focused=False,
+    header="",
+):
+    controls = []
+    if header:
+        controls.append({
+            "name": header,
+            "visible": True,
+            "editable": False,
+            "automation_id": "com.whatsapp:id/conversation_contact_name",
+        })
+    if search_value is not None:
+        controls.append({
+            "name": "Search",
+            "visible": True,
+            "enabled": True,
+            "editable": True,
+            "focused": True,
+            "value_status": "available",
+            "value": search_value,
+            "automation_id": "com.whatsapp:id/search",
+        })
+    controls.extend(result_contacts)
+    if header:
+        controls.append({
+            "name": "Message",
+            "visible": True,
+            "enabled": True,
+            "editable": True,
+            "focused": composer_focused,
+            "value_status": "available",
+            "value": composer_value,
+            "automation_id": "com.whatsapp:id/conversation_entry",
+        })
+    return {
+        "operation_result": {"foreground_package": "com.whatsapp"},
+        "accessible_controls": controls,
+    }
+
+
+def test_whatsapp_selection_proof_binds_contact_choice_to_current_task(monkeypatch):
+    task_context = ToolContext(
+        user_id="user-1",
+        task_id="task-1",
+        run_id="run-1",
+        tool_call_id="call-send",
+    )
+    contact = {
+        "name": "Mom",
+        "child_labels": ["Mom", "+1 555 123 4567"],
+        "visible": True,
+        "enabled": True,
+        "clickable": True,
+        "automation_id": "com.whatsapp:id/chat_row_1",
+    }
+    search_command = SimpleNamespace(
+        user_id="user-1",
+        task_id="task-1",
+        run_id="run-1",
+        device_id="phone-1",
+        action="android.screen.inspect",
+        protocol_status="succeeded",
+        receipt={
+            "status": "succeeded",
+            "evidence": _whatsapp_contact_evidence(
+                search_value="Mom",
+                result_contacts=[contact],
+            ),
+        },
+        arguments={},
+    )
+    conversation_command = SimpleNamespace(
+        user_id="user-1",
+        task_id="task-1",
+        run_id="run-1",
+        device_id="phone-1",
+        action="android.screen.click",
+        protocol_status="succeeded",
+        receipt={
+            "status": "succeeded",
+            "evidence": _whatsapp_contact_evidence(
+                search_value=None,
+                header="Mom",
+            ),
+        },
+        arguments={
+            "name": "",
+            "automation_id": "com.whatsapp:id/chat_row_1",
+        },
+    )
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, _model, command_id):
+            return {
+                "search-1": search_command,
+                "conversation-1": conversation_command,
+            }.get(command_id)
+
+    monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
+
+    valid, reason = device_tools._whatsapp_selection_proof(
+        "search-1",
+        "conversation-1",
+        "Mom — +1 555 123 4567",
+        "phone-1",
+        task_context,
+    )
+
+    assert valid
+    assert not reason
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_draft_workflow_opens_contact_and_verifies_unsent_text(
+    monkeypatch,
+):
+    device = SimpleNamespace(
+        id="phone-1",
+        user_id="user-1",
+        name="My Android",
+        platform="android",
+        status="active",
+        scopes=[
+            "android.apps.launch",
+            "android.screen.read",
+            "android.screen.control",
+        ],
+        last_seen_at=datetime.now(timezone.utc),
+    )
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, _model, _device_id):
+            return device
+
+    contact = {
+        "name": "Mom",
+        "child_labels": ["Mom"],
+        "visible": True,
+        "enabled": True,
+        "clickable": True,
+        "automation_id": "com.whatsapp:id/chat_row_1",
+    }
+    calls = []
+    typed_message = ""
+
+    async def plan_command(
+        _device_id,
+        action,
+        _context,
+        *,
+        stage,
+        text="",
+        **_kwargs,
+    ):
+        nonlocal typed_message
+        calls.append((action, stage))
+        if action == "android.screen.type" and stage.endswith(":type_message"):
+            typed_message = text
+        if (
+            stage.endswith(":inspect_screen")
+            or stage.endswith(":inspect_search")
+        ):
+            evidence = _whatsapp_contact_evidence(
+                search_value="",
+            )
+        elif stage.endswith(":verify_search"):
+            evidence = _whatsapp_contact_evidence(
+                search_value="Mom",
+                result_contacts=[contact],
+            )
+        elif stage.endswith(":verify_conversation"):
+            evidence = _whatsapp_contact_evidence(
+                search_value=None,
+                composer_value="",
+                header="Mom",
+            )
+        elif stage.endswith(":verify_composer"):
+            evidence = _whatsapp_contact_evidence(
+                search_value=None,
+                composer_value="",
+                composer_focused=True,
+                header="Mom",
+            )
+        elif stage.endswith(":verify_draft"):
+            evidence = _whatsapp_contact_evidence(
+                search_value=None,
+                composer_value=typed_message,
+                composer_focused=True,
+                header="Mom",
+            )
+        else:
+            evidence = {}
+        return device_tools.ToolResult.ok(
+            "Phone receipt verified.",
+            {
+                "command_id": f"command-{len(calls)}",
+                "completed_at": datetime.now(timezone.utc),
+                "evidence": evidence,
+            },
+        )
+
+    monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
+    monkeypatch.setattr(device_tools, "_android_plan_command", plan_command)
+    set_tool_context(ToolContext(
+        user_id="user-1",
+        task_id="task-1",
+        run_id="run-1",
+        tool_call_id="call-draft-1",
+        idempotency_key="d" * 64,
+    ))
+    try:
+        result = await device_tools.prepare_whatsapp_message_draft(
+            "phone-1",
+            "Mom",
+            "Hi",
+        )
+    finally:
+        set_tool_context(None)
+
+    assert result.success
+    assert result.data["recipient"] == "Mom"
+    assert result.data["message"] == "Hi"
+    assert result.data["search_command_id"]
+    assert result.data["conversation_command_id"]
+    assert result.data["draft_verified"] is True
+    assert result.data["sent"] is False
+    assert typed_message == "Hi"
+    assert calls[-1][0] == "android.screen.inspect"
+    assert any(action == "android.screen.click" for action, _stage in calls)
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_draft_workflow_stops_for_ambiguous_contacts(monkeypatch):
+    device = SimpleNamespace(
+        id="phone-1",
+        user_id="user-1",
+        name="My Android",
+        platform="android",
+        status="active",
+        scopes=[
+            "android.apps.launch",
+            "android.screen.read",
+            "android.screen.control",
+        ],
+        last_seen_at=datetime.now(timezone.utc),
+    )
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, _model, _device_id):
+            return device
+
+    contacts = [
+        {
+            "name": "Mom",
+            "child_labels": ["Mom", "+1 555 123 4567"],
+            "visible": True,
+            "enabled": True,
+            "clickable": True,
+            "automation_id": "com.whatsapp:id/chat_row_1",
+        },
+        {
+            "name": "Mom",
+            "child_labels": ["Mom", "+1 555 765 4321"],
+            "visible": True,
+            "enabled": True,
+            "clickable": True,
+            "automation_id": "com.whatsapp:id/chat_row_2",
+        },
+    ]
+
+    async def plan_command(_device_id, action, _context, *, stage, **_kwargs):
+        evidence = (
+            _whatsapp_contact_evidence(search_value="",)
+            if stage.endswith(":inspect_screen")
+            else _whatsapp_contact_evidence(search_value="")
+            if stage.endswith(":inspect_search")
+            else _whatsapp_contact_evidence(
+                search_value="Mom",
+                result_contacts=contacts,
+            )
+        )
+        return device_tools.ToolResult.ok(
+            "Phone receipt verified.",
+            {
+                "command_id": "command",
+                "evidence": evidence,
+            },
+        )
+
+    monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
+    monkeypatch.setattr(device_tools, "_android_plan_command", plan_command)
+    set_tool_context(ToolContext(
+        user_id="user-1",
+        task_id="task-1",
+        run_id="run-1",
+        tool_call_id="call-draft-ambiguous",
+        idempotency_key="e" * 64,
+    ))
+    try:
+        result = await device_tools.prepare_whatsapp_message_draft(
+            "phone-1",
+            "Mom",
+            "Hi",
+        )
+    finally:
+        set_tool_context(None)
+
+    assert not result.success
+    assert result.error is not None
+    assert result.error.code == "WHATSAPP_CONTACT_AMBIGUOUS"
+    assert result.data["clarification"]["input_type"] == "choice"
+    assert result.data["candidate_options"] == [
+        "Mom — +1 555 123 4567",
+        "Mom — +1 555 765 4321",
+    ]
 def _whatsapp_screen_evidence(draft, messages=(), recipient="Mom"):
     controls = [
         {

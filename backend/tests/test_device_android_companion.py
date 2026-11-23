@@ -589,7 +589,7 @@ def test_android_visual_commands_do_not_require_manifest_and_are_serialized(
         launched = asyncio.run(open_paired_android_app("App missing from manifest"))
     assert not launched.success
     assert launched.error is not None
-    assert launched.error.code == "ANDROID_ACTION_PENDING"
+    assert launched.error.code == "ANDROID_DEVICE_NOT_ACKNOWLEDGED"
     assert launched.data["action"] == "android.launcher.open"
 
     with bind_tool_execution(contexts[1]):
@@ -648,13 +648,14 @@ def test_android_visual_commands_do_not_require_manifest_and_are_serialized(
     assert first_poll.status_code == 200, first_poll.text
     assert len(first_poll.json()["commands"]) == 1
     first_command = first_poll.json()["commands"][0]
-    assert first_command["operation"] == "android.launcher.open"
+    assert first_command["operation"] == "android.screen.inspect"
     decision = client.post(
         f"/api/devices/protocol/v1/commands/{first_command['command_id']}/decision",
         headers=access_headers,
         json={"nonce": first_command["nonce"], "approve": True},
     )
     assert decision.status_code == 200
+    assert decision.json()["execute"] is True
     receipt = client.post(
         f"/api/devices/protocol/v1/commands/{first_command['command_id']}/receipt",
         headers=access_headers,
@@ -664,8 +665,7 @@ def test_android_visual_commands_do_not_require_manifest_and_are_serialized(
             "evidence": {
                 "operation_result": {
                     "ok": True,
-                    "status": "app_opened",
-                    "app_name": "App missing from manifest",
+                    "status": "screen_inspected",
                     "verified": True,
                 },
                 "accessible_controls": [],

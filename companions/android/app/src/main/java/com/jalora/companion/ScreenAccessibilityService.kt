@@ -64,11 +64,20 @@ class ScreenAccessibilityService : AccessibilityService() {
                 "Enter an app name to search for.",
             ))
         }
-        val expectedPackage = matchingLauncherPackage(appName)
-            ?: return logLaunchResult(ActionResult.failed(
+        val matchingPackages = matchingLauncherPackages(appName)
+        if (matchingPackages.isEmpty()) {
+            return logLaunchResult(ActionResult.failed(
                 "ANDROID_APP_NOT_FOUND",
-                "No uniquely matching installed app was found by that displayed name.",
+                "No launchable installed app matched '$appName'. Check the app name or install the app, then retry.",
             ))
+        }
+        if (matchingPackages.size > 1) {
+            return logLaunchResult(ActionResult.failed(
+                "ANDROID_APP_AMBIGUOUS",
+                "More than one installed app matches '$appName'. Specify the exact app name shown on the phone.",
+            ))
+        }
+        val expectedPackage = matchingPackages.single()
         val launchIntent = packageManager.getLaunchIntentForPackage(expectedPackage)
             ?: return logLaunchResult(ActionResult.failed(
                 "ANDROID_APP_NOT_LAUNCHABLE",
@@ -158,18 +167,30 @@ class ScreenAccessibilityService : AccessibilityService() {
         return ActionResult("succeeded", evidence, null)
     }
 
-    private fun matchingLauncherPackage(appName: String): String? {
+    private fun matchingLauncherPackage(appName: String): String? =
+        matchingLauncherPackages(appName).singleOrNull()
+
+    private fun matchingLauncherPackages(appName: String): List<String> {
         val expected = normalize(appName)
-        val matches = CompanionApi.installedApplications(this)
+        val installed = CompanionApi.installedApplications(this)
             .let { applications ->
                 (0 until applications.length()).mapNotNull { index ->
-                    applications.optJSONObject(index)
-                        ?.takeIf { normalize(it.optString("name")) == expected }
-                        ?.optString("package_name")
-                        ?.takeIf { it.isNotBlank() }
+                    val application = applications.optJSONObject(index) ?: return@mapNotNull null
+                    val packageName = application.optString("package_name")
+                        .takeIf { it.isNotBlank() }
+                        ?: return@mapNotNull null
+                    packageName to normalize(application.optString("name"))
                 }
             }
-        return matches.singleOrNull()
+        val exactMatches = installed.filter { (packageName, name) ->
+            name == expected || normalize(packageName) == expected
+        }.map { it.first }.distinct()
+        if (exactMatches.isNotEmpty()) return exactMatches
+
+        val alias = APP_LAUNCH_ALIASES[expected] ?: return emptyList()
+        return installed.filter { (packageName, name) ->
+            normalize(packageName) == alias.packageName || name == alias.label
+        }.map { it.first }.distinct()
     }
 
     private fun activePackage(): String? {
@@ -338,12 +359,12 @@ class ScreenAccessibilityService : AccessibilityService() {
         includeEditableValues: Boolean = false,
     ): ActionResult {
         val controls = JSONArray()
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
+        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, JSONObject?>>()
+        queue.add(root to null)
         var visited = 0
         var controlsTruncated = false
         while (queue.isNotEmpty() && visited < MAX_NODES) {
-            val node = queue.removeFirst()
+            val (node, parentControl) = queue.removeFirst()
             visited += 1
             val name = if (
                 includeEditableValues &&
@@ -357,19 +378,21 @@ class ScreenAccessibilityService : AccessibilityService() {
             } else {
                 nodeName(node)
             }
+            var currentControl = parentControl
             if (name.isNotBlank() || node.isClickable || node.isEditable) {
                 if (controls.length() < ACCESSIBILITY_CONTROL_LIMIT) {
                     val bounds = Rect().also(node::getBoundsInScreen)
                     val control = JSONObject()
-                            .put("name", name.take(80))
-                            .put("control_type", node.className?.toString()?.take(40) ?: "")
-                            .put("automation_id", node.viewIdResourceName?.take(60) ?: "")
-                            .put("enabled", node.isEnabled)
-                            .put("visible", node.isVisibleToUser)
-                            .put("editable", node.isEditable)
-                            .put("focused", node.isFocused)
-                            .put("scrollable", node.isScrollable)
-                            .put("bounds", normalizedBounds(bounds))
+                        .put("name", name.take(80))
+                        .put("control_type", node.className?.toString()?.take(40) ?: "")
+                        .put("automation_id", node.viewIdResourceName?.take(60) ?: "")
+                        .put("enabled", node.isEnabled)
+                        .put("visible", node.isVisibleToUser)
+                        .put("editable", node.isEditable)
+                        .put("focused", node.isFocused)
+                        .put("clickable", node.isClickable)
+                        .put("scrollable", node.isScrollable)
+                        .put("bounds", normalizedBounds(bounds))
                     if (includeEditableValues && node.isEditable && node.isFocused) {
                         if (node.isPassword) {
                             control.put("value_status", "redacted_password")
@@ -385,16 +408,35 @@ class ScreenAccessibilityService : AccessibilityService() {
                         }
                     }
                     controls.put(control)
+                    if (node.isClickable) currentControl = control
+                    if (
+                        !node.isClickable &&
+                        name.isNotBlank() &&
+                        parentControl != null
+                    ) {
+                        val labels = parentControl.optJSONArray("child_labels") ?: JSONArray()
+                        if (
+                            labels.length() < 8 &&
+                            (0 until labels.length()).none {
+                                labels.optString(it) == name.take(80)
+                            }
+                        ) {
+                            labels.put(name.take(80))
+                            parentControl.put("child_labels", labels)
+                        }
+                    }
                 } else {
                     controlsTruncated = true
                 }
             }
             for (index in 0 until node.childCount) {
-                node.getChild(index)?.let(queue::addLast)
+                node.getChild(index)?.let { child ->
+                    queue.addLast(child to currentControl)
+                }
             }
             if (node !== root) node.recycle()
         }
-        queue.forEach { it.recycle() }
+        queue.forEach { (node, _) -> node.recycle() }
         val screenOcr = if (hasVisibleAuthenticationInput(root)) {
             ScreenOcr(
                 "",
@@ -815,13 +857,25 @@ class ScreenAccessibilityService : AccessibilityService() {
     private fun click(root: AccessibilityNodeInfo, arguments: JSONObject): ActionResult {
         val target = uniqueNode(root, arguments)
             ?: return ActionResult.failed("ANDROID_CONTROL_NOT_UNIQUE", "The target must match exactly one accessible control.")
-        if (!target.isEnabled || !target.isVisibleToUser || !target.isClickable) {
-            if (target !== root) target.recycle()
+        var clickableTarget = target
+        var ancestorDepth = 0
+        while (!clickableTarget.isClickable && ancestorDepth < MAX_CLICKABLE_ANCESTORS) {
+            val parent = clickableTarget.parent ?: break
+            if (clickableTarget !== root) clickableTarget.recycle()
+            clickableTarget = parent
+            ancestorDepth += 1
+        }
+        if (
+            !clickableTarget.isEnabled ||
+            !clickableTarget.isVisibleToUser ||
+            !clickableTarget.isClickable
+        ) {
+            if (clickableTarget !== root) clickableTarget.recycle()
             return ActionResult.failed("ANDROID_CONTROL_UNAVAILABLE", "The selected control is disabled, hidden, or not clickable.")
         }
         val before = signature(root)
-        val accepted = target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        if (target !== root) target.recycle()
+        val accepted = clickableTarget.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        if (clickableTarget !== root) clickableTarget.recycle()
         if (!accepted) {
             return ActionResult.failed("ANDROID_CLICK_FAILED", "Android did not accept the accessibility click.")
         }
@@ -1388,9 +1442,27 @@ class ScreenAccessibilityService : AccessibilityService() {
     }
 
     companion object {
+        private data class AppLaunchAlias(
+            val packageName: String,
+            val label: String,
+        )
+
+        private val APP_LAUNCH_ALIASES = mapOf(
+            "wa" to AppLaunchAlias("com.whatsapp", "whatsapp"),
+            "whats" to AppLaunchAlias("com.whatsapp", "whatsapp"),
+            "whats app" to AppLaunchAlias("com.whatsapp", "whatsapp"),
+            "whatsapp messenger" to AppLaunchAlias("com.whatsapp", "whatsapp"),
+            "google chrome" to AppLaunchAlias("com.android.chrome", "chrome"),
+            "chrome browser" to AppLaunchAlias("com.android.chrome", "chrome"),
+            "google mail" to AppLaunchAlias("com.google.android.gm", "gmail"),
+            "g-mail" to AppLaunchAlias("com.google.android.gm", "gmail"),
+            "you tube" to AppLaunchAlias("com.google.android.youtube", "youtube"),
+            "insta" to AppLaunchAlias("com.instagram.android", "instagram"),
+        )
         private const val MAX_NODES = 300
+        private const val MAX_CLICKABLE_ANCESTORS = 8
         private const val MAX_CONTROLS = 40
-        private const val ACCESSIBILITY_CONTROL_LIMIT = 24
+        private const val ACCESSIBILITY_CONTROL_LIMIT = 32
         private const val MAX_OCR_CONTROLS = 16
         private const val MAX_OCR_CHARS = 5_000
         private const val MAX_OCR_REASON_CHARS = 400

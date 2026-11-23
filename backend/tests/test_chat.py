@@ -818,7 +818,16 @@ def test_android_app_close_uses_phone_home_action_on_windows_backend(
 
     queued = []
 
-    async def queue_home(device_id, action, app_id, *, platform, app_name):
+    async def queue_home(
+        device_id,
+        action,
+        app_id,
+        *,
+        platform,
+        app_name,
+        await_receipt,
+    ):
+        assert await_receipt is False
         queued.append((device_id, action, app_id, platform, app_name))
         return ToolResult.ok("Queued Home action.", {"command_id": "home-command"})
 

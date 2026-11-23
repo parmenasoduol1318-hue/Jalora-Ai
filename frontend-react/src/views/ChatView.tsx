@@ -61,6 +61,7 @@ interface UiMessage {
     key: string;
     label: string;
     latencyMs?: number;
+    screenshotDataUrl?: string;
   }>;
   artifacts?: Artifact[];
   citations?: CitationRef[];
@@ -107,12 +108,28 @@ const DEVICE_PROGRESS_LABELS: Record<string, string> = {
   whatsapp_draft_verified: "whatsappDraftVerified",
   whatsapp_send_approved: "whatsappSendApproved",
   whatsapp_message_submitted: "whatsappMessageSubmitted",
+  workflow_action_started: "phoneActionExecuting",
+  workflow_action_verified: "phoneActionVerified",
+  workflow_action_failed: "phoneActionFailed",
 };
 
 const toolLabel = (name: string, t: (k: string) => string): string =>
   RECOGNIZED_TOOLS[name] ? t(RECOGNIZED_TOOLS[name]) : name;
 
 const ANDROID_ACTION_ACTIVITY: Record<string, string> = {
+  launch_app: "openingApp",
+  inspect_screen: "readingScreen",
+  capture_screenshot: "readingScreen",
+  identify_controls: "readingScreen",
+  open_search: "interactingWithPhone",
+  search_contact: "typingOnPhone",
+  verify_search: "readingScreen",
+  open_conversation: "interactingWithPhone",
+  verify_conversation: "readingScreen",
+  focus_composer: "interactingWithPhone",
+  verify_composer: "readingScreen",
+  type_message: "typingOnPhone",
+  verify_draft: "readingScreen",
   "android.screen.inspect": "readingScreen",
   "android.screen.click": "interactingWithPhone",
   "android.screen.tap": "interactingWithPhone",
@@ -1005,7 +1022,12 @@ export function ChatView({
             const runId = String(event.run_id || "");
             const taskId = String(event.task_id || "");
             const stage = String(event.stage || "");
-            const labelKey = DEVICE_PROGRESS_LABELS[stage];
+            const action = String(event.action || "");
+            const labelKey = (
+              stage === "workflow_action_started"
+                ? ANDROID_ACTION_ACTIVITY[action]
+                : undefined
+            ) || DEVICE_PROGRESS_LABELS[stage];
             if (
               !activeRun?.runId
               || !activeRun.taskId
@@ -1017,8 +1039,13 @@ export function ChatView({
             }
             const commandId = String(event.command_id || "");
             const toolCallId = String(event.tool_call_id || "");
-            const key = `${runId}:${taskId}:${commandId || toolCallId || "device"}:${stage}`;
+            const workflowStep = Number(event.workflow_step);
+            const workflowSuffix = Number.isInteger(workflowStep)
+              ? `:step-${workflowStep}`
+              : "";
+            const key = `${runId}:${taskId}:${commandId || toolCallId || "device"}:${stage}${workflowSuffix}`;
             const latency = Number(event.latency_ms);
+            const screenshotDataUrl = String(event.screen_image_data_url || "");
             setMessages((prev) => prev.map((m, i) => {
               if (i !== replyIdx || m.finalized) return m;
               const deviceEvents = m.deviceEvents || [];
@@ -1033,6 +1060,9 @@ export function ChatView({
                     label: t(labelKey),
                     ...(Number.isFinite(latency) && latency >= 0
                       ? { latencyMs: latency }
+                      : {}),
+                    ...(screenshotDataUrl.startsWith("data:image/jpeg;base64,")
+                      ? { screenshotDataUrl }
                       : {}),
                   },
                 ],
@@ -1767,6 +1797,13 @@ export function ChatView({
                           <span className="device-progress-latency">
                             {event.latencyMs} ms
                           </span>
+                        )}
+                        {event.screenshotDataUrl && (
+                          <img
+                            className="device-progress-screenshot"
+                            src={event.screenshotDataUrl}
+                            alt={event.label}
+                          />
                         )}
                       </div>
                     ))}

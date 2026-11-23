@@ -2155,12 +2155,21 @@ input:focus, textarea:focus{
 }
 .device-progress-event{
   display:flex;
+  flex-wrap:wrap;
   align-items:center;
   gap:7px;
   color:var(--text-dim);
 }
 .device-progress-dot{color:var(--cyan);font-size:7px}
 .device-progress-latency{margin-left:auto;font-variant-numeric:tabular-nums}
+.device-progress-screenshot{
+  flex-basis:100%;
+  max-width:min(100%,360px);
+  max-height:640px;
+  object-fit:contain;
+  border:1px solid var(--border);
+  border-radius:6px;
+}
 .whatsapp-send-description{white-space:pre-wrap;overflow-wrap:anywhere}
 .whatsapp-approval-card{
   padding:12px;

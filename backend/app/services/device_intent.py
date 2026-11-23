@@ -35,8 +35,18 @@ _ALIASES = {
     "my email": "Gmail",
     "email": "Gmail",
     "email app": "Gmail",
+    "g-mail": "Gmail",
+    "google mail": "Gmail",
     "my browser": "Chrome",
     "browser": "Chrome",
+    "chrome browser": "Chrome",
+    "google chrome": "Chrome",
+    "wa": "WhatsApp",
+    "whats": "WhatsApp",
+    "whats app": "WhatsApp",
+    "whatsapp messenger": "WhatsApp",
+    "you tube": "YouTube",
+    "insta": "Instagram",
 }
 _NON_APP_TARGETS = frozenset(
     {"any", "any app", "any application", "all apps", "an app", "app", "application"}

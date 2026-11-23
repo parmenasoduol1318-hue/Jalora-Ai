@@ -310,8 +310,27 @@ def test_whatsapp_message_request_routes_to_approval_gated_phone_tool(request_te
         "discover_available_device_capabilities",
         "open_paired_android_app",
         "request_remote_android_action",
+        "prepare_whatsapp_message_draft",
         "send_whatsapp_message",
     } <= set(routing.tool_names or [])
+
+
+def test_whatsapp_draft_request_routes_without_enabling_send():
+    routing = route_request("Open WhatsApp and type Hi in Mom's chat")
+
+    assert "remote_device_control" in routing.signals
+    assert "prepare_whatsapp_message_draft" in (routing.tool_names or [])
+    assert "request_user_input" in (routing.tool_names or [])
+    assert "send_whatsapp_message" not in (routing.tool_names or [])
+
+
+def test_combined_call_and_whatsapp_keeps_explicit_approval_tools():
+    routing = route_request(
+        "Call +254700000303, ask about my application, and if approved "
+        "send me the details on WhatsApp"
+    )
+
+    assert {"make_call", "send_whatsapp"} <= set(routing.tool_names or [])
 
 
 def test_untargeted_local_app_request_keeps_same_host_route():
@@ -338,6 +357,7 @@ def test_android_app_close_routes_to_verified_home_navigation():
     assert local_app_command(request) == ("close", "WhatsApp")
     assert "remote_device_control" in routing.signals
     assert "request_remote_android_action" in (routing.tool_names or [])
+    assert "execute_android_action_plan" in (routing.tool_names or [])
     assert "close_paired_android_app" in (routing.tool_names or [])
     assert "close_local_app" not in (routing.tool_names or [])
     assert direct_app_command_for_route(

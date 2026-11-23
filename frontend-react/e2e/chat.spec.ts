@@ -44,6 +44,25 @@ test.describe('Chat & streaming', () => {
         ...currentRun,
         command_id: 'command-current',
         device_id: 'phone-current',
+        screen_image_data_url: 'data:image/jpeg;base64,AA==',
+      },
+      {
+        type: 'device_progress',
+        stage: 'workflow_action_started',
+        ...currentRun,
+        tool_call_id: 'call-current',
+        device_id: 'phone-current',
+        action: 'inspect_screen',
+        workflow_step: 1,
+      },
+      {
+        type: 'device_progress',
+        stage: 'workflow_action_started',
+        ...currentRun,
+        tool_call_id: 'call-current',
+        device_id: 'phone-current',
+        action: 'inspect_screen',
+        workflow_step: 2,
       },
     ];
     await authenticatedPage.route('**/api/chat', async (route) => {
@@ -60,6 +79,11 @@ test.describe('Chat & streaming', () => {
     const progress = authenticatedPage.locator('.device-progress-events');
     await expect(progress).toContainText('Phone received the command.');
     await expect(progress).not.toContainText('Phone verified the action.');
+    await expect(progress.locator('.device-progress-screenshot')).toHaveAttribute(
+      'src',
+      'data:image/jpeg;base64,AA==',
+    );
+    await expect(progress.locator('.device-progress-event')).toHaveCount(3);
   });
 
   test('message input is cleared after sending', async ({ authenticatedPage }) => {

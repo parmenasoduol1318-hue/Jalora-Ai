@@ -106,6 +106,12 @@ _WHATSAPP_SEND_REQUEST = re.compile(
     r"|\b(?:send|text)\b.{0,160}\bwhatsapp\b",
     re.I,
 )
+_WHATSAPP_DRAFT_REQUEST = re.compile(
+    r"\bwhatsapp\b.{0,180}\b(?:type|draft|compose|write|message)\b"
+    r"|\b(?:type|draft|compose|write)\b.{0,180}"
+    r"\b(?:whatsapp|chat|conversation)\b",
+    re.I,
+)
 _NON_APP_TARGETS = frozenset({
     "all apps", "an app", "any", "any app", "any application",
     "app", "application",
@@ -237,6 +243,8 @@ def route_request(
     )
     app_launch_request = parse_app_launch_request(request_text)
     whatsapp_send_request = bool(_WHATSAPP_SEND_REQUEST.search(request_text))
+    whatsapp_draft_request = bool(_WHATSAPP_DRAFT_REQUEST.search(request_text))
+    whatsapp_task_request = whatsapp_send_request or whatsapp_draft_request
     android_app_request = bool(
         app_launch_request
         and (
@@ -250,7 +258,7 @@ def route_request(
         or mobile_device_action
         or windows_device_request
         or android_app_request
-        or whatsapp_send_request
+        or whatsapp_task_request
     )
     app_command = (
         None
@@ -288,7 +296,7 @@ def route_request(
         active_signals.add("local_app_control")
     if android_app_request:
         active_signals.add("local_app_control")
-    if whatsapp_send_request:
+    if whatsapp_task_request:
         active_signals.update({"local_app_control", "remote_device_control"})
     if remote_device_request:
         active_signals.add("remote_device_control")
@@ -332,20 +340,31 @@ def route_request(
             spec.name for spec in registry.all()
             if spec.always_available and spec.permission == PermissionLevel.AUTO
         }
+        if whatsapp_send_request and "call" in {
+            signal.casefold() for signal in result.signals
+        }:
+            selected.update(
+                name for name in ("make_call", "send_whatsapp")
+                if name in tool_names and registry.get(name) is not None
+            )
         if registry.get("discover_available_device_capabilities") is not None:
             selected.add("discover_available_device_capabilities")
         if registry.get("get_remote_device_action_status") is not None:
             selected.add("get_remote_device_action_status")
         if android_app_request and registry.get("open_paired_android_app") is not None:
             selected.add("open_paired_android_app")
-        if whatsapp_send_request:
+        if whatsapp_task_request:
             for name in (
                 "open_paired_android_app",
                 "request_remote_android_action",
-                "send_whatsapp_message",
+                "execute_android_action_plan",
+                "prepare_whatsapp_message_draft",
+                "request_user_input",
             ):
                 if registry.get(name) is not None:
                     selected.add(name)
+            if whatsapp_send_request and registry.get("send_whatsapp_message") is not None:
+                selected.add("send_whatsapp_message")
         android_target = (
             _ANDROID_DEVICE_TARGET.search(request_text)
             and not _IOS_DEVICE_TARGET.search(request_text)
@@ -364,6 +383,8 @@ def route_request(
             and registry.get("request_remote_android_action") is not None
         ):
             selected.add("request_remote_android_action")
+            if registry.get("execute_android_action_plan") is not None:
+                selected.add("execute_android_action_plan")
             app_command = local_app_command(request_text)
             if (
                 app_command is not None
@@ -383,6 +404,8 @@ def route_request(
             and registry.get("request_remote_android_action") is not None
         ):
             selected.add("request_remote_android_action")
+            if registry.get("execute_android_action_plan") is not None:
+                selected.add("execute_android_action_plan")
         if windows_device_request:
             selected.update(
                 name for name in (
