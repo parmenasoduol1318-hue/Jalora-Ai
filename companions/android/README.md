@@ -64,9 +64,17 @@ connection and reverse rule active while testing. For a phone not connected to
 that computer, pair with a reachable HTTPS backend origin. Use **Test Jalora
 server connection** in the companion to check its saved pairing and server
 reachability; this heartbeat test does not start or verify command polling.
-Use **Connect / resume** to start the foreground companion worker. Jalora
-reports recent heartbeat and recent command polling as separate device states
-and queues Android actions only for a phone with a recent command poll.
+Use **Connect / resume** to start or resume the foreground companion worker.
+The granted connection is restored when the app is reopened or Android restarts
+the service; **Pause command polling** remains paused across restarts, while
+**Stop connection** disables automatic restoration. The Android screen reports
+heartbeat and command-poll status separately. Jalora likewise reports those as
+separate device states and queues Android actions only for a phone with a recent
+command poll.
+Android 15 applies a six-hour-per-24-hour limit to `dataSync` foreground
+services. When Android reaches that limit, the companion reports that polling
+stopped and requires the user to reopen the app and reconnect; it does not try
+to bypass the operating-system limit.
 
 A `messages.read`-only pairing can connect and forward opted-in notifications
 without granting app-operation scopes. It reports an empty app manifest and

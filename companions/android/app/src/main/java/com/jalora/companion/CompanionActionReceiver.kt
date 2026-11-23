@@ -3,6 +3,7 @@ package com.jalora.companion
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 
 class CompanionActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -13,7 +14,11 @@ class CompanionActionReceiver : BroadcastReceiver() {
             ACTION_STOP -> serviceIntent.setAction(DeviceCompanionService.ACTION_STOP)
             else -> return
         }
-        context.startService(serviceIntent)
+        if (intent.action == ACTION_RESUME && Build.VERSION.SDK_INT >= 26) {
+            context.startForegroundService(serviceIntent)
+        } else {
+            context.startService(serviceIntent)
+        }
     }
 
     companion object {

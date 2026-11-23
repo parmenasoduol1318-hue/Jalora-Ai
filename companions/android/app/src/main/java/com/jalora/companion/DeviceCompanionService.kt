@@ -12,59 +12,169 @@ import android.os.IBinder
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 class DeviceCompanionService : Service() {
     private val running = AtomicBoolean(false)
     private val paused = AtomicBoolean(false)
-    private var worker: Thread? = null
-    private var heartbeatWorker: Thread? = null
+    private val pollWorkerActive = AtomicBoolean(false)
+    private val heartbeatWorkerActive = AtomicBoolean(false)
+    private val pollExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "jalora-android-companion").apply { isDaemon = true }
+    }
+    private val heartbeatExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "jalora-android-heartbeat").apply { isDaemon = true }
+    }
     @Volatile private var accessToken = ""
     @Volatile private var accessTokenExpiry = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        var restartMode = START_STICKY
         when (intent?.action) {
-            ACTION_START -> startConnection()
-            null -> startConnection()
+            ACTION_START -> startConnection(CompanionStartReason.USER_CONNECT)
+            null -> {
+                val paired = try {
+                    SecureStore.read(this) != null
+                } catch (error: Exception) {
+                    updateHeartbeatStatus(
+                        "unavailable; saved pairing credentials could not be read.",
+                    )
+                    updateStatus("Saved pairing credentials could not be read: ${error.message}")
+                    stopSelf(startId)
+                    return START_NOT_STICKY
+                }
+                if (CompanionConnectionPolicy.shouldRestoreConnection(
+                    paired = paired,
+                    connectionEnabled = CompanionRuntimeState.connectionEnabled(this),
+                    pollingPaused = CompanionRuntimeState.pollingPaused(this),
+                )) {
+                    startConnection(CompanionStartReason.SYSTEM_RESTART)
+                } else {
+                    stopSelf(startId)
+                    restartMode = START_NOT_STICKY
+                }
+            }
             ACTION_PAUSE -> {
                 paused.set(true)
-                updateStatus("Paused. No new command will be executed.")
+                CompanionRuntimeState.setPollingPaused(this, true)
+                updateStatus("Command polling paused. Heartbeat may remain active.")
+                if (!running.get() || !pollWorkerActive.get()) {
+                    stopSelf(startId)
+                    restartMode = START_NOT_STICKY
+                }
             }
-            ACTION_RESUME -> {
-                paused.set(false)
-                updateStatus("Resuming the companion connection.")
+            ACTION_RESUME -> startConnection(CompanionStartReason.USER_RESUME)
+            ACTION_STOP -> {
+                stopConnection()
+                restartMode = START_NOT_STICKY
             }
-            ACTION_STOP -> stopConnection()
         }
-        return START_STICKY
+        return restartMode
     }
 
-    private fun startConnection() {
-        if (running.getAndSet(true)) {
-            paused.set(false)
+    @Synchronized
+    private fun startConnection(reason: CompanionStartReason) {
+        val savedState = try {
+            SecureStore.read(this)
+        } catch (error: Exception) {
+            updateHeartbeatStatus("unavailable; saved pairing credentials could not be read.")
+            updateStatus("Saved pairing credentials could not be read: ${error.message}")
+            stopSelf()
             return
         }
-        createChannels()
-        startForeground(NOTIFICATION_ID, statusNotification("Connecting to Jalora over HTTPS."))
-        worker = Thread(::connectionLoop, "jalora-android-companion").apply {
-            isDaemon = true
-            start()
+        if (savedState == null) {
+            updateHeartbeatStatus("not paired")
+            updateStatus("This phone is not paired. Pair it before connecting.")
+            stopSelf()
+            return
         }
-        heartbeatWorker = Thread(::heartbeatLoop, "jalora-android-heartbeat").apply {
-            isDaemon = true
-            start()
+        val shouldStartWorkers = CompanionConnectionPolicy.shouldStartWorkers(
+            reason = reason,
+            connectionEnabled = CompanionRuntimeState.connectionEnabled(this),
+            running = running.get(),
+            pollWorkerAlive = pollWorkerActive.get(),
+        )
+        if (!shouldStartWorkers) {
+            if (reason != CompanionStartReason.SYSTEM_RESTART) {
+                paused.set(false)
+                CompanionRuntimeState.setConnectionEnabled(this, true)
+                CompanionRuntimeState.setPollingPaused(this, false)
+                updateStatus("Resuming authenticated command polling.")
+                startPollingWorkerIfNeeded()
+                startHeartbeatWorkerIfNeeded()
+            }
+            return
+        }
+        CompanionRuntimeState.setConnectionEnabled(this, true)
+        val resumePolling = reason != CompanionStartReason.SYSTEM_RESTART
+        if (resumePolling) CompanionRuntimeState.setPollingPaused(this, false)
+        paused.set(
+            if (resumePolling) false else CompanionRuntimeState.pollingPaused(this),
+        )
+        running.set(true)
+        createChannels()
+        try {
+            startForeground(
+                NOTIFICATION_ID,
+                statusNotification("Connecting to Jalora over HTTPS."),
+            )
+        } catch (error: Exception) {
+            running.set(false)
+            updateHeartbeatStatus("not active; Android blocked foreground-service startup.")
+            updateStatus(
+                "Android did not allow the foreground connection to start: " +
+                    (error.message ?: error.javaClass.simpleName),
+            )
+            stopSelf()
+            return
+        }
+        startPollingWorkerIfNeeded()
+        startHeartbeatWorkerIfNeeded()
+        updateStatus(
+            if (paused.get()) "Connection restored; command polling remains paused."
+            else "Connecting securely; command polling has not yet been confirmed.",
+        )
+    }
+
+    @Synchronized
+    private fun stopConnection() {
+        CompanionRuntimeState.setConnectionEnabled(this, false)
+        CompanionRuntimeState.setPollingPaused(this, false)
+        running.set(false)
+        paused.set(false)
+        updateHeartbeatStatus("stopped")
+        updateStatus("Connection stopped.")
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private fun startPollingWorkerIfNeeded() {
+        if (!running.get() || paused.get() || !pollWorkerActive.compareAndSet(false, true)) {
+            return
+        }
+        pollExecutor.execute {
+            try {
+                connectionLoop()
+            } finally {
+                pollWorkerActive.set(false)
+                if (running.get() && !paused.get()) startPollingWorkerIfNeeded()
+            }
         }
     }
 
-    private fun stopConnection() {
-        running.set(false)
-        paused.set(false)
-        worker?.interrupt()
-        heartbeatWorker?.interrupt()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+    private fun startHeartbeatWorkerIfNeeded() {
+        if (!running.get() || !heartbeatWorkerActive.compareAndSet(false, true)) return
+        heartbeatExecutor.execute {
+            try {
+                heartbeatLoop()
+            } finally {
+                heartbeatWorkerActive.set(false)
+                if (running.get()) startHeartbeatWorkerIfNeeded()
+            }
+        }
     }
 
     private fun heartbeatLoop() {
@@ -83,13 +193,15 @@ class DeviceCompanionService : Service() {
                     token = state.getString("device_token"),
                     body = JSONObject(),
                 )
+                if (!running.get()) return
                 failures = 0
+                updateHeartbeatStatus("active", heartbeatSucceeded = true)
             } catch (error: InterruptedException) {
                 if (!running.get()) return
             } catch (error: Exception) {
                 failures = (failures + 1).coerceAtMost(5)
                 Log.w(TAG, "Heartbeat request failed (${error.javaClass.simpleName}).")
-                updateStatus(
+                updateHeartbeatStatus(
                     "Heartbeat failed; reconnecting: ${error.message ?: error.javaClass.simpleName}",
                 )
             }
@@ -110,89 +222,102 @@ class DeviceCompanionService : Service() {
 
     private fun connectionLoop() {
         var currentPhase = "starting the companion"
-        try {
-            while (running.get()) {
-                if (paused.get()) {
-                    Thread.sleep(250)
-                    continue
-                }
-                try {
-                    var state = SecureStore.read(this) ?: error("This phone is not paired.")
-                    val origin = state.getString("api_origin")
-                    val deviceToken = state.getString("device_token")
-                    if (accessToken.isBlank() || System.currentTimeMillis() >= accessTokenExpiry) {
-                        currentPhase = "refreshing the device session"
-                        val session = CompanionApi.request(
-                            origin,
-                            "/api/devices/protocol/v1/session",
-                            "POST",
-                            token = deviceToken,
-                        )
-                        accessToken = session.getString("access_token")
-                        accessTokenExpiry = System.currentTimeMillis() + 240_000
-                    }
-                    currentPhase = "recovering interrupted device actions"
-                    state = recoverInterruptedAction(state)
-                    currentPhase = "delivering a saved execution receipt"
-                    deliverSavedReceipt(state)
-                    currentPhase = "checking installed applications"
-                    val installedApps = CompanionApi.installedApplications(this)
-                    currentPhase = "updating the application manifest"
-                    reportManifestIfChanged(state, installedApps)
-                    currentPhase = "polling the command queue"
-                    Log.i(TAG, "Starting authenticated command poll.")
-                    val batch = CompanionApi.request(
-                        origin,
-                        "/api/devices/protocol/v1/commands?wait_seconds=20&client_type=android",
-                        token = accessToken,
-                    )
-                    val commands = batch.optJSONArray("commands") ?: JSONArray()
-                    Log.i(TAG, "Command poll completed; count=${commands.length()}.")
-                    for (index in 0 until commands.length()) {
-                        if (!running.get()) break
-                        while (paused.get() && running.get()) Thread.sleep(250)
-                        if (running.get()) {
-                            currentPhase = "acknowledging and executing command"
-                            handleCommand(commands.getJSONObject(index), state, installedApps)
-                        }
-                    }
-                    updateStatus("Connected. Waiting for a Jalora task.")
-                } catch (error: CompanionHttpException) {
-                    Log.w(
-                        TAG,
-                        "Companion phase '$currentPhase' returned HTTP ${error.status}.",
-                    )
-                    if (error.status == 401) {
-                        accessToken = ""
-                        if (error.message?.contains("invalid or revoked", true) == true) {
-                            SecureStore.clear(this)
-                            updateStatus("Jalora no longer authorizes this phone. Pair it again if appropriate.")
-                            stopConnection()
-                            return
-                        }
-                    }
-                    updateStatus("Connection error: ${error.message}")
-                    Thread.sleep(RETRY_DELAY_MS)
-                } catch (error: InterruptedException) {
-                    if (!running.get()) return
-                } catch (error: Exception) {
-                    Log.w(
-                        TAG,
-                        "Companion phase '$currentPhase' failed (${error.javaClass.simpleName}): " +
-                            (error.message ?: "no additional detail"),
-                    )
-                    updateStatus(
-                        "Companion error during $currentPhase: " +
-                            (error.message ?: error.javaClass.simpleName),
-                    )
-                    Thread.sleep(RETRY_DELAY_MS)
-                }
+        var failures = 0
+        while (running.get()) {
+            if (paused.get()) {
+                Thread.sleep(250)
+                continue
             }
-        } finally {
-            running.set(false)
-            heartbeatWorker?.interrupt()
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            try {
+                var state = SecureStore.read(this) ?: error("This phone is not paired.")
+                val origin = state.getString("api_origin")
+                val deviceToken = state.getString("device_token")
+                if (accessToken.isBlank() || System.currentTimeMillis() >= accessTokenExpiry) {
+                    currentPhase = "refreshing the device session"
+                    val session = CompanionApi.request(
+                        origin,
+                        "/api/devices/protocol/v1/session",
+                        "POST",
+                        token = deviceToken,
+                    )
+                    accessToken = session.getString("access_token")
+                    accessTokenExpiry = System.currentTimeMillis() +
+                        session.optLong("expires_in", 240L) * 1000L - 15_000L
+                    updateStatus("Authenticated with Jalora; starting command polling.")
+                }
+                currentPhase = "recovering interrupted device actions"
+                state = recoverInterruptedAction(state)
+                currentPhase = "delivering a saved execution receipt"
+                deliverSavedReceipt(state)
+                currentPhase = "checking installed applications"
+                val installedApps = CompanionApi.installedApplications(this)
+                currentPhase = "updating the application manifest"
+                reportManifestIfChanged(state, installedApps)
+                currentPhase = "polling the command queue"
+                Log.i(TAG, "Starting authenticated command poll.")
+                val batch = CompanionApi.request(
+                    origin,
+                    "/api/devices/protocol/v1/commands?wait_seconds=20&client_type=android",
+                    token = accessToken,
+                )
+                if (!running.get()) return
+                failures = 0
+                val commands = batch.optJSONArray("commands") ?: JSONArray()
+                Log.i(TAG, "Command poll completed; count=${commands.length()}.")
+                updateStatus(
+                    "Connected and authenticated. Command polling is active.",
+                    pollSucceeded = true,
+                )
+                for (index in 0 until commands.length()) {
+                    if (!running.get()) break
+                    while (paused.get() && running.get()) Thread.sleep(250)
+                    if (running.get()) {
+                        currentPhase = "acknowledging and executing command"
+                        handleCommand(commands.getJSONObject(index), state, installedApps)
+                    }
+                }
+                updateStatus("Connected. Waiting for a Jalora task.")
+            } catch (error: CompanionHttpException) {
+                Log.w(
+                    TAG,
+                    "Companion phase '$currentPhase' returned HTTP ${error.status}.",
+                )
+                if (error.status == 401) {
+                    accessToken = ""
+                    if (error.message?.contains("invalid or revoked", true) == true) {
+                        SecureStore.clear(this)
+                        stopConnection()
+                        updateStatus(
+                            "Jalora rejected this phone's pairing credentials. " +
+                                "Pair the phone again before reconnecting.",
+                        )
+                        return
+                    }
+                }
+                failures = (failures + 1).coerceAtMost(5)
+                val retryDelay = CompanionConnectionPolicy.retryDelay(failures)
+                updateStatus(
+                    "Connection failed while $currentPhase (HTTP ${error.status}): " +
+                        "${error.message} Retrying in ${retryDelay / 1000}s.",
+                )
+                Thread.sleep(retryDelay)
+            } catch (error: InterruptedException) {
+                if (!running.get()) return
+            } catch (error: Exception) {
+                Log.w(
+                    TAG,
+                    "Companion phase '$currentPhase' failed (${error.javaClass.simpleName}): " +
+                        (error.message ?: "no additional detail"),
+                )
+                failures = (failures + 1).coerceAtMost(5)
+                val retryDelay = CompanionConnectionPolicy.retryDelay(failures)
+                updateStatus(
+                    "Companion error during $currentPhase: " +
+                        (error.message ?: error.javaClass.simpleName) +
+                        " Retrying in ${retryDelay / 1000}s.",
+                )
+                Thread.sleep(retryDelay)
+            }
         }
     }
 
@@ -470,18 +595,52 @@ class DeviceCompanionService : Service() {
         )
     }
 
-    private fun updateStatus(message: String) {
+    private fun updateStatus(message: String, pollSucceeded: Boolean = false) {
+        CompanionRuntimeState.setPollingStatus(this, message, pollSucceeded)
         if (running.get()) {
             (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
                 .notify(NOTIFICATION_ID, statusNotification(message))
         }
+        broadcastStatus()
+    }
+
+    private fun updateHeartbeatStatus(message: String, heartbeatSucceeded: Boolean = false) {
+        CompanionRuntimeState.setHeartbeatStatus(this, message, heartbeatSucceeded)
+        broadcastStatus()
+    }
+
+    private fun broadcastStatus() {
+        sendBroadcast(
+            Intent(ACTION_STATUS_UPDATE)
+                .setPackage(packageName)
+                .putExtra(EXTRA_STATUS, CompanionRuntimeState.status(this)),
+        )
     }
 
     override fun onDestroy() {
-        running.set(false)
-        worker?.interrupt()
-        heartbeatWorker?.interrupt()
+        val wasRunning = running.getAndSet(false)
+        pollExecutor.shutdownNow()
+        heartbeatExecutor.shutdownNow()
+        if (wasRunning && CompanionRuntimeState.connectionEnabled(this)) {
+            updateHeartbeatStatus("connection service stopped")
+            updateStatus("Companion service stopped. Reopen Jalora Companion to reconnect.")
+        }
         super.onDestroy()
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        Log.w(TAG, "Android's foreground data-sync time limit was reached.")
+        CompanionRuntimeState.setConnectionEnabled(this, false)
+        running.set(false)
+        updateHeartbeatStatus("stopped by Android foreground-service limit")
+        pollExecutor.shutdownNow()
+        heartbeatExecutor.shutdownNow()
+        updateStatus(
+            "Android's foreground-service time limit was reached. " +
+                "Reopen Jalora Companion and choose Connect / resume.",
+        )
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf(startId)
     }
 
     companion object {
@@ -490,9 +649,10 @@ class DeviceCompanionService : Service() {
         const val ACTION_STOP = "com.jalora.companion.STOP"
         const val ACTION_PAUSE = "com.jalora.companion.PAUSE"
         const val ACTION_RESUME = "com.jalora.companion.RESUME"
+        const val ACTION_STATUS_UPDATE = "com.jalora.companion.STATUS_UPDATE"
+        const val EXTRA_STATUS = "status"
         private const val STATUS_CHANNEL = "jalora_status"
         private const val NOTIFICATION_ID = 7412
-        private const val RETRY_DELAY_MS = 2500L
         private const val HEARTBEAT_INTERVAL_MS = 15_000L
         private const val HEARTBEAT_RETRY_BASE_MS = 2500L
         private const val HEARTBEAT_MAX_RETRY_MS = 30_000L

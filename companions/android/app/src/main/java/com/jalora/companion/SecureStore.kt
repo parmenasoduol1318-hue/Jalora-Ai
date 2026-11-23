@@ -72,3 +72,83 @@ object SecureStore {
         return generator.generateKey()
     }
 }
+
+object CompanionRuntimeState {
+    private const val preferences = "jalora_companion_runtime"
+
+    fun connectionEnabled(context: Context): Boolean =
+        context.getSharedPreferences(preferences, Context.MODE_PRIVATE)
+            .getBoolean("connection_enabled", true)
+
+    fun pollingPaused(context: Context): Boolean =
+        context.getSharedPreferences(preferences, Context.MODE_PRIVATE)
+            .getBoolean("polling_paused", false)
+
+    fun setConnectionEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(preferences, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("connection_enabled", enabled)
+            .apply()
+    }
+
+    fun setPollingPaused(context: Context, paused: Boolean) {
+        context.getSharedPreferences(preferences, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("polling_paused", paused)
+            .apply()
+    }
+
+    fun status(context: Context): String {
+        val store = context.getSharedPreferences(preferences, Context.MODE_PRIVATE)
+        var heartbeat = store.getString("heartbeat_status", "not checked") ?: "not checked"
+        var polling = store.getString(
+            "polling_status",
+            "not connected. Choose Connect / resume.",
+        ) ?: "not connected. Choose Connect / resume."
+        val lastHeartbeatAt = store.getLong("last_heartbeat_at", 0L)
+        if (
+            lastHeartbeatAt > 0L &&
+            heartbeat.equals("active", ignoreCase = true) &&
+            !CompanionConnectionPolicy.isPollRecent(
+                lastHeartbeatAt,
+                System.currentTimeMillis(),
+            )
+        ) {
+            heartbeat = "unavailable; no heartbeat in the last 90 seconds."
+        }
+        val lastPollAt = store.getLong("last_poll_at", 0L)
+        if (
+            connectionEnabled(context) &&
+            !pollingPaused(context) &&
+            lastPollAt > 0L &&
+            (polling.contains("active", ignoreCase = true) ||
+                polling.contains("waiting", ignoreCase = true)) &&
+            !CompanionConnectionPolicy.isPollRecent(lastPollAt, System.currentTimeMillis())
+        ) {
+            polling = "unavailable; no successful command poll in the last 90 seconds."
+        }
+        return "Heartbeat: $heartbeat\nCommand polling: $polling"
+    }
+
+    fun setPollingStatus(context: Context, status: String, pollSucceeded: Boolean = false) {
+        val editor = context.getSharedPreferences(preferences, Context.MODE_PRIVATE)
+            .edit()
+            .putString("polling_status", status)
+        if (pollSucceeded) editor.putLong("last_poll_at", System.currentTimeMillis())
+        editor.apply()
+    }
+
+    fun setHeartbeatStatus(
+        context: Context,
+        status: String,
+        heartbeatSucceeded: Boolean = false,
+    ) {
+        val editor = context.getSharedPreferences(preferences, Context.MODE_PRIVATE)
+            .edit()
+            .putString("heartbeat_status", status)
+        if (heartbeatSucceeded) {
+            editor.putLong("last_heartbeat_at", System.currentTimeMillis())
+        }
+        editor.apply()
+    }
+}

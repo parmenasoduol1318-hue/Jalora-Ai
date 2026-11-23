@@ -2,8 +2,11 @@ package com.jalora.companion
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.BroadcastReceiver
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -23,6 +26,30 @@ class MainActivity : Activity() {
     private lateinit var pairingLink: EditText
     private lateinit var status: TextView
     private lateinit var appList: TextView
+    private val statusReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            status.text = intent.getStringExtra(DeviceCompanionService.EXTRA_STATUS)
+                ?: return
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val filter = IntentFilter(DeviceCompanionService.ACTION_STATUS_UPDATE)
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(statusReceiver, filter)
+        }
+        refreshState()
+        restoreAuthorizedConnection()
+    }
+
+    override fun onStop() {
+        unregisterReceiver(statusReceiver)
+        super.onStop()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -253,11 +280,36 @@ class MainActivity : Activity() {
             status.text = "This pairing has no Android app, browser, or notification permission. Select a permission in Jalora and pair again."
             return
         }
-        val intent = Intent(this, DeviceCompanionService::class.java)
-            .setAction(DeviceCompanionService.ACTION_START)
-        if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
+        CompanionRuntimeState.setConnectionEnabled(this, true)
+        CompanionRuntimeState.setPollingPaused(this, false)
         status.text = "Connecting securely to ${serverHost(state)}."
         localBackendHint(state.optString("api_origin"))?.let { status.append("\n$it") }
+        try {
+            val intent = Intent(this, DeviceCompanionService::class.java)
+                .setAction(DeviceCompanionService.ACTION_START)
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
+        } catch (error: Exception) {
+            status.text =
+                "Android could not start the foreground companion service: " +
+                    (error.message ?: error.javaClass.simpleName)
+        }
+    }
+
+    private fun restoreAuthorizedConnection() {
+        val paired = try {
+            SecureStore.read(this) != null
+        } catch (_: Exception) {
+            false
+        }
+        if (
+            CompanionConnectionPolicy.shouldRestoreConnection(
+                paired = paired,
+                connectionEnabled = CompanionRuntimeState.connectionEnabled(this),
+                pollingPaused = CompanionRuntimeState.pollingPaused(this),
+            )
+        ) {
+            startCompanion()
+        }
     }
 
     private fun testServerConnection() {
@@ -312,6 +364,7 @@ class MainActivity : Activity() {
             .setMessage("Stop the connection and remove its encrypted local credential? Revoke the device separately in Jalora to prevent future access.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Disconnect") { _, _ ->
+                CompanionRuntimeState.setConnectionEnabled(this, false)
                 startService(Intent(this, DeviceCompanionService::class.java).setAction(DeviceCompanionService.ACTION_STOP))
                 SecureStore.clear(this)
                 appList.text = ""
@@ -341,6 +394,7 @@ class MainActivity : Activity() {
         appList.text = selectedAppNames(state.optJSONArray("applications") ?: JSONArray())
         val notificationEnabled = isNotificationListenerEnabled()
         status.text = "Paired with ${state.optString("device_name")} at ${serverHost(state)}.\n" +
+            "${CompanionRuntimeState.status(this)}\n" +
             "${permissionSummary(state)}\n" +
             "Accessibility service: ${accessibilityStatus()}\n" +
             "Notification access: ${if (notificationEnabled) "enabled" else "not enabled"}"
