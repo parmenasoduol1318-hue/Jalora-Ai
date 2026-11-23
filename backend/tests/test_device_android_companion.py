@@ -54,7 +54,20 @@ def _paired_android_device(client, owner_headers, scopes=None):
         json={"confirm": True, "pairing_code": pairing_code},
     )
     assert approved.status_code == 200, approved.text
-    return approved.json()
+    result = approved.json()
+    protocol_session = client.post(
+        "/api/devices/protocol/v1/session",
+        headers={"Authorization": f"Bearer {result['device_token']}"},
+    )
+    assert protocol_session.status_code == 200, protocol_session.text
+    initial_poll = client.get(
+        "/api/devices/protocol/v1/commands?wait_seconds=0&client_type=android",
+        headers={
+            "Authorization": f"Bearer {protocol_session.json()['access_token']}"
+        },
+    )
+    assert initial_poll.status_code == 200, initial_poll.text
+    return result
 
 
 def test_android_notification_only_pairing_accepts_empty_app_manifest(

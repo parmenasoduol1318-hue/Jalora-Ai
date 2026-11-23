@@ -95,10 +95,12 @@ const RECOGNIZED_TOOLS: Record<string, string> = {
 };
 
 const DEVICE_PROGRESS_LABELS: Record<string, string> = {
-  device_online: "phoneHeartbeatRecent",
+  device_online: "phoneCommandPollRecent",
   device_offline: "phoneOffline",
+  device_poll_unavailable: "phoneCommandPollUnavailable",
   command_queued: "phoneCommandQueued",
-  device_received: "phoneCommandReceived",
+  command_delivery_pending: "phoneCommandDeliveryPending",
+  device_received: "phoneCommandAcknowledged",
   action_executing: "phoneActionExecuting",
   action_verified: "phoneActionVerified",
   action_failed: "phoneActionFailed",

@@ -216,10 +216,42 @@ def test_cancel_unstarted_device_command_cannot_cancel_running_action(
             protocol_status="running",
             expires_at=utcnow() + timedelta(minutes=5),
         )
-        db.add_all([queued, running])
+        active_delivery = DeviceRemoteCommand(
+            user_id=user.id,
+            device_id=device.id,
+            action="android.launcher.open",
+            target_url="",
+            required_scope="android.apps.launch",
+            command_nonce="g" * 64,
+            idempotency_key="h" * 64,
+            payload_digest="i" * 64,
+            expected_evidence=["operation_result"],
+            status="pending",
+            protocol_status="delivered",
+            lease_expires_at=utcnow() + timedelta(seconds=30),
+            expires_at=utcnow() + timedelta(minutes=5),
+        )
+        expired_delivery = DeviceRemoteCommand(
+            user_id=user.id,
+            device_id=device.id,
+            action="android.launcher.open",
+            target_url="",
+            required_scope="android.apps.launch",
+            command_nonce="j" * 64,
+            idempotency_key="k" * 64,
+            payload_digest="l" * 64,
+            expected_evidence=["operation_result"],
+            status="pending",
+            protocol_status="delivered",
+            lease_expires_at=utcnow() - timedelta(seconds=1),
+            expires_at=utcnow() + timedelta(minutes=5),
+        )
+        db.add_all([queued, running, active_delivery, expired_delivery])
         db.commit()
         queued_id = queued.id
         running_id = running.id
+        active_delivery_id = active_delivery.id
+        expired_delivery_id = expired_delivery.id
         user_id = user.id
 
         assert cancel_unstarted_device_command(
@@ -234,12 +266,28 @@ def test_cancel_unstarted_device_command_cannot_cancel_running_action(
             command_id=running_id,
             error_code="DEVICE_ACK_TIMEOUT",
         )
+        assert not cancel_unstarted_device_command(
+            db,
+            user_id=user_id,
+            command_id=active_delivery_id,
+            error_code="DEVICE_ACK_TIMEOUT",
+        )
+        assert cancel_unstarted_device_command(
+            db,
+            user_id=user_id,
+            command_id=expired_delivery_id,
+            error_code="DEVICE_ACK_TIMEOUT",
+        )
         db.refresh(queued)
         db.refresh(running)
+        db.refresh(active_delivery)
+        db.refresh(expired_delivery)
 
         assert queued.protocol_status == "cancelled"
         assert queued.error_code == "DEVICE_ACK_TIMEOUT"
         assert running.protocol_status == "running"
+        assert active_delivery.protocol_status == "delivered"
+        assert expired_delivery.protocol_status == "cancelled"
 
 
 def _approved_device(client, owner_headers):
@@ -261,7 +309,18 @@ def _approved_device(client, owner_headers):
         json={"confirm": True, "pairing_code": fragment["pair_code"][0]},
     )
     assert approved.status_code == 200, approved.text
-    return approved.json()
+    result = approved.json()
+    session = client.post(
+        "/api/devices/protocol/v1/session",
+        headers={"Authorization": f"Bearer {result['device_token']}"},
+    )
+    assert session.status_code == 200, session.text
+    poll = client.get(
+        "/api/devices/protocol/v1/commands?wait_seconds=0&client_type=android",
+        headers={"Authorization": f"Bearer {session.json()['access_token']}"},
+    )
+    assert poll.status_code == 200, poll.text
+    return result
 
 
 def test_protocol_v1_is_task_linked_idempotent_and_uncertain_safe(
@@ -270,6 +329,11 @@ def test_protocol_v1_is_task_linked_idempotent_and_uncertain_safe(
     owner_headers = auth_headers("protocol-v1@test.com")
     paired = _approved_device(client, owner_headers)
     device = paired["device"]
+    with SessionLocal() as db:
+        row = db.get(DeviceConnection, device["id"])
+        assert row is not None
+        row.last_command_poll_at = None
+        db.commit()
     bootstrap_headers = {"Authorization": f"Bearer {paired['device_token']}"}
     session = client.post(
         "/api/devices/protocol/v1/session",
@@ -281,6 +345,23 @@ def test_protocol_v1_is_task_linked_idempotent_and_uncertain_safe(
     protocol_headers = {
         "Authorization": f"Bearer {session.json()['access_token']}"
     }
+    heartbeat = client.post(
+        "/api/devices/heartbeat",
+        headers=bootstrap_headers,
+    )
+    assert heartbeat.status_code == 200
+    before_poll = client.get("/api/devices", headers=owner_headers)
+    phone_before_poll = next(
+        item for item in before_poll.json() if item["id"] == device["id"]
+    )
+    assert phone_before_poll["connectivity"] == "online"
+    assert phone_before_poll["command_poll_status"] == "unknown"
+    initial_poll = client.get(
+        "/api/devices/protocol/v1/commands?wait_seconds=0&client_type=android",
+        headers=protocol_headers,
+    )
+    assert initial_poll.status_code == 200
+    assert initial_poll.json()["commands"] == []
 
     with SessionLocal() as db:
         user = db.query(User).filter_by(email="protocol-v1@test.com").one()
@@ -408,6 +489,12 @@ def test_protocol_v1_is_task_linked_idempotent_and_uncertain_safe(
     assert envelope["idempotency_key"] == "a" * 64
     assert envelope["nonce"]
     assert envelope["delivery_count"] == 1
+    after_poll = client.get("/api/devices", headers=owner_headers)
+    phone_after_poll = next(
+        item for item in after_poll.json() if item["id"] == device["id"]
+    )
+    assert phone_after_poll["command_poll_status"] == "active"
+    assert phone_after_poll["last_command_poll_at"] is not None
 
     second_poll = client.get(
         "/api/devices/protocol/v1/commands?wait_seconds=0&client_type=android",

@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 DEVICE_ONLINE_WINDOW = timedelta(seconds=30)
+COMMAND_POLL_WINDOW = timedelta(seconds=90)
 
 _REMOTE_OPERATIONS = (
     {
@@ -49,6 +50,15 @@ def _online(device: DeviceConnection, now: datetime) -> bool:
     return last_seen >= now - DEVICE_ONLINE_WINDOW
 
 
+def _command_poll_active(device: DeviceConnection, now: datetime) -> bool:
+    if device.status != "active" or device.last_command_poll_at is None:
+        return False
+    last_poll = device.last_command_poll_at
+    if last_poll.tzinfo is None:
+        last_poll = last_poll.replace(tzinfo=timezone.utc)
+    return last_poll >= now - COMMAND_POLL_WINDOW
+
+
 def discover_device_capabilities(
     db: Session,
     user_id: str,
@@ -58,8 +68,8 @@ def discover_device_capabilities(
     """Describe registered, connected, and unsupported execution surfaces.
 
     A registered device scope is not treated as proof that an action succeeded.
-    The phone must be online and report a verified receipt; Android operation
-    grants are established at pairing.
+    Android commands require a recent command poll as well as a verified
+    execution receipt; heartbeat alone does not establish command readiness.
     """
     now = datetime.now(timezone.utc)
     devices = db.scalars(
@@ -79,6 +89,7 @@ def discover_device_capabilities(
     paired_devices: list[dict[str, Any]] = []
     for device in devices:
         online = _online(device, now)
+        command_poll_active = _command_poll_active(device, now)
         granted_scopes = set(device.scopes or [])
         operations: list[dict[str, Any]] = []
         for operation in _REMOTE_OPERATIONS:
@@ -89,6 +100,12 @@ def discover_device_capabilities(
                 status = "permission_required"
             elif not online:
                 status = "offline"
+            elif (
+                operation["operation"] == "browser.open_url"
+                and device.platform == "android"
+                and not command_poll_active
+            ):
+                status = "command_poll_unavailable"
             elif operation["operation"] == "browser.open_url":
                 status = "available"
             else:
@@ -102,6 +119,9 @@ def discover_device_capabilities(
                     else "The server endpoint is registered, but the shipped browser "
                     "companion cannot read notifications or deliver message replies."
                     if status == "registered_unavailable"
+                    else "The phone heartbeat is recent, but command polling has "
+                    "not checked in."
+                    if status == "command_poll_unavailable"
                     else "The paired device companion has not checked in recently."
                     if status == "offline"
                     else "This device has not granted the required permission."
@@ -175,6 +195,8 @@ def discover_device_capabilities(
                 status = "permission_required"
             elif not online:
                 status = "offline"
+            elif device.platform == "android" and not command_poll_active:
+                status = "command_poll_unavailable"
             elif device.platform == "android":
                 status = "available"
             elif has_capability:
@@ -205,6 +227,11 @@ def discover_device_capabilities(
                         f"{device.platform.title()} companion."
                     )
                     if status == "registered_unavailable"
+                    else (
+                        "The phone heartbeat is recent, but command polling has "
+                        "not checked in."
+                    )
+                    if status == "command_poll_unavailable"
                     else (
                         f"The paired {device.platform.title()} companion is offline."
                     )
@@ -247,6 +274,14 @@ def discover_device_capabilities(
                     else "Add an app with screen-read permission in the Windows companion."
                 ),
             })
+        if device.status != "active":
+            command_poll_status = "offline"
+        elif command_poll_active:
+            command_poll_status = "active"
+        elif device.last_command_poll_at is not None:
+            command_poll_status = "stale"
+        else:
+            command_poll_status = "unknown"
         paired_devices.append({
             "id": device.id,
             "name": device.name,
@@ -254,6 +289,7 @@ def discover_device_capabilities(
             "status": "online" if online else (
                 "offline" if device.status == "active" else "revoked"
             ),
+            "command_poll_status": command_poll_status,
             "last_seen_at": device.last_seen_at,
             "companion_capabilities": operations,
             "applications": [

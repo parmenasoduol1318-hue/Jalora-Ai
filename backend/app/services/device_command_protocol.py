@@ -705,7 +705,17 @@ def cancel_unstarted_device_command(
             DeviceRemoteCommand.id == command_id,
             DeviceRemoteCommand.user_id == user_id,
             DeviceRemoteCommand.status == "pending",
-            DeviceRemoteCommand.protocol_status.in_(("queued", "delivered")),
+            or_(
+                DeviceRemoteCommand.protocol_status == "queued",
+                and_(
+                    DeviceRemoteCommand.protocol_status == "delivered",
+                    or_(
+                        DeviceRemoteCommand.lease_expires_at.is_(None),
+                        DeviceRemoteCommand.lease_expires_at
+                        <= datetime.now(timezone.utc),
+                    ),
+                ),
+            ),
         )
         .values(
             status="cancelled",

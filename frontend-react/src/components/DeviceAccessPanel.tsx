@@ -7,8 +7,10 @@ type Device = {
   platform: string;
   status: string;
   connectivity: "online" | "offline" | "unknown";
+  command_poll_status: "active" | "stale" | "unknown" | "offline";
   scopes: string[];
   last_seen_at: string | null;
+  last_command_poll_at: string | null;
 };
 
 type PairRequest = {
@@ -516,11 +518,24 @@ export function DeviceAccessPanel({
                       ? "offline (no recent contact)"
                       : "unknown (awaiting first contact)"
                 }
+                {device.platform === "android" &&
+                  ` · command poll ${
+                      device.command_poll_status === "active"
+                        ? "active"
+                        : device.command_poll_status === "stale"
+                          ? "stale"
+                          : device.command_poll_status === "offline"
+                            ? "unavailable"
+                            : "not yet observed"
+                  }`}
               </div>
               <div className="model">
                 {device.status === "revoked" ? "revoked" : "paired"} · {(device.scopes || []).join(", ")}
                 {device.last_seen_at
                   ? ` · Last active ${new Date(device.last_seen_at).toLocaleString()}`
+                  : ""}
+                {device.last_command_poll_at
+                  ? ` · Last command poll ${new Date(device.last_command_poll_at).toLocaleString()}`
                   : ""}
               </div>
             </div>

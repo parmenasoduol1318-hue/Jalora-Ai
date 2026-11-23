@@ -40,6 +40,13 @@ test.describe('Chat & streaming', () => {
       },
       {
         type: 'device_progress',
+        stage: 'command_delivery_pending',
+        ...currentRun,
+        command_id: 'command-current',
+        device_id: 'phone-current',
+      },
+      {
+        type: 'device_progress',
         stage: 'device_received',
         ...currentRun,
         command_id: 'command-current',
@@ -77,13 +84,18 @@ test.describe('Chat & streaming', () => {
     await authenticatedPage.locator('#composer').press('Enter');
 
     const progress = authenticatedPage.locator('.device-progress-events');
-    await expect(progress).toContainText('Phone received the command.');
+    await expect(progress).toContainText(
+      'Command offered to the phone; waiting for its acknowledgement.',
+    );
+    await expect(progress).toContainText(
+      'Phone acknowledged the command; execution is authorized.',
+    );
     await expect(progress).not.toContainText('Phone verified the action.');
     await expect(progress.locator('.device-progress-screenshot')).toHaveAttribute(
       'src',
       'data:image/jpeg;base64,AA==',
     );
-    await expect(progress.locator('.device-progress-event')).toHaveCount(3);
+    await expect(progress.locator('.device-progress-event')).toHaveCount(4);
   });
 
   test('message input is cleared after sending', async ({ authenticatedPage }) => {

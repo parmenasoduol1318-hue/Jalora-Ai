@@ -63,7 +63,10 @@ without this forwarding, it cannot reach the computer's backend. Keep the USB
 connection and reverse rule active while testing. For a phone not connected to
 that computer, pair with a reachable HTTPS backend origin. Use **Test Jalora
 server connection** in the companion to check its saved pairing and server
-reachability before trying an app or screen action.
+reachability; this heartbeat test does not start or verify command polling.
+Use **Connect / resume** to start the foreground companion worker. Jalora
+reports recent heartbeat and recent command polling as separate device states
+and queues Android actions only for a phone with a recent command poll.
 
 A `messages.read`-only pairing can connect and forward opted-in notifications
 without granting app-operation scopes. It reports an empty app manifest and

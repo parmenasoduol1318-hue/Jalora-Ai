@@ -109,6 +109,7 @@ class DeviceCompanionService : Service() {
     }
 
     private fun connectionLoop() {
+        var currentPhase = "starting the companion"
         try {
             while (running.get()) {
                 if (paused.get()) {
@@ -120,6 +121,7 @@ class DeviceCompanionService : Service() {
                     val origin = state.getString("api_origin")
                     val deviceToken = state.getString("device_token")
                     if (accessToken.isBlank() || System.currentTimeMillis() >= accessTokenExpiry) {
+                        currentPhase = "refreshing the device session"
                         val session = CompanionApi.request(
                             origin,
                             "/api/devices/protocol/v1/session",
@@ -129,26 +131,37 @@ class DeviceCompanionService : Service() {
                         accessToken = session.getString("access_token")
                         accessTokenExpiry = System.currentTimeMillis() + 240_000
                     }
+                    currentPhase = "recovering interrupted device actions"
                     state = recoverInterruptedAction(state)
+                    currentPhase = "delivering a saved execution receipt"
                     deliverSavedReceipt(state)
+                    currentPhase = "checking installed applications"
                     val installedApps = CompanionApi.installedApplications(this)
+                    currentPhase = "updating the application manifest"
                     reportManifestIfChanged(state, installedApps)
+                    currentPhase = "polling the command queue"
+                    Log.i(TAG, "Starting authenticated command poll.")
                     val batch = CompanionApi.request(
                         origin,
                         "/api/devices/protocol/v1/commands?wait_seconds=20&client_type=android",
                         token = accessToken,
                     )
                     val commands = batch.optJSONArray("commands") ?: JSONArray()
+                    Log.i(TAG, "Command poll completed; count=${commands.length()}.")
                     for (index in 0 until commands.length()) {
                         if (!running.get()) break
                         while (paused.get() && running.get()) Thread.sleep(250)
                         if (running.get()) {
+                            currentPhase = "acknowledging and executing command"
                             handleCommand(commands.getJSONObject(index), state, installedApps)
                         }
                     }
                     updateStatus("Connected. Waiting for a Jalora task.")
                 } catch (error: CompanionHttpException) {
-                    Log.w(TAG, "Companion request returned HTTP ${error.status}.")
+                    Log.w(
+                        TAG,
+                        "Companion phase '$currentPhase' returned HTTP ${error.status}.",
+                    )
                     if (error.status == 401) {
                         accessToken = ""
                         if (error.message?.contains("invalid or revoked", true) == true) {
@@ -163,8 +176,15 @@ class DeviceCompanionService : Service() {
                 } catch (error: InterruptedException) {
                     if (!running.get()) return
                 } catch (error: Exception) {
-                    Log.w(TAG, "Companion loop failed (${error.javaClass.simpleName}).")
-                    updateStatus("Companion error: ${error.message ?: error.javaClass.simpleName}")
+                    Log.w(
+                        TAG,
+                        "Companion phase '$currentPhase' failed (${error.javaClass.simpleName}): " +
+                            (error.message ?: "no additional detail"),
+                    )
+                    updateStatus(
+                        "Companion error during $currentPhase: " +
+                            (error.message ?: error.javaClass.simpleName),
+                    )
                     Thread.sleep(RETRY_DELAY_MS)
                 }
             }
@@ -205,18 +225,28 @@ class DeviceCompanionService : Service() {
         val arguments = command.optJSONObject("arguments") ?: JSONObject()
         Log.i(TAG, "Received protocol command id=$id operation=$operation.")
         val origin = state.getString("api_origin")
-        val result = CompanionApi.request(
-            origin,
-            "/api/devices/protocol/v1/commands/${Uri.encode(id)}/decision",
-            "POST",
-            accessToken,
-            JSONObject().put("nonce", nonce).put("approve", true),
-        )
+        val result = try {
+            CompanionApi.request(
+                origin,
+                "/api/devices/protocol/v1/commands/${Uri.encode(id)}/decision",
+                "POST",
+                accessToken,
+                JSONObject().put("nonce", nonce).put("approve", true),
+            )
+        } catch (error: Exception) {
+            Log.w(
+                TAG,
+                "Command acknowledgement failed id=$id " +
+                    "(${error.javaClass.simpleName}): ${error.message ?: "no detail"}",
+            )
+            throw error
+        }
         if (!result.optBoolean("execute")) {
             Log.w(TAG, "Phone rejected protocol command decision id=$id.")
             updateStatus("The phone did not authorize this command.")
             return
         }
+        Log.i(TAG, "Command acknowledgement recorded id=$id; execution authorized.")
         updateStatus("Executing an authorized Jalora task.")
         val inflight = JSONObject().put("command_id", id).put("nonce", nonce)
         state.put("inflight_command", inflight)

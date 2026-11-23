@@ -71,6 +71,7 @@ async def test_open_local_app_uses_paired_android_when_backend_is_not_windows(mo
         status="active",
         scopes=["android.apps.launch"],
         last_seen_at=datetime.now(timezone.utc),
+        last_command_poll_at=datetime.now(timezone.utc),
         capability_manifest={
             "applications": [{
                 "id": "whatsapp-app",
@@ -170,6 +171,7 @@ async def test_close_paired_android_app_only_reports_verified_home_navigation(mo
         status="active",
         scopes=["android.screen.control", "android.screen.read"],
         last_seen_at=datetime.now(timezone.utc),
+        last_command_poll_at=datetime.now(timezone.utc),
     )
 
     class FakeSession:
@@ -323,6 +325,55 @@ async def test_open_local_app_refuses_phone_without_recent_heartbeat(
 
 
 @pytest.mark.asyncio
+async def test_open_local_app_rejects_recent_heartbeat_without_command_poll(
+    monkeypatch,
+):
+    device = SimpleNamespace(
+        id="phone-1",
+        name="My Android",
+        platform="android",
+        status="active",
+        scopes=["android.apps.launch"],
+        last_seen_at=datetime.now(timezone.utc),
+        last_command_poll_at=None,
+        capability_manifest={"applications": []},
+    )
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def scalars(self, _statement):
+            return SimpleNamespace(all=lambda: [device])
+
+    events = []
+    monkeypatch.setattr(device_tools.sys, "platform", "linux")
+    monkeypatch.setattr(device_tools, "SessionLocal", FakeSession)
+    monkeypatch.setattr(device_tools, "emit", lambda _name, event: events.append(event))
+    monkeypatch.setattr(
+        device_tools,
+        "_request_remote_native_action",
+        lambda *_args, **_kwargs: pytest.fail("command must not be queued"),
+    )
+    set_tool_context(
+        ToolContext(user_id="user-1", task_id="task-1", run_id="run-1")
+    )
+    try:
+        result = await device_tools.open_local_app("WhatsApp")
+    finally:
+        set_tool_context(None)
+
+    assert not result.success
+    assert result.error is not None
+    assert result.error.code == "ANDROID_COMMAND_POLL_UNAVAILABLE"
+    assert "heartbeat is recent" in result.message
+    assert events[0]["stage"] == "device_poll_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_android_launch_rejects_success_receipt_for_a_different_app(monkeypatch):
     async def wrong_app_receipt(_command_id):
         return device_tools.ToolResult.ok(
@@ -473,7 +524,8 @@ async def test_android_action_waits_for_receipt_and_emits_correlated_progress(
         platform="android",
         status="active",
         scopes=["android.screen.read", "android.screen.control"],
-        last_seen_at=created_at,
+        last_seen_at=created_at - timedelta(seconds=5),
+        last_command_poll_at=created_at,
     )
     command = SimpleNamespace(
         id="command-screen-inspect",
@@ -557,6 +609,7 @@ async def test_android_action_waits_for_receipt_and_emits_correlated_progress(
         "command_queued",
         "action_verified",
     ]
+    assert events[0][1]["occurred_at"] == created_at.isoformat()
     assert all(
         payload["task_id"] == "task-1"
         and payload["run_id"] == "run-1"
@@ -575,6 +628,7 @@ async def test_open_local_app_searches_launcher_without_manifest_match(monkeypat
         status="active",
         scopes=["android.apps.launch"],
         last_seen_at=datetime.now(timezone.utc),
+        last_command_poll_at=datetime.now(timezone.utc),
         capability_manifest={"applications": []},
     )
 
@@ -647,6 +701,72 @@ async def test_open_local_app_searches_launcher_without_manifest_match(monkeypat
     assert queued == [
         ("phone-1", "android.launcher.open", "", "android", "WhatsApp", "")
     ]
+
+
+@pytest.mark.asyncio
+async def test_android_ack_wait_does_not_cancel_an_active_delivery_lease(monkeypatch):
+    lease_expires_at = datetime.now(timezone.utc) + timedelta(milliseconds=35)
+    calls = []
+
+    async def status_until_ack(command_id):
+        calls.append(command_id)
+        if datetime.now(timezone.utc) < lease_expires_at:
+            return device_tools.ToolResult.ok(
+                "Command delivery is in progress.",
+                {
+                    "command_id": command_id,
+                    "protocol_status": "delivered",
+                    "lease_expires_at": lease_expires_at,
+                    "expires_at": lease_expires_at + timedelta(minutes=1),
+                    "receipt_status": None,
+                    "evidence": {},
+                },
+            )
+        return device_tools.ToolResult.ok(
+            "The phone returned a verified receipt.",
+            {
+                "command_id": command_id,
+                "protocol_status": "succeeded",
+                "receipt_status": "succeeded",
+                "evidence": {
+                    "operation_result": {
+                        "verified": True,
+                        "status": "app_opened",
+                        "app_name": "WhatsApp",
+                    },
+                },
+            },
+        )
+
+    monkeypatch.setattr(
+        device_tools,
+        "get_remote_device_action_status",
+        status_until_ack,
+    )
+    monkeypatch.setattr(
+        device_tools,
+        "cancel_unstarted_device_command",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an active delivery lease must not be cancelled"
+        ),
+    )
+    set_tool_context(ToolContext(user_id="user-1"))
+    try:
+        result = await device_tools._await_android_command_receipt(
+            "command-delayed-ack",
+            action="android.launcher.open",
+            expected_app_name="WhatsApp",
+            device_id=None,
+            device_name=None,
+            context=ToolContext(user_id="user-1"),
+            timeout_seconds=0,
+            poll_seconds=0.005,
+        )
+    finally:
+        set_tool_context(None)
+
+    assert result.success
+    assert len(calls) > 1
 
 
 def test_local_app_agent_tools_respect_permission_levels():

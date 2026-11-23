@@ -100,6 +100,18 @@ def test_remote_url_action_requires_target_approval_and_reports_open_handoff(
     device_headers = {
         "Authorization": f"Bearer {approved_pair.json()['device_token']}"
     }
+    protocol_session = client.post(
+        "/api/devices/protocol/v1/session",
+        headers=device_headers,
+    )
+    assert protocol_session.status_code == 200, protocol_session.text
+    poll = client.get(
+        "/api/devices/protocol/v1/commands?wait_seconds=0&client_type=android",
+        headers={
+            "Authorization": f"Bearer {protocol_session.json()['access_token']}"
+        },
+    )
+    assert poll.status_code == 200, poll.text
 
     not_confirmed = client.post(
         f"/api/devices/{device['id']}/remote-commands",

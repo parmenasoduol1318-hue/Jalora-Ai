@@ -4,6 +4,7 @@ import ctypes
 import sys
 from datetime import timedelta
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from app.api import devices as devices_api
@@ -129,23 +130,39 @@ def test_device_capability_inventory_is_live_scoped_and_honest(client, auth_head
     assert client.get("/api/devices/capabilities").status_code == 401
     headers = auth_headers("device-capabilities@test.com")
     other_headers = auth_headers("other-device-capabilities@test.com")
-    owned = _create_device(
-        client,
-        headers,
-        scopes=[
-            "messages.read",
-            "messages.draft",
-            "messages.send",
-        ],
+    pair_response = client.post(
+        "/api/devices/pair-requests",
+        headers=headers,
+        json={
+            "name": "Test phone",
+            "platform": "android",
+            "scopes": [
+                "messages.read",
+                "messages.draft",
+                "messages.send",
+                "remote.browser.open_url",
+            ],
+            "consent_confirmed": True,
+        },
     )
-    other = _create_device(client, other_headers)
+    assert pair_response.status_code == 200, pair_response.text
+    pair_data = pair_response.json()
+    fragment = parse_qs(urlsplit(pair_data["pairing_url"]).fragment)
+    pairing_code = fragment["pair_code"][0]
+    pair_request_id = fragment["pair_request_id"][0]
+    owned = client.post(
+        f"/api/devices/pair-requests/{pair_request_id}/approve",
+        json={"confirm": True, "pairing_code": pairing_code},
+    )
     assert owned.status_code == 200, owned.text
+    other = _create_device(client, other_headers)
     assert other.status_code == 200, other.text
-    own_device = owned.json()
+    own_device = owned.json()["device"]
+    device_token = owned.json()["device_token"]
 
     heartbeat = client.get(
         "/api/devices/actions",
-        headers={"Authorization": f"Bearer {own_device['device_token']}"},
+        headers={"Authorization": f"Bearer {device_token}"},
     )
     assert heartbeat.status_code == 200, heartbeat.text
 
@@ -156,6 +173,7 @@ def test_device_capability_inventory_is_live_scoped_and_honest(client, auth_head
     assert [device["id"] for device in inventory["devices"]] == [own_device["id"]]
     device = inventory["devices"][0]
     assert device["status"] == "online"
+    assert device["command_poll_status"] == "unknown"
     capabilities = {
         item["operation"]: item
         for item in device["companion_capabilities"]
@@ -163,14 +181,33 @@ def test_device_capability_inventory_is_live_scoped_and_honest(client, auth_head
     for operation in ("messages.receive", "messages.draft", "messages.send"):
         assert capabilities[operation]["status"] == "registered_unavailable"
     assert capabilities["messages.send"]["approval_required"] is True
-    assert capabilities["browser.open_url"]["status"] == "permission_required"
+    assert capabilities["browser.open_url"]["status"] == "command_poll_unavailable"
+    assert "polling has not checked in" in capabilities["browser.open_url"]["reason"]
     assert all(
         item["status"] == "unsupported"
         for item in device["unsupported_operations"]
     )
     assert "cannot inspect screens" in " ".join(inventory["limitations"]).lower()
     assert "device_token" not in str(inventory)
-    assert own_device["device_token"] not in str(inventory)
+    assert device_token not in str(inventory)
+    session = client.post(
+        "/api/devices/protocol/v1/session",
+        headers={"Authorization": f"Bearer {device_token}"},
+    )
+    assert session.status_code == 200, session.text
+    poll = client.get(
+        "/api/devices/protocol/v1/commands?wait_seconds=0&client_type=android",
+        headers={"Authorization": f"Bearer {session.json()['access_token']}"},
+    )
+    assert poll.status_code == 200, poll.text
+    refreshed = client.get("/api/devices/capabilities", headers=headers).json()
+    refreshed_device = refreshed["devices"][0]
+    assert refreshed_device["command_poll_status"] == "active"
+    refreshed_capabilities = {
+        item["operation"]: item
+        for item in refreshed_device["companion_capabilities"]
+    }
+    assert refreshed_capabilities["browser.open_url"]["status"] == "available"
 
 
 def test_device_message_reply_is_edited_approved_and_delivered(client, auth_headers):
@@ -382,6 +419,12 @@ def test_device_connectivity_uses_recent_authenticated_heartbeat(
     assert heartbeat.json()["last_seen_at"] is not None
     listed = client.get("/api/devices", headers=user_headers)
     assert listed.json()[0]["connectivity"] == "online"
+    assert listed.json()[0]["command_poll_status"] == "unknown"
+    assert (
+        client.get("/api/devices/protocol/v1/commands").status_code == 401
+    )
+    listed = client.get("/api/devices", headers=user_headers)
+    assert listed.json()[0]["command_poll_status"] == "unknown"
     assert client.post("/api/devices/heartbeat").status_code == 401
 
     with SessionLocal() as db:
@@ -395,9 +438,19 @@ def test_device_connectivity_uses_recent_authenticated_heartbeat(
     with SessionLocal() as db:
         row = db.get(DeviceConnection, device["id"])
         assert row is not None
-        row.last_seen_at = utcnow() - timedelta(seconds=91)
+        row.last_seen_at = utcnow()
+        row.last_command_poll_at = utcnow() - timedelta(seconds=91)
         db.commit()
 
+    listed = client.get("/api/devices", headers=user_headers)
+    assert listed.json()[0]["connectivity"] == "online"
+    assert listed.json()[0]["command_poll_status"] == "stale"
+
+    with SessionLocal() as db:
+        row = db.get(DeviceConnection, device["id"])
+        assert row is not None
+        row.last_seen_at = utcnow() - timedelta(seconds=91)
+        db.commit()
     listed = client.get("/api/devices", headers=user_headers)
     assert listed.json()[0]["connectivity"] == "offline"
 

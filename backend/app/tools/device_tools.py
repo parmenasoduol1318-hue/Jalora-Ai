@@ -43,6 +43,7 @@ from app.tools.base import PermissionLevel, registry
 
 logger = logging.getLogger("jalora.device_tools")
 ANDROID_DEVICE_ONLINE_WINDOW = timedelta(seconds=90)
+ANDROID_COMMAND_POLL_WINDOW = timedelta(seconds=90)
 ANDROID_LAUNCH_RECEIPT_TIMEOUT_SECONDS = 35.0
 ANDROID_LAUNCH_RECEIPT_POLL_SECONDS = 0.5
 ANDROID_HOME_RECEIPT_TIMEOUT_SECONDS = 20.0
@@ -201,25 +202,38 @@ def _normalized_app_name(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold()
 
 
-def _command_latency_ms(started_at: Any, ended_at: Any) -> int | None:
-    def as_datetime(value: Any) -> datetime | None:
-        if isinstance(value, datetime):
-            parsed = value
-        elif isinstance(value, str):
-            try:
-                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            except ValueError:
-                return None
-        else:
+def _coerce_utc_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
             return None
-        return (
-            parsed.replace(tzinfo=timezone.utc)
-            if parsed.tzinfo is None
-            else parsed.astimezone(timezone.utc)
-        )
+    else:
+        return None
+    return (
+        parsed.replace(tzinfo=timezone.utc)
+        if parsed.tzinfo is None
+        else parsed.astimezone(timezone.utc)
+    )
 
-    start = as_datetime(started_at)
-    end = as_datetime(ended_at)
+
+def _android_command_poll_is_recent(
+    device: DeviceConnection,
+    now: datetime | None = None,
+) -> bool:
+    last_poll = _coerce_utc_datetime(getattr(device, "last_command_poll_at", None))
+    return (
+        last_poll is not None
+        and last_poll >= (now or datetime.now(timezone.utc))
+        - ANDROID_COMMAND_POLL_WINDOW
+    )
+
+
+def _command_latency_ms(started_at: Any, ended_at: Any) -> int | None:
+    start = _coerce_utc_datetime(started_at)
+    end = _coerce_utc_datetime(ended_at)
     if start is None or end is None:
         return None
     return max(0, round((end - start).total_seconds() * 1000))
@@ -270,11 +284,12 @@ async def _await_android_command_receipt(
     timeout_seconds: float = ANDROID_ACTION_RECEIPT_TIMEOUT_SECONDS,
     poll_seconds: float = ANDROID_ACTION_RECEIPT_POLL_SECONDS,
 ) -> ToolResult:
-    deadline = (
+    acknowledgement_deadline = (
         asyncio.get_running_loop().time()
         + timeout_seconds
     )
     started_at = asyncio.get_running_loop().time()
+    execution_deadline: float | None = None
     emitted: set[str] = set()
     while True:
         result = await get_remote_device_action_status(command_id)
@@ -283,15 +298,42 @@ async def _await_android_command_receipt(
 
         data = result.data
         protocol_status = data.get("protocol_status")
-        transition = {
-            "delivered": "device_received",
-            "running": "action_executing",
-            "failed": "action_failed",
-            "uncertain": "action_unconfirmed",
-            "expired": "action_failed",
-            "cancelled": "action_cancelled",
-        }.get(protocol_status)
-        if transition and transition not in emitted:
+        now_monotonic = asyncio.get_running_loop().time()
+        if protocol_status == "running" and execution_deadline is None:
+            execution_deadline = now_monotonic + timeout_seconds
+        deadline = execution_deadline or acknowledgement_deadline
+        if protocol_status == "delivered":
+            lease_expires_at = _coerce_utc_datetime(data.get("lease_expires_at"))
+            command_expires_at = _coerce_utc_datetime(data.get("expires_at"))
+            now_utc = datetime.now(timezone.utc)
+            if lease_expires_at is not None and lease_expires_at > now_utc:
+                lease_deadline = (
+                    now_monotonic
+                    + (lease_expires_at - now_utc).total_seconds()
+                    + poll_seconds
+                )
+                deadline = max(deadline, lease_deadline)
+        else:
+            command_expires_at = _coerce_utc_datetime(data.get("expires_at"))
+            now_utc = datetime.now(timezone.utc)
+        if command_expires_at is not None:
+            command_deadline = (
+                now_monotonic
+                + max(0, (command_expires_at - now_utc).total_seconds())
+            )
+            deadline = min(deadline, command_deadline)
+
+        transitions_by_status: dict[str, tuple[str, ...]] = {
+            "delivered": ("command_delivery_pending",),
+            "running": ("device_received", "action_executing"),
+            "failed": ("action_failed",),
+            "uncertain": ("action_unconfirmed",),
+            "expired": ("action_failed",),
+            "cancelled": ("action_cancelled",),
+        }
+        for transition in transitions_by_status.get(protocol_status, ()):
+            if transition in emitted:
+                continue
             emitted.add(transition)
             event_ended_at = data.get(
                 {
@@ -319,6 +361,7 @@ async def _await_android_command_receipt(
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 if protocol_status in {"queued", "delivered"}:
+                    status_before_cancel = protocol_status
                     with SessionLocal() as db:
                         cancelled = cancel_unstarted_device_command(
                             db,
@@ -344,9 +387,14 @@ async def _await_android_command_receipt(
                         )
                         return ToolResult.fail(
                             "ANDROID_DEVICE_NOT_ACKNOWLEDGED",
-                            "The phone did not acknowledge the command before the "
-                            "timeout. Jalora cancelled it before execution; reconnect "
-                            "the companion and try again.",
+                            (
+                                "The command was not claimed by a command poll before "
+                                "the deadline. Jalora cancelled it before execution."
+                                if status_before_cancel == "queued"
+                                else "The phone's delivery lease expired without an "
+                                "acknowledgement. Jalora cancelled the command before "
+                                "execution."
+                            ),
                             data={**data, "protocol_status": "cancelled"},
                         )
                     latest = await get_remote_device_action_status(command_id)
@@ -355,6 +403,8 @@ async def _await_android_command_receipt(
                         protocol_status = data.get("protocol_status")
                         if protocol_status not in {"queued", "delivered"}:
                             continue
+                        await asyncio.sleep(poll_seconds)
+                        continue
                 logger.warning(
                     "Android command completion timed out (command_id=%s, "
                     "action=%s, protocol_status=%s).",
@@ -641,44 +691,72 @@ async def _open_android_app(
         )
 
     authorized_devices = []
-    online_devices = []
+    polling_devices = []
+    heartbeat_only_devices = []
     connectivity_by_id = {}
     now = datetime.now(timezone.utc)
     for device in devices:
         if "android.apps.launch" not in (device.scopes or []):
             continue
         authorized_devices.append(device)
-        last_seen = device.last_seen_at
-        if last_seen is not None and last_seen.tzinfo is None:
-            last_seen = last_seen.replace(tzinfo=timezone.utc)
-        if last_seen is None:
-            connectivity_by_id[device.id] = "unknown"
-            continue
-        if last_seen < now - ANDROID_DEVICE_ONLINE_WINDOW:
-            connectivity_by_id[device.id] = "offline"
-            continue
-        connectivity_by_id[device.id] = "online"
-        online_devices.append(device)
+        if _android_command_poll_is_recent(device, now):
+            connectivity_by_id[device.id] = "online"
+            polling_devices.append(device)
+        else:
+            last_seen = _coerce_utc_datetime(device.last_seen_at)
+            if (
+                last_seen is not None
+                and last_seen >= now - ANDROID_DEVICE_ONLINE_WINDOW
+            ):
+                connectivity_by_id[device.id] = "heartbeat_only"
+                heartbeat_only_devices.append(device)
+            else:
+                connectivity_by_id[device.id] = (
+                    "unknown" if last_seen is None else "offline"
+                )
 
-    if len(online_devices) > 1:
-        device_names = ", ".join(sorted(device.name for device in online_devices))
+    if len(polling_devices) > 1:
+        device_names = ", ".join(sorted(device.name for device in polling_devices))
         return ToolResult.fail(
             "ANDROID_DEVICE_AMBIGUOUS",
-            f"More than one paired phone is available for opening '{validated_name}' "
+            f"More than one command-polling phone is available for opening "
+            f"'{validated_name}' "
             f"({device_names}). Specify the phone in your request and retry.",
         )
-    if online_devices:
-        device = online_devices[0]
+    if polling_devices:
+        device = polling_devices[0]
     elif authorized_devices:
-        connectivity = (
+        heartbeat_recent = bool(heartbeat_only_devices)
+        connectivity = "heartbeat_recent_poll_stale" if heartbeat_recent else (
             "unknown"
             if all(connectivity_by_id[item.id] == "unknown" for item in authorized_devices)
             else "offline"
         )
+        if heartbeat_recent:
+            heartbeat_device = (
+                heartbeat_only_devices[0]
+                if len(heartbeat_only_devices) == 1
+                else None
+            )
+            _emit_device_progress(
+                stage="device_poll_unavailable",
+                context=context,
+                device_id=heartbeat_device.id if heartbeat_device else None,
+                device_name=heartbeat_device.name if heartbeat_device else None,
+                action="android.launcher.open",
+                app_name=validated_name,
+            )
+            return ToolResult.fail(
+                "ANDROID_COMMAND_POLL_UNAVAILABLE",
+                "The phone heartbeat is recent, but its command poller has not "
+                "checked in. No app command was queued. Open the companion and "
+                "choose Connect / resume.",
+                data={"device_connectivity": connectivity},
+            )
         return ToolResult.fail(
             "ANDROID_DEVICE_OFFLINE",
-            "No paired Android phone has a recent heartbeat. Open the Jalora "
-            "Companion and restore its backend connection before retrying.",
+            "No paired Android phone has a recent command poll. Open the Jalora "
+            "Companion and choose Connect / resume before retrying.",
             data={"device_connectivity": connectivity},
         )
     else:
@@ -1093,6 +1171,21 @@ async def _request_remote_url(
                 "DEVICE_SCOPE_REQUIRED",
                 f"'{device.name}' was not granted permission to open public links.",
             )
+        if (
+            device.platform == "android"
+            and not _android_command_poll_is_recent(device)
+        ):
+            return ToolResult.fail(
+                "ANDROID_COMMAND_POLL_UNAVAILABLE",
+                "The phone heartbeat is recent, but its command poller has not "
+                "checked in. No link command was queued. Open the companion and "
+                "choose Connect / resume.",
+                data={
+                    "device_id": device.id,
+                    "last_seen_at": device.last_seen_at,
+                    "last_command_poll_at": device.last_command_poll_at,
+                },
+            )
         try:
             command, already_queued = queue_device_command(
                 db,
@@ -1211,7 +1304,7 @@ async def _request_remote_native_action(
                     "The Windows companion is currently offline.",
                 )
         else:
-            last_seen = device.last_seen_at
+            last_seen = _coerce_utc_datetime(device.last_seen_at)
             if last_seen is None:
                 _emit_device_progress(
                     stage="device_offline",
@@ -1227,8 +1320,6 @@ async def _request_remote_native_action(
                     "the Jalora Companion before retrying.",
                     data={"device_id": device.id, "connectivity": "unknown"},
                 )
-            if last_seen.tzinfo is None:
-                last_seen = last_seen.replace(tzinfo=timezone.utc)
             if last_seen < datetime.now(timezone.utc) - ANDROID_DEVICE_ONLINE_WINDOW:
                 _emit_device_progress(
                     stage="device_offline",
@@ -1243,6 +1334,30 @@ async def _request_remote_native_action(
                     "The paired Android phone is offline. Reconnect the Jalora "
                     "Companion before retrying.",
                     data={"device_id": device.id, "connectivity": "offline"},
+                )
+            if not _android_command_poll_is_recent(device):
+                _emit_device_progress(
+                    stage="device_poll_unavailable",
+                    context=context,
+                    device_id=device.id,
+                    device_name=device.name,
+                    action=action,
+                    app_name=app_name,
+                )
+                return ToolResult.fail(
+                    "ANDROID_COMMAND_POLL_UNAVAILABLE",
+                    "The phone heartbeat is recent, but its command poller has not "
+                    "checked in. No command was queued. Open the companion and "
+                    "choose Connect / resume.",
+                    data={
+                        "device_id": device.id,
+                        "last_seen_at": last_seen,
+                        "last_command_poll_at": getattr(
+                            device,
+                            "last_command_poll_at",
+                            None,
+                        ),
+                    },
                 )
 
         launch_request = None
@@ -1385,11 +1500,7 @@ async def _request_remote_native_action(
                     if launch_request is not None
                     else app_name or None
                 ),
-                occurred_at=(
-                    device.last_seen_at.isoformat()
-                    if device.last_seen_at is not None
-                    else None
-                ),
+                occurred_at=device.last_command_poll_at,
             )
             _emit_device_progress(
                 stage="command_queued",
@@ -3457,6 +3568,8 @@ async def get_remote_device_action_status(command_id: str) -> ToolResult:
             "error_code": command.error_code,
             "created_at": command.created_at,
             "delivered_at": command.delivered_at,
+            "lease_expires_at": command.lease_expires_at,
+            "expires_at": command.expires_at,
             "running_at": command.running_at,
             "receipt_status": (
                 command.receipt.get("status")

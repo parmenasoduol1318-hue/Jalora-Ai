@@ -279,7 +279,9 @@ class MainActivity : Activity() {
                     body = JSONObject(),
                 )
                 runOnUiThread {
-                    status.text = "Jalora server reachable; paired-device authentication succeeded."
+                    status.text =
+                        "Jalora server reachable; heartbeat authentication succeeded. " +
+                            "Command polling was not tested. Use Connect / resume to start it."
                     status.append(
                         "\n${permissionSummary(state)}\n" +
                             "Accessibility service: ${accessibilityStatus()}",

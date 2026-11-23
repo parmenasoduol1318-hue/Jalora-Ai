@@ -227,6 +227,7 @@ def _token_digest(token: str) -> str:
 
 def _device_out(device: DeviceConnection) -> dict:
     last_seen_at = device.last_seen_at
+    last_command_poll_at = device.last_command_poll_at
     if device.status != "active":
         connectivity = "offline"
     elif last_seen_at is None:
@@ -235,14 +236,24 @@ def _device_out(device: DeviceConnection) -> dict:
         connectivity = "offline"
     else:
         connectivity = "online"
+    if device.status != "active":
+        command_poll_status = "offline"
+    elif last_command_poll_at is None:
+        command_poll_status = "unknown"
+    elif _timestamp_is_expired(last_command_poll_at + DEVICE_ONLINE_WINDOW):
+        command_poll_status = "stale"
+    else:
+        command_poll_status = "active"
     return {
         "id": device.id,
         "name": device.name,
         "platform": device.platform,
         "status": device.status,
         "connectivity": connectivity,
+        "command_poll_status": command_poll_status,
         "scopes": list(device.scopes or []),
         "last_seen_at": last_seen_at,
+        "last_command_poll_at": last_command_poll_at,
         "created_at": device.created_at,
     }
 
@@ -1066,6 +1077,9 @@ def poll_protocol_commands(
             client_type=client_type,
         )
         if commands or time.monotonic() >= deadline:
+            if client_type != "browser":
+                device.last_command_poll_at = utcnow()
+                db.commit()
             return {
                 "protocol_version": 1,
                 "commands": commands,
