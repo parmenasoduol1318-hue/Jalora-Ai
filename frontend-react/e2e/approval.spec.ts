@@ -242,6 +242,23 @@ test.describe('Approval flow', () => {
     let patchedArguments: Record<string, unknown> | undefined;
     let rejected = false;
 
+    await page.route('**/api/chat', async (route) => {
+      const events = [
+        { type: 'approval', ...approval },
+        {
+          type: 'done',
+          status: 'paused_approval',
+          reply: 'The email is ready for your review.',
+          intent: 'email',
+          approval,
+        },
+      ];
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''),
+      });
+    });
     await page.route('**/api/emails/task', async (route) => {
       await route.fulfill({
         status: 200,

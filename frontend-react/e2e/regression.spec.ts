@@ -193,8 +193,15 @@ test.describe('Workspace project lifecycle', () => {
     const initialTitle = `Stage 7 project ${Date.now()}`;
     const renamedTitle = `${initialTitle} renamed`;
 
+    const createResponsePromise = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === '/api/workspace/sessions'
+      && response.request().method() === 'POST',
+    );
     page.once('dialog', (dialog) => void dialog.accept(initialTitle));
     await page.locator('.ws-empty-full .btn.primary').click();
+    const createResponse = await createResponsePromise;
+    const createBody = await createResponse.text();
+    expect(createResponse.status(), createBody).toBe(202);
     const createApproval = page.locator('.approval-banner');
     await expect(createApproval).toBeVisible();
     await createApproval.locator('.btn.primary').click();

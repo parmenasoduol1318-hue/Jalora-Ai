@@ -687,7 +687,7 @@ with TestClient(app) as client:
         capture_output=True,
         timeout=90,
         check=False,
-        cwd=os.getcwd(),
+        cwd=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
         env=os.environ.copy(),
     )
     assert restarted.returncode == 0, restarted.stderr
